@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py --version)",
+      "Bash(python -m http.server 8000)",
+      "Bash(start *)",
+      "Bash(curl *)"
+    ]
+  }
+}
