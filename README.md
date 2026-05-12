@@ -15,6 +15,11 @@
 - [@fadilou-maker](https://github.com/fadilou-maker/)
 
 ---
+## Illustration
+- ![tuiles](carte-tiles.jpeg)
+- ![planète en 3d](sphere-tiles.jpeg)
+
+---
 ## Update
 5/12/2016 Separer html, css et js.
 ---
