@@ -245,9 +245,17 @@
     const CORNER_R = COAST_W;
     const SAND_W = 0.18;
 
+    // === SPHÈRE PARAMETERS ===
+    const SPHERE_RADIUS = 12;
+    const USE_SPHERE = true;           // ← passe à false pour revenir en plat rapidement
+    const POLE_COMPRESSION = 0.92;     // réduit un peu la distorsion aux pôles (entre 0.7 et 1.0)
+
     const GRASS_THICKNESS = 0.035;
     const SAND_SKIRT_DEPTH = 0.035;
     const OCEAN_THICKNESS = 0.12;
+
+    const HEIGHT_SCALE = 1.8;
+    const OCEAN_RADIUS = SPHERE_RADIUS + WATER_H * HEIGHT_SCALE - 0.006;
 
     const COL = {
       grass: 0x4FAE4F,
@@ -280,6 +288,14 @@
       side: THREE.DoubleSide,
     });
     const matWater = new THREE.MeshStandardMaterial({ color: COL.water, roughness: 0.30, metalness: 0.05 });
+
+    const matSphericalGrid = new THREE.LineBasicMaterial({
+      color: 0x111111,
+      transparent: true,
+      opacity: 0.32,
+      depthTest: true,
+      depthWrite: false,
+    });
 
     function getCornerStates(type, junctions) {
       const r = { nw: 'sharp', ne: 'sharp', se: 'sharp', sw: 'sharp' };
@@ -783,6 +799,183 @@
       };
     }
 
+    function gridToSphere(gx, gz, size, height = 0) {
+      const lon = (gx / size) * Math.PI * 2 - Math.PI;
+
+      let lat = Math.PI / 2 - (gz / size) * Math.PI;
+      lat *= POLE_COMPRESSION;
+
+      const radius = SPHERE_RADIUS + height * HEIGHT_SCALE;
+      const cosLat = Math.cos(lat);
+
+      return new THREE.Vector3(
+        radius * cosLat * Math.cos(lon),
+        radius * Math.sin(lat),
+        radius * cosLat * Math.sin(lon)
+      );
+    }
+
+    function buildSphericalGrid(size, height = GRASS_H + 0.025) {
+      const positions = [];
+      const segments = Math.max(72, size * 6);
+
+      function addSegment(a, b) {
+        positions.push(a.x, a.y, a.z);
+        positions.push(b.x, b.y, b.z);
+      }
+
+      // Lignes verticales : longitudes
+      for (let x = 0; x <= size; x++) {
+        let prev = null;
+
+        for (let i = 0; i <= segments; i++) {
+          const gz = (i / segments) * size;
+          const p = gridToSphere(x, gz, size, height);
+
+          if (prev) addSegment(prev, p);
+          prev = p;
+        }
+      }
+
+      // Lignes horizontales : latitudes
+      for (let z = 0; z <= size; z++) {
+        let prev = null;
+
+        for (let i = 0; i <= segments; i++) {
+          const gx = (i / segments) * size;
+          const p = gridToSphere(gx, z, size, height);
+
+          if (prev) addSegment(prev, p);
+          prev = p;
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(positions, 3)
+      );
+
+      const lines = new THREE.LineSegments(geo, matSphericalGrid);
+      lines.renderOrder = 10;
+
+      return lines;
+    }
+
+    function rotateLocalInCell(lx, lz, rotY) {
+      const v = new THREE.Vector3(lx - 0.5, 0, lz - 0.5);
+      v.applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+      return {
+        x: v.x + 0.5,
+        z: v.z + 0.5,
+      };
+    }
+
+    function warpGeometryToSphere(geometry, cellX, cellZ, rotY) {
+      const pos = geometry.attributes.position;
+      if (!pos) return;
+
+      for (let i = 0; i < pos.count; i++) {
+        const localX = pos.getX(i);
+        const height = pos.getY(i);
+        const localZ = pos.getZ(i);
+
+        const rotated = rotateLocalInCell(localX, localZ, rotY);
+
+        const spherePos = gridToSphere(
+          cellX + rotated.x,
+          cellZ + rotated.z,
+          mapSize,
+          height
+        );
+
+        pos.setXYZ(i, spherePos.x, spherePos.y, spherePos.z);
+      }
+
+      pos.needsUpdate = true;
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      geometry.computeBoundingBox();
+    }
+
+    function warpGroupToSphere(group, cellX, cellZ, rotY) {
+      group.traverse((o) => {
+        if (o.isMesh && o.geometry) {
+          o.geometry = o.geometry.clone();
+          warpGeometryToSphere(o.geometry, cellX, cellZ, rotY);
+
+          o.position.set(0, 0, 0);
+          o.rotation.set(0, 0, 0);
+          o.scale.set(1, 1, 1);
+        }
+      });
+    }
+
+    function buildSphericalCellPickGeo(cellX, cellZ, height = WATER_H + 0.03, seg = 4) {
+      const positions = [];
+      const indices = [];
+
+      for (let z = 0; z <= seg; z++) {
+        for (let x = 0; x <= seg; x++) {
+          const p = gridToSphere(
+            cellX + x / seg,
+            cellZ + z / seg,
+            mapSize,
+            height
+          );
+
+          positions.push(p.x, p.y, p.z);
+        }
+      }
+
+      for (let z = 0; z < seg; z++) {
+        for (let x = 0; x < seg; x++) {
+          const a = z * (seg + 1) + x;
+          const b = a + 1;
+          const c = a + (seg + 1);
+          const d = c + 1;
+
+          indices.push(a, b, d);
+          indices.push(a, d, c);
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(positions, 3)
+      );
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+
+      return geo;
+    }
+
+    // Courbe un mesh pour qu'il suive la surface de la sphère
+    // function bendToSphere(mesh, baseX, baseZ) {
+    //   if (!USE_SPHERE || !mesh.geometry) return;
+
+    //   const position = mesh.geometry.attributes.position;
+    //   if (!position) return;
+
+    //   for (let i = 0; i < position.count; i++) {
+    //     let x = position.getX(i) + baseX;
+    //     let y = position.getY(i);
+    //     let z = position.getZ(i) + baseZ;
+
+    //     const vec = new THREE.Vector3(x, y, z);
+    //     const len = vec.length();
+
+    //     // Projection sur la sphère + légère extrusion selon la hauteur
+    //     vec.normalize().multiplyScalar(SPHERE_RADIUS + y * 1.8);
+
+    //     position.setXYZ(i, vec.x, vec.y, vec.z);
+    //   }
+
+    //   position.needsUpdate = true;
+    //   mesh.geometry.computeVertexNormals();
+    // }
+
     function lerp(a, b, t) { return a + (b - a) * t; }
     function smoothstep(t) { return t * t * (3 - 2 * t); }
 
@@ -831,7 +1024,7 @@
     scene.fog = new THREE.Fog(COL.sky, 35, 90);
 
     const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 300);
-    camera.position.set(22, 20, 22);
+    camera.position.set(0, 15, 25);
 
     const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
     renderer.setPixelRatio(devicePixelRatio);
@@ -862,9 +1055,18 @@
     let grid = null;
     let tileWraps = null;
 
-    // Out-of-grid counts as water so coastline forms at borders.
+    function wrapX(x) {
+      return ((x % mapSize) + mapSize) % mapSize;
+    }
+
     function isWaterAt(x, z) {
-      return x < 0 || z < 0 || x >= mapSize || z >= mapSize || grid[z][x] === 0;
+      // En haut/bas, on garde une limite polaire
+      if (z < 0 || z >= mapSize) return true;
+
+      // Gauche/droite se rejoignent autour de la sphère
+      const wx = wrapX(x);
+
+      return grid[z][wx] === 0;
     }
 
     function disposeGroup(group) {
@@ -881,38 +1083,63 @@
 
     function buildCellWrap(x, z) {
       const isLand = grid[z][x] === 1;
+
+      const neighbors = {
+        n: isWaterAt(x, z - 1),
+        e: isWaterAt(x + 1, z),
+        s: isWaterAt(x, z + 1),
+        w: isWaterAt(x - 1, z),
+      };
+
+      const worldDiagonals = {
+        nw: isWaterAt(x - 1, z - 1),
+        ne: isWaterAt(x + 1, z - 1),
+        se: isWaterAt(x + 1, z + 1),
+        sw: isWaterAt(x - 1, z + 1),
+      };
+
       const info = isLand
-        ? determineTile(
-          {
-            n: isWaterAt(x, z - 1),
-            e: isWaterAt(x + 1, z),
-            s: isWaterAt(x, z + 1),
-            w: isWaterAt(x - 1, z),
-          },
-          {
-            nw: isWaterAt(x - 1, z - 1),
-            ne: isWaterAt(x + 1, z - 1),
-            se: isWaterAt(x + 1, z + 1),
-            sw: isWaterAt(x - 1, z + 1),
-          },
-        )
-        : { type: 'WATER', rotY: 0, junctions: null };
+        ? determineTile(neighbors, worldDiagonals)
+        : { type: "WATER", rotY: 0, junctions: null };
 
       const tile = buildTile(info.type, info.junctions);
-      tile.position.set(-0.5, 0, -0.5);
 
       const wrap = new THREE.Group();
-      wrap.add(tile);
 
-      const pick = new THREE.Mesh(PICK_GEO, PICK_MAT);
-      pick.rotation.x = -Math.PI / 2;
-      pick.position.y = GRASS_H * 0.5;
-      wrap.add(pick);
+      if (USE_SPHERE) {
+        tile.position.set(0, 0, 0);
 
-      wrap.rotation.y = info.rotY;
-      wrap.position.set(x - mapSize / 2 + 0.5, 0, z - mapSize / 2 + 0.5);
+        warpGroupToSphere(tile, x, z, info.rotY);
+
+        wrap.position.set(0, 0, 0);
+        wrap.rotation.set(0, 0, 0);
+        wrap.add(tile);
+
+        const pick = new THREE.Mesh(
+          buildSphericalCellPickGeo(x, z),
+          PICK_MAT
+        );
+        wrap.add(pick);
+      } else {
+        tile.position.set(-0.5, 0, -0.5);
+
+        wrap.add(tile);
+        wrap.position.set(
+          x - mapSize / 2 + 0.5,
+          0,
+          z - mapSize / 2 + 0.5
+        );
+        wrap.rotation.y = info.rotY;
+
+        const pick = new THREE.Mesh(PICK_GEO, PICK_MAT);
+        pick.rotation.x = -Math.PI / 2;
+        pick.position.y = GRASS_H * 0.5;
+        wrap.add(pick);
+      }
+
       wrap.userData.gridX = x;
       wrap.userData.gridZ = z;
+
       return wrap;
     }
 
@@ -924,21 +1151,23 @@
       mapGroup = new THREE.Group();
       mapSize = size;
 
+      // === OCÉAN SPHÉRIQUE ===
       const ocean = new THREE.Mesh(
-        new THREE.BoxGeometry(size + 0.08, OCEAN_THICKNESS, size + 0.08),
+        new THREE.SphereGeometry(OCEAN_RADIUS, 128, 64),
         matWater
       );
-
-      ocean.position.set(0, WATER_H - OCEAN_THICKNESS / 2, 0);
       ocean.receiveShadow = true;
       mapGroup.add(ocean);
 
-      gridHelper = new THREE.GridHelper(size, size, 0x111111, 0x111111);
-      gridHelper.position.y = GRASS_H + 0.002;
-      gridHelper.material.depthTest = false;
-      gridHelper.material.transparent = true;
-      gridHelper.material.opacity = 0.7;
-      gridHelper.renderOrder = 999;
+      if (USE_SPHERE) {
+        gridHelper = buildSphericalGrid(size);
+      } else {
+        gridHelper = new THREE.GridHelper(size, size, 0x111111, 0x111111);
+        gridHelper.position.y = GRASS_H + 0.002;
+        gridHelper.material.transparent = true;
+        gridHelper.material.opacity = 0.3;
+      }
+
       gridHelper.visible = showGridInput.checked;
       mapGroup.add(gridHelper);
 
@@ -956,7 +1185,6 @@
 
       scene.add(mapGroup);
 
-      // Recenter camera target on map
       controls.target.set(0, 0, 0);
       controls.update();
     }
@@ -974,13 +1202,15 @@
 
     function toggleCellAt(x, z) {
       if (x < 0 || z < 0 || x >= mapSize || z >= mapSize) return;
+
       grid[z][x] = grid[z][x] ? 0 : 1;
-      // The flipped cell *and* its 8 neighbors all need re-classification because their
-      // cardinal/diagonal water pattern just changed.
+
       for (let dz = -1; dz <= 1; dz++) {
         for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx, nz = z + dz;
-          if (nx >= 0 && nz >= 0 && nx < mapSize && nz < mapSize) {
+          const nx = wrapX(x + dx);
+          const nz = z + dz;
+
+          if (nz >= 0 && nz < mapSize) {
             rebuildCellAt(nx, nz);
           }
         }
