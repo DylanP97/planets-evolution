@@ -15,6 +15,9 @@
 - [@fadilou-maker](https://github.com/fadilou-maker/)
 
 ---
+## Update
+5/12/2016 Separer html, css et js.
+---
 ## En cours
 ### Ajout de tuiles
 - Ajout de relief
