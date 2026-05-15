@@ -1,917 +1,37 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-    // ---------- Tile constants ----------
-    const TILE = 1;
-    const GRASS_H = 0.12;
-    const WATER_H = 0.04;
-    const COAST_W = 0.18;
-    const STRIP_W = COAST_W;
-    const PEN_PAD = COAST_W;
-    const ISLAND_PAD = COAST_W;
-    const CORNER_R = COAST_W;
-    const SAND_W = 0.18;
+    // ---------- Planet constants ----------
+    const BASE_RADIUS = 12;          // resting radius of the icosphere (sea-level land has h = 0)
+    const SEA_LEVEL   = 0.0;         // ocean sphere sits at BASE_RADIUS + SEA_LEVEL
+    const OCEAN_RADIUS = BASE_RADIUS + SEA_LEVEL;
+    const ICO_DETAIL  = 5;           // ~10242 verts; brush feels smooth at this density
 
-    // === SPHÈRE PARAMETERS ===
-    const SPHERE_RADIUS = 12;
-    const USE_SPHERE = true;           // ← passe à false pour revenir en plat rapidement
-    const POLE_COMPRESSION = 0.92;     // réduit un peu la distorsion aux pôles (entre 0.7 et 1.0)
-
-    const GRASS_THICKNESS = 0.035;
-    const SAND_SKIRT_DEPTH = 0.035;
-    const OCEAN_THICKNESS = 0.12;
-
-    const HEIGHT_SCALE = 1.8;
-    const OCEAN_RADIUS = SPHERE_RADIUS + WATER_H * HEIGHT_SCALE - 0.006;
+    // Biome height bands (relative to sea level). Below sea level is hidden by the
+    // water sphere, so colors there only show if the brush carves below water.
+    const SAND_TOP   = 0.25;
+    const GRASS_TOP  = 1.2;
+    const ROCK_TOP   = 2.4;
+    // Above ROCK_TOP we fade into snow over SNOW_FADE units.
+    const SNOW_FADE  = 0.4;
 
     const COL = {
-      grass: 0x4FAE4F,
-      sandSide: 0xD4BC85,
-      water: 0x3FA1DC,
-      sky: 0x9ED4F2,
+      water:     0x3FA1DC,
+      deep:      0x12243a,
+      shore:     0x8fb4c8,
+      sand:      0xEDDFB8,
+      grass:     0x4FAE4F,
+      grassDark: 0x2f7a36,
+      rock:      0x7d6a5a,
+      snow:      0xf0f4f8,
     };
-
-    // ---------- Tile shape (canonical orientations) ----------
-    function getLandRect(type) {
-      switch (type) {
-        case 'LAND_FULL': return { x: 0, z: 0, w: 1, d: 1 };
-        case 'COAST_EDGE': return { x: 0, z: 0, w: 1, d: 1 - COAST_W };
-        case 'COAST_CORNER': return { x: COAST_W, z: 0, w: 1 - COAST_W, d: 1 - COAST_W };
-        case 'LAND_STRIP': return { x: STRIP_W, z: 0, w: 1 - 2 * STRIP_W, d: 1 };
-        case 'PENINSULA': return { x: PEN_PAD, z: 0, w: 1 - 2 * PEN_PAD, d: 1 - PEN_PAD };
-        case 'ISLAND': return { x: ISLAND_PAD, z: ISLAND_PAD, w: 1 - 2 * ISLAND_PAD, d: 1 - 2 * ISLAND_PAD };
-        default: return null;
-      }
-    }
-
-    const matGrassTop = new THREE.MeshStandardMaterial({
-      color: COL.grass,
-      roughness: 0.92,
-      side: THREE.DoubleSide,
-    });
-    const matSandSide = new THREE.MeshStandardMaterial({
-      color: COL.sandSide,
-      roughness: 0.95,
-      side: THREE.DoubleSide,
-    });
-    const matWater = new THREE.MeshStandardMaterial({ color: COL.water, roughness: 0.30, metalness: 0.05 });
-
-    const matSphericalGrid = new THREE.LineBasicMaterial({
-      color: 0x111111,
-      transparent: true,
-      opacity: 0.32,
-      depthTest: true,
-      depthWrite: false,
-    });
-
-    function getCornerStates(type, junctions) {
-      const r = { nw: 'sharp', ne: 'sharp', se: 'sharp', sw: 'sharp' };
-      switch (type) {
-        case 'LAND_FULL':
-          if (junctions.nw) r.nw = 'in';
-          if (junctions.ne) r.ne = 'in';
-          if (junctions.se) r.se = 'in';
-          if (junctions.sw) r.sw = 'in';
-          break;
-        case 'COAST_EDGE':
-          if (junctions.nw) r.nw = 'in';
-          if (junctions.ne) r.ne = 'in';
-          break;
-        case 'COAST_CORNER':
-          r.sw = 'out';
-          if (junctions.ne) r.ne = 'in';
-          break;
-        case 'LAND_STRIP':
-          break;
-        case 'PENINSULA':
-          r.sw = 'out';
-          r.se = 'out';
-          break;
-        case 'ISLAND':
-          r.nw = 'out'; r.ne = 'out'; r.se = 'out'; r.sw = 'out';
-          break;
-      }
-      return r;
-    }
-
-    function makeRoundedShape(rect, outR, inR, corners) {
-      const s = new THREE.Shape();
-      const x0 = rect.x, x1 = rect.x + rect.w;
-      const yN = -rect.z;
-      const yS = -(rect.z + rect.d);
-
-      const radius = (state) => state === 'out' ? outR : (state === 'in' ? inR : 0);
-
-      const rSW = radius(corners.sw);
-      if (rSW > 0) s.moveTo(x0 + rSW, yS); else s.moveTo(x0, yS);
-
-      const rSE = radius(corners.se);
-      if (rSE > 0) {
-        s.lineTo(x1 - rSE, yS);
-        if (corners.se === 'out') s.absarc(x1 - rSE, yS + rSE, rSE, -Math.PI / 2, 0, false);
-        else s.absarc(x1, yS, rSE, Math.PI, Math.PI / 2, true);
-      } else {
-        s.lineTo(x1, yS);
-      }
-
-      const rNE = radius(corners.ne);
-      if (rNE > 0) {
-        s.lineTo(x1, yN - rNE);
-        if (corners.ne === 'out') s.absarc(x1 - rNE, yN - rNE, rNE, 0, Math.PI / 2, false);
-        else s.absarc(x1, yN, rNE, 3 * Math.PI / 2, Math.PI, true);
-      } else {
-        s.lineTo(x1, yN);
-      }
-
-      const rNW = radius(corners.nw);
-      if (rNW > 0) {
-        s.lineTo(x0 + rNW, yN);
-        if (corners.nw === 'out') s.absarc(x0 + rNW, yN - rNW, rNW, Math.PI / 2, Math.PI, false);
-        else s.absarc(x0, yN, rNW, 0, 3 * Math.PI / 2, true);
-      } else {
-        s.lineTo(x0, yN);
-      }
-
-      if (rSW > 0) {
-        s.lineTo(x0, yS + rSW);
-        if (corners.sw === 'out') s.absarc(x0 + rSW, yS + rSW, rSW, Math.PI, 3 * Math.PI / 2, false);
-        else s.absarc(x0, yS, rSW, Math.PI / 2, 0, true);
-      } else {
-        s.lineTo(x0, yS);
-      }
-
-      s.closePath();
-      return s;
-    }
-
-    function getCoastInsets(type, corners = null) {
-      const i = { w: 0, e: 0, n: 0, s: 0 };
-
-      switch (type) {
-        case 'LAND_FULL':
-          if (corners?.nw || corners?.ne) i.n = SAND_W;
-          if (corners?.ne || corners?.se) i.e = SAND_W;
-          if (corners?.se || corners?.sw) i.s = SAND_W;
-          if (corners?.sw || corners?.nw) i.w = SAND_W;
-          return i;
-
-        case 'COAST_EDGE':
-          i.s = SAND_W;
-          if (corners?.nw || corners?.ne) i.n = SAND_W;
-          return i;
-
-        case 'COAST_CORNER':
-          i.s = SAND_W;
-          i.w = SAND_W;
-          if (corners?.ne) i.n = SAND_W;
-          if (corners?.se) i.e = SAND_W;
-          return i;
-
-        case 'LAND_STRIP':
-          i.w = SAND_W;
-          i.e = SAND_W;
-          return i;
-
-        case 'PENINSULA':
-          i.w = SAND_W;
-          i.e = SAND_W;
-          i.s = SAND_W;
-          return i;
-
-        case 'ISLAND':
-          return { w: SAND_W, e: SAND_W, n: SAND_W, s: SAND_W };
-      }
-      return i;
-    }
-
-    function getGrassRect(type, sandRect, corners = null) {
-      const i = getCoastInsets(type, corners);
-      return {
-        x: sandRect.x + i.w,
-        z: sandRect.z + i.n,
-        w: sandRect.w - i.w - i.e,
-        d: sandRect.d - i.n - i.s,
-      };
-    }
-
-    function cleanLoop(points) {
-      const pts = points.slice();
-      if (pts.length > 1) {
-        const a = pts[0];
-        const b = pts[pts.length - 1];
-        if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6) {
-          pts.pop();
-        }
-      }
-      return pts;
-    }
-
-    function resampleClosedLoop(points, count) {
-      const pts = cleanLoop(points);
-      if (pts.length < 2) return pts;
-
-      const lengths = [];
-      let total = 0;
-
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % pts.length];
-        const len = Math.hypot(b.x - a.x, b.y - a.y);
-        lengths.push(len);
-        total += len;
-      }
-
-      const result = [];
-
-      for (let i = 0; i < count; i++) {
-        const target = (i / count) * total;
-        let acc = 0;
-
-        for (let j = 0; j < pts.length; j++) {
-          const len = lengths[j];
-          if (acc + len >= target) {
-            const a = pts[j];
-            const b = pts[(j + 1) % pts.length];
-            const t = len === 0 ? 0 : (target - acc) / len;
-
-            result.push({
-              x: a.x + (b.x - a.x) * t,
-              y: a.y + (b.y - a.y) * t,
-            });
-
-            break;
-          }
-
-          acc += len;
-        }
-      }
-
-      return result;
-    }
-    function pointSegmentDistance(p, a, b) {
-      const vx = b.x - a.x;
-      const vy = b.y - a.y;
-      const wx = p.x - a.x;
-      const wy = p.y - a.y;
-
-      const lenSq = vx * vx + vy * vy;
-      if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
-
-      let t = (wx * vx + wy * vy) / lenSq;
-      t = Math.max(0, Math.min(1, t));
-
-      const px = a.x + t * vx;
-      const py = a.y + t * vy;
-
-      return Math.hypot(p.x - px, p.y - py);
-    }
-
-    function distanceToLoop(p, loop) {
-      let best = Infinity;
-
-      for (let i = 0; i < loop.length; i++) {
-        const a = loop[i];
-        const b = loop[(i + 1) % loop.length];
-        best = Math.min(best, pointSegmentDistance(p, a, b));
-      }
-
-      return best;
-    }
-
-    function buildSlopeRibbon(outerPtsRaw, innerPtsRaw, outerY, innerY) {
-      const outerClean = cleanLoop(outerPtsRaw);
-      const innerClean = cleanLoop(innerPtsRaw);
-
-      if (outerClean.length < 3 || innerClean.length < 3) return null;
-
-      const count = Math.max(
-        96,
-        Math.min(192, Math.max(outerClean.length, innerClean.length) * 2)
-      );
-
-      const outerPts = resampleClosedLoop(outerClean, count);
-      const innerPts = resampleClosedLoop(innerClean, count);
-
-      const n = count;
-      const positions = new Float32Array(n * 6);
-      const normals = new Float32Array(n * 6);
-
-      const SEAM_EPS = 0.012;
-
-      for (let i = 0; i < n; i++) {
-        const outer = outerPts[i];
-        const inner = innerPts[i];
-
-        // Important:
-        // if the outer point is actually touching the grass contour,
-        // lift it to grass height so tile borders connect cleanly.
-        const distToInner = distanceToLoop(outer, innerClean);
-        const correctedOuterY = distToInner < SEAM_EPS ? innerY : outerY;
-
-        // outer / water-side point
-        positions[i * 3 + 0] = outer.x;
-        positions[i * 3 + 1] = correctedOuterY;
-        positions[i * 3 + 2] = -outer.y;
-
-        // inner / grass-side point
-        positions[(n + i) * 3 + 0] = inner.x;
-        positions[(n + i) * 3 + 1] = innerY;
-        positions[(n + i) * 3 + 2] = -inner.y;
-
-        // soft visual normals to avoid dark triangle artifacts
-        normals[i * 3 + 0] = 0;
-        normals[i * 3 + 1] = 1;
-        normals[i * 3 + 2] = 0;
-
-        normals[(n + i) * 3 + 0] = 0;
-        normals[(n + i) * 3 + 1] = 1;
-        normals[(n + i) * 3 + 2] = 0;
-      }
-
-      const indices = [];
-
-      for (let i = 0; i < n; i++) {
-        const i1 = (i + 1) % n;
-
-        indices.push(i, i1, i1 + n);
-        indices.push(i, i1 + n, i + n);
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      geo.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-      geo.setIndex(indices);
-
-      return geo;
-    }
-
-    function buildLoopSkirt(pointsRaw, topY, bottomY) {
-      const pts = cleanLoop(pointsRaw);
-      if (pts.length < 2) return null;
-
-      const n = pts.length;
-      const positions = new Float32Array(n * 6);
-
-      for (let i = 0; i < n; i++) {
-        const p = pts[i];
-
-        positions[i * 3 + 0] = p.x;
-        positions[i * 3 + 1] = topY;
-        positions[i * 3 + 2] = -p.y;
-
-        positions[(n + i) * 3 + 0] = p.x;
-        positions[(n + i) * 3 + 1] = bottomY;
-        positions[(n + i) * 3 + 2] = -p.y;
-      }
-
-      const indices = [];
-
-      for (let i = 0; i < n; i++) {
-        const i1 = (i + 1) % n;
-
-        indices.push(i, i1, i1 + n);
-        indices.push(i, i1 + n, i + n);
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-
-      return geo;
-    }
-
-    /* function buildFlatRibbon(outerPts, innerPts, y) {
-      if (outerPts.length !== innerPts.length) return null;
-
-      const n = outerPts.length;
-      const positions = new Float32Array(n * 6);
-
-      for (let i = 0; i < n; i++) {
-        const o = outerPts[i];
-        const inn = innerPts[i];
-
-        // outer point
-        positions[i * 3 + 0] = o.x;
-        positions[i * 3 + 1] = y;
-        positions[i * 3 + 2] = -o.y;
-
-        // inner point
-        positions[(n + i) * 3 + 0] = inn.x;
-        positions[(n + i) * 3 + 1] = y;
-        positions[(n + i) * 3 + 2] = -inn.y;
-      }
-
-      const indices = [];
-      const eps = 1e-5;
-
-      for (let i = 0; i < n; i++) {
-        const i1 = (i + 1) % n;
-
-        const a = outerPts[i];
-        const b = outerPts[i1];
-
-        if (Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps) continue;
-
-        indices.push(i, i1, i1 + n);
-        indices.push(i, i1 + n, i + n);
-      }
-
-      if (indices.length === 0) return null;
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-
-      return geo;
-    }
-*/
-    const CURVE_SEGMENTS = 24;
-
-    function buildTile(type, junctions) {
-      const g = new THREE.Group();
-
-      if (type === 'WATER') return g;
-
-      const sandRect = getLandRect(type);
-      if (!sandRect) return g;
-
-      const safeJunctions = junctions || {
-        nw: false,
-        ne: false,
-        se: false,
-        sw: false,
-      };
-
-      const states = getCornerStates(type, safeJunctions);
-
-      const sandShape = makeRoundedShape(
-        sandRect,
-        CORNER_R,
-        COAST_W,
-        states
-      );
-
-      const grassRect = getGrassRect(type, sandRect);
-
-      const grassShape = makeRoundedShape(
-        grassRect,
-        CORNER_R,
-        COAST_W + SAND_W,
-        states
-      );
-
-      const sandPts = sandShape.extractPoints(CURVE_SEGMENTS).shape;
-      const grassPts = grassShape.extractPoints(CURVE_SEGMENTS).shape;
-
-      const slopeGeo = buildSlopeRibbon(
-        sandPts,
-        grassPts,
-        WATER_H + 0.002,
-        GRASS_H
-      );
-
-      if (slopeGeo) {
-        const slope = new THREE.Mesh(slopeGeo, matSandSide);
-        slope.castShadow = false;
-        slope.receiveShadow = true;
-        g.add(slope);
-      }
-
-      const sandOuterSkirtGeo = buildLoopSkirt(
-        sandPts,
-        WATER_H + 0.002,
-        WATER_H - SAND_SKIRT_DEPTH
-      );
-
-      if (sandOuterSkirtGeo) {
-        const sandOuterSkirt = new THREE.Mesh(sandOuterSkirtGeo, matSandSide);
-        sandOuterSkirt.castShadow = false;
-        sandOuterSkirt.receiveShadow = true;
-        g.add(sandOuterSkirt);
-      }
-
-      const capGeo = new THREE.ExtrudeGeometry(grassShape, {
-        depth: GRASS_THICKNESS,
-        bevelEnabled: false,
-        steps: 1,
-        curveSegments: CURVE_SEGMENTS,
-      });
-
-      capGeo.rotateX(-Math.PI / 2);
-      capGeo.translate(0, GRASS_H - GRASS_THICKNESS + 0.003, 0);
-
-      const cap = new THREE.Mesh(capGeo, matGrassTop);
-      cap.castShadow = true;
-      cap.receiveShadow = true;
-      g.add(cap);
-
-      return g;
-    }
-
-    function classifyType(n) {
-      const c = (n.n ? 1 : 0) + (n.e ? 1 : 0) + (n.s ? 1 : 0) + (n.w ? 1 : 0);
-      if (c === 0) return { type: 'LAND_FULL', rotY: 0 };
-      if (c === 4) return { type: 'ISLAND', rotY: 0 };
-      if (c === 1) {
-        if (n.s) return { type: 'COAST_EDGE', rotY: 0 };
-        if (n.e) return { type: 'COAST_EDGE', rotY: Math.PI / 2 };
-        if (n.n) return { type: 'COAST_EDGE', rotY: Math.PI };
-        if (n.w) return { type: 'COAST_EDGE', rotY: 3 * Math.PI / 2 };
-      }
-      if (c === 2) {
-        if (n.e && n.w) return { type: 'LAND_STRIP', rotY: 0 };
-        if (n.n && n.s) return { type: 'LAND_STRIP', rotY: Math.PI / 2 };
-        if (n.s && n.w) return { type: 'COAST_CORNER', rotY: 0 };
-        if (n.s && n.e) return { type: 'COAST_CORNER', rotY: Math.PI / 2 };
-        if (n.n && n.e) return { type: 'COAST_CORNER', rotY: Math.PI };
-        if (n.n && n.w) return { type: 'COAST_CORNER', rotY: 3 * Math.PI / 2 };
-      }
-      if (c === 3) {
-        if (!n.n) return { type: 'PENINSULA', rotY: 0 };
-        if (!n.w) return { type: 'PENINSULA', rotY: Math.PI / 2 };
-        if (!n.s) return { type: 'PENINSULA', rotY: Math.PI };
-        if (!n.e) return { type: 'PENINSULA', rotY: 3 * Math.PI / 2 };
-      }
-      return { type: 'LAND_FULL', rotY: 0 };
-    }
-
-    const WORLD_TO_CANON = [
-      { nw: 'nw', ne: 'ne', se: 'se', sw: 'sw' }, // rotY = 0
-      { nw: 'ne', ne: 'se', se: 'sw', sw: 'nw' }, // rotY = π/2
-      { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' }, // rotY = π
-      { nw: 'sw', ne: 'nw', se: 'ne', sw: 'se' }, // rotY = 3π/2
-    ];
-
-    function determineTile(neighbors, worldDiagonals) {
-      const info = classifyType(neighbors);
-      const k = ((Math.round(info.rotY / (Math.PI / 2)) % 4) + 4) % 4;
-      const map = WORLD_TO_CANON[k];
-      const junctions = { nw: false, ne: false, se: false, sw: false };
-      for (const w of ['nw', 'ne', 'se', 'sw']) {
-        if (worldDiagonals[w]) junctions[map[w]] = true;
-      }
-      return { type: info.type, rotY: info.rotY, junctions };
-    }
-
-    // ---------- Seedable PRNG (mulberry32) ----------
-    function makeRng(seed) {
-      let a = (seed | 0) || 1;
-      return () => {
-        a = (a + 0x6D2B79F5) | 0;
-        let t = a;
-        t = Math.imul(t ^ (t >>> 15), t | 1);
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-      };
-    }
-
-    function gridToSphere(gx, gz, size, height = 0) {
-      const lon = (gx / size) * Math.PI * 2 - Math.PI;
-
-      let lat = Math.PI / 2 - (gz / size) * Math.PI;
-      lat *= POLE_COMPRESSION;
-
-      const radius = SPHERE_RADIUS + height * HEIGHT_SCALE;
-      const cosLat = Math.cos(lat);
-
-      return new THREE.Vector3(
-        radius * cosLat * Math.cos(lon),
-        radius * Math.sin(lat),
-        radius * cosLat * Math.sin(lon)
-      );
-    }
-
-    function buildSphericalGrid(size, height = GRASS_H + 0.025) {
-      const positions = [];
-      const segments = Math.max(72, size * 6);
-
-      function addSegment(a, b) {
-        positions.push(a.x, a.y, a.z);
-        positions.push(b.x, b.y, b.z);
-      }
-
-      // Lignes verticales : longitudes
-      for (let x = 0; x <= size; x++) {
-        let prev = null;
-
-        for (let i = 0; i <= segments; i++) {
-          const gz = (i / segments) * size;
-          const p = gridToSphere(x, gz, size, height);
-
-          if (prev) addSegment(prev, p);
-          prev = p;
-        }
-      }
-
-      // Lignes horizontales : latitudes
-      for (let z = 0; z <= size; z++) {
-        let prev = null;
-
-        for (let i = 0; i <= segments; i++) {
-          const gx = (i / segments) * size;
-          const p = gridToSphere(gx, z, size, height);
-
-          if (prev) addSegment(prev, p);
-          prev = p;
-        }
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute(
-        "position",
-        new THREE.Float32BufferAttribute(positions, 3)
-      );
-
-      const lines = new THREE.LineSegments(geo, matSphericalGrid);
-      lines.renderOrder = 10;
-
-      return lines;
-    }
-
-    function rotateLocalInCell(lx, lz, rotY) {
-      const v = new THREE.Vector3(lx - 0.5, 0, lz - 0.5);
-      v.applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
-      return {
-        x: v.x + 0.5,
-        z: v.z + 0.5,
-      };
-    }
-
-    // Adaptive midpoint tessellation: subdivides any triangle edge longer than
-    // `maxEdgeLength`. Short edges (notably tile boundaries already sampled at
-    // ~CURVE_SEGMENTS resolution) are left untouched, which keeps neighbour
-    // tiles crack-free after warping.
-    function tessellateOnce(geometry, maxEdgeLength) {
-      const pos = geometry.attributes.position;
-      if (!pos) return geometry;
-
-      const verts = new Array(pos.count);
-      for (let i = 0; i < pos.count; i++) {
-        verts[i] = [pos.getX(i), pos.getY(i), pos.getZ(i)];
-      }
-
-      const oldIndex = geometry.index;
-      const indices = [];
-      if (oldIndex) {
-        for (let i = 0; i < oldIndex.count; i++) indices.push(oldIndex.getX(i));
-      } else {
-        for (let i = 0; i < pos.count; i++) indices.push(i);
-      }
-
-      const midCache = new Map();
-      function midpoint(a, b) {
-        const key = a < b ? a + ',' + b : b + ',' + a;
-        let idx = midCache.get(key);
-        if (idx !== undefined) return idx;
-        const pa = verts[a], pb = verts[b];
-        idx = verts.length;
-        verts.push([(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2]);
-        midCache.set(key, idx);
-        return idx;
-      }
-      function distSq(a, b) {
-        const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-        return dx * dx + dy * dy + dz * dz;
-      }
-
-      const maxSq = maxEdgeLength * maxEdgeLength;
-      const newIndices = [];
-      let changed = false;
-
-      for (let i = 0; i < indices.length; i += 3) {
-        const a = indices[i], b = indices[i + 1], c = indices[i + 2];
-        const pa = verts[a], pb = verts[b], pc = verts[c];
-        const sAB = distSq(pa, pb) > maxSq;
-        const sBC = distSq(pb, pc) > maxSq;
-        const sCA = distSq(pc, pa) > maxSq;
-        const n = (sAB ? 1 : 0) + (sBC ? 1 : 0) + (sCA ? 1 : 0);
-
-        if (n === 0) {
-          newIndices.push(a, b, c);
-        } else if (n === 1) {
-          if (sAB) {
-            const m = midpoint(a, b);
-            newIndices.push(a, m, c, m, b, c);
-          } else if (sBC) {
-            const m = midpoint(b, c);
-            newIndices.push(a, b, m, a, m, c);
-          } else {
-            const m = midpoint(c, a);
-            newIndices.push(a, b, m, m, b, c);
-          }
-          changed = true;
-        } else if (n === 2) {
-          if (sAB && sBC) {
-            const mab = midpoint(a, b);
-            const mbc = midpoint(b, c);
-            newIndices.push(a, mab, c, mab, b, mbc, mab, mbc, c);
-          } else if (sBC && sCA) {
-            const mbc = midpoint(b, c);
-            const mca = midpoint(c, a);
-            newIndices.push(a, b, mbc, a, mbc, mca, mca, mbc, c);
-          } else {
-            const mab = midpoint(a, b);
-            const mca = midpoint(c, a);
-            newIndices.push(a, mab, mca, mab, b, c, mca, mab, c);
-          }
-          changed = true;
-        } else {
-          const mab = midpoint(a, b);
-          const mbc = midpoint(b, c);
-          const mca = midpoint(c, a);
-          newIndices.push(a, mab, mca, b, mbc, mab, c, mca, mbc, mab, mbc, mca);
-          changed = true;
-        }
-      }
-
-      if (!changed) return geometry;
-
-      const newGeo = new THREE.BufferGeometry();
-      const arr = new Float32Array(verts.length * 3);
-      for (let i = 0; i < verts.length; i++) {
-        arr[i * 3]     = verts[i][0];
-        arr[i * 3 + 1] = verts[i][1];
-        arr[i * 3 + 2] = verts[i][2];
-      }
-      newGeo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-      newGeo.setIndex(newIndices);
-      return newGeo;
-    }
-
-    function tessellateGeometry(geometry, maxEdgeLength, maxIters = 6, maxVerts = 8000) {
-      let g = geometry;
-      for (let i = 0; i < maxIters; i++) {
-        if (g.attributes.position.count > maxVerts) break;
-        const next = tessellateOnce(g, maxEdgeLength);
-        if (next === g) break;
-        g = next;
-      }
-      return g;
-    }
-
-    function warpGeometryToSphere(geometry, cellX, cellZ, rotY) {
-      const pos = geometry.attributes.position;
-      if (!pos) return;
-
-      for (let i = 0; i < pos.count; i++) {
-        const localX = pos.getX(i);
-        const height = pos.getY(i);
-        const localZ = pos.getZ(i);
-
-        const rotated = rotateLocalInCell(localX, localZ, rotY);
-
-        const spherePos = gridToSphere(
-          cellX + rotated.x,
-          cellZ + rotated.z,
-          mapSize,
-          height
-        );
-
-        pos.setXYZ(i, spherePos.x, spherePos.y, spherePos.z);
-      }
-
-      pos.needsUpdate = true;
-      geometry.computeVertexNormals();
-      geometry.computeBoundingSphere();
-      geometry.computeBoundingBox();
-    }
-
-    // Max triangle edge length (in 1×1 cell coords) that survives untouched.
-    // Anything longer gets subdivided so warped tiles actually follow the
-    // sphere instead of cutting under it as flat chords.
-    const TILE_TESSELLATE_MAX_EDGE = 0.14;
-
-    function warpGroupToSphere(group, cellX, cellZ, rotY) {
-      group.traverse((o) => {
-        if (o.isMesh && o.geometry) {
-          let geo = o.geometry.clone();
-          geo = tessellateGeometry(geo, TILE_TESSELLATE_MAX_EDGE);
-          o.geometry = geo;
-          warpGeometryToSphere(geo, cellX, cellZ, rotY);
-
-          o.position.set(0, 0, 0);
-          o.rotation.set(0, 0, 0);
-          o.scale.set(1, 1, 1);
-        }
-      });
-    }
-
-    function buildSphericalCellPickGeo(cellX, cellZ, height = WATER_H + 0.03, seg = 4) {
-      const positions = [];
-      const indices = [];
-
-      for (let z = 0; z <= seg; z++) {
-        for (let x = 0; x <= seg; x++) {
-          const p = gridToSphere(
-            cellX + x / seg,
-            cellZ + z / seg,
-            mapSize,
-            height
-          );
-
-          positions.push(p.x, p.y, p.z);
-        }
-      }
-
-      for (let z = 0; z < seg; z++) {
-        for (let x = 0; x < seg; x++) {
-          const a = z * (seg + 1) + x;
-          const b = a + 1;
-          const c = a + (seg + 1);
-          const d = c + 1;
-
-          indices.push(a, b, d);
-          indices.push(a, d, c);
-        }
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute(
-        "position",
-        new THREE.Float32BufferAttribute(positions, 3)
-      );
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-
-      return geo;
-    }
-
-    // Courbe un mesh pour qu'il suive la surface de la sphère
-    // function bendToSphere(mesh, baseX, baseZ) {
-    //   if (!USE_SPHERE || !mesh.geometry) return;
-
-    //   const position = mesh.geometry.attributes.position;
-    //   if (!position) return;
-
-    //   for (let i = 0; i < position.count; i++) {
-    //     let x = position.getX(i) + baseX;
-    //     let y = position.getY(i);
-    //     let z = position.getZ(i) + baseZ;
-
-    //     const vec = new THREE.Vector3(x, y, z);
-    //     const len = vec.length();
-
-    //     // Projection sur la sphère + légère extrusion selon la hauteur
-    //     vec.normalize().multiplyScalar(SPHERE_RADIUS + y * 1.8);
-
-    //     position.setXYZ(i, vec.x, vec.y, vec.z);
-    //   }
-
-    //   position.needsUpdate = true;
-    //   mesh.geometry.computeVertexNormals();
-    // }
-
-    function lerp(a, b, t) { return a + (b - a) * t; }
-    function smoothstep(t) { return t * t * (3 - 2 * t); }
-
-    function buildLandWaterGrid(size, waterProb, structure, rng) {
-      const featureSize = 0.5 + Math.pow(structure, 3) * size * 0.4;
-
-      const ng = Math.ceil(size / featureSize) + 2;
-      const noise = new Float32Array(ng * ng);
-      for (let i = 0; i < noise.length; i++) noise[i] = rng();
-      const at = (gx, gz) => noise[gz * ng + gx];
-
-      function sample(wx, wz) {
-        const fx = wx / featureSize;
-        const fz = wz / featureSize;
-        const ix = Math.floor(fx);
-        const iz = Math.floor(fz);
-        const tx = smoothstep(fx - ix);
-        const tz = smoothstep(fz - iz);
-        return lerp(
-          lerp(at(ix, iz), at(ix + 1, iz), tx),
-          lerp(at(ix, iz + 1), at(ix + 1, iz + 1), tx),
-          tz,
-        );
-      }
-
-      const total = size * size;
-      const values = new Float32Array(total);
-      for (let z = 0; z < size; z++) {
-        for (let x = 0; x < size; x++) {
-          values[z * size + x] = sample(x + 0.5, z + 0.5);
-        }
-      }
-
-      const nWater = Math.round(waterProb * total);
-      const sorted = Array.from(values).sort((a, b) => a - b);
-      const threshold = nWater > 0 ? sorted[nWater - 1] : -Infinity;
-
-      return Array.from({ length: size }, (_, z) =>
-        Array.from({ length: size }, (_, x) => values[z * size + x] > threshold ? 1 : 0),
-      );
-    }
 
     // ---------- Scene ----------
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(COL.sky);
-    scene.fog = new THREE.Fog(COL.sky, 35, 90);
+    scene.background = new THREE.Color(0x02030a);
 
-    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 300);
-    camera.position.set(0, 15, 25);
+    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 600);
+    camera.position.set(0, 15, 28);
 
     const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
     renderer.setPixelRatio(devicePixelRatio);
@@ -921,391 +41,520 @@
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0, 0);
-    controls.maxPolarAngle = Math.PI * 0.49;
+    // Paint mode default ON — right-button is reserved for the brush, not pan.
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: null,
+    };
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.95);
-    sun.position.set(18, 28, 12);
+    // Sun is the only light source — night side stays black.
+    const SUN_DIRECTION = new THREE.Vector3(1, 0.35, 0.6).normalize();
+    const SUN_DISTANCE = 80;
+    const sun = new THREE.DirectionalLight(0xfff1d4, 1.50);
+    sun.position.copy(SUN_DIRECTION).multiplyScalar(SUN_DISTANCE);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -30;
-    sun.shadow.camera.right = 30;
-    sun.shadow.camera.top = 30;
-    sun.shadow.camera.bottom = -30;
-    sun.shadow.camera.near = 0.5;
-    sun.shadow.camera.far = 100;
+    sun.shadow.camera.left = -16;
+    sun.shadow.camera.right = 16;
+    sun.shadow.camera.top = 16;
+    sun.shadow.camera.bottom = -16;
+    sun.shadow.camera.near = SUN_DISTANCE - BASE_RADIUS - 4;
+    sun.shadow.camera.far  = SUN_DISTANCE + BASE_RADIUS + 8;
     scene.add(sun);
 
-    let mapGroup = null;
-    let gridHelper = null;
-    let mapSize = 0;
-    let grid = null;
-    let tileWraps = null;
+    const sunMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(6, 32, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfff0c0, fog: false })
+    );
+    sunMesh.position.copy(SUN_DIRECTION).multiplyScalar(180);
+    scene.add(sunMesh);
 
-    function wrapX(x) {
-      return ((x % mapSize) + mapSize) % mapSize;
+    // ---------- Planet group (rotates as a whole) ----------
+    const planetGroup = new THREE.Group();
+    scene.add(planetGroup);
+
+    // Icosphere — every vertex stores its unit direction and a signed height offset.
+    // Calling toNonIndexed gives us a flat vertex list with no shared indices, which
+    // makes per-vertex coloring trivial (no shared color across faces).
+    const planetGeo = new THREE.IcosahedronGeometry(BASE_RADIUS, ICO_DETAIL).toNonIndexed();
+    const posAttr = planetGeo.attributes.position;
+    const N = posAttr.count;
+
+    const unitDirs = new Float32Array(N * 3);
+    const heights  = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const x = posAttr.array[3 * i];
+      const y = posAttr.array[3 * i + 1];
+      const z = posAttr.array[3 * i + 2];
+      const inv = 1 / Math.hypot(x, y, z);
+      unitDirs[3 * i]     = x * inv;
+      unitDirs[3 * i + 1] = y * inv;
+      unitDirs[3 * i + 2] = z * inv;
     }
 
-    function isWaterAt(x, z) {
-      // En haut/bas, on garde une limite polaire
-      if (z < 0 || z >= mapSize) return true;
+    const colorArr = new Float32Array(N * 3);
+    planetGeo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
 
-      // Gauche/droite se rejoignent autour de la sphère
-      const wx = wrapX(x);
+    const planetMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.92,
+      metalness: 0.0,
+      flatShading: false,
+    });
+    const planetMesh = new THREE.Mesh(planetGeo, planetMat);
+    planetMesh.castShadow = true;
+    planetMesh.receiveShadow = true;
+    planetGroup.add(planetMesh);
 
-      return grid[z][wx] === 0;
+    // Ocean — a smooth sphere just above base radius. Land that pokes above it shows;
+    // anything below stays hidden inside the sphere.
+    const matWater = new THREE.MeshStandardMaterial({
+      color: COL.water,
+      roughness: 0.30,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.92,
+    });
+    const oceanMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(OCEAN_RADIUS, 96, 64),
+      matWater
+    );
+    oceanMesh.receiveShadow = true;
+    planetGroup.add(oceanMesh);
+
+    function smoothstep(a, b, x) {
+      const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
     }
 
-    function disposeGroup(group) {
-      group.traverse(o => {
-        if (o.geometry) o.geometry.dispose();
-        // shared materials are intentionally NOT disposed here
-      });
-    }
+    // Color every vertex once based on its height.
+    function colorVertex(i) {
+      const h = heights[i];
+      let r, g, b;
 
-    // Invisible 1x1 click target attached to every wrap so both land and water cells
-    // can be picked. Geometry/material are shared across cells.
-    const PICK_GEO = new THREE.PlaneGeometry(TILE, TILE);
-    const PICK_MAT = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
-
-    function buildCellWrap(x, z) {
-      const isLand = grid[z][x] === 1;
-
-      const neighbors = {
-        n: isWaterAt(x, z - 1),
-        e: isWaterAt(x + 1, z),
-        s: isWaterAt(x, z + 1),
-        w: isWaterAt(x - 1, z),
-      };
-
-      const worldDiagonals = {
-        nw: isWaterAt(x - 1, z - 1),
-        ne: isWaterAt(x + 1, z - 1),
-        se: isWaterAt(x + 1, z + 1),
-        sw: isWaterAt(x - 1, z + 1),
-      };
-
-      const info = isLand
-        ? determineTile(neighbors, worldDiagonals)
-        : { type: "WATER", rotY: 0, junctions: null };
-
-      const tile = buildTile(info.type, info.junctions);
-
-      const wrap = new THREE.Group();
-
-      if (USE_SPHERE) {
-        tile.position.set(0, 0, 0);
-
-        warpGroupToSphere(tile, x, z, info.rotY);
-
-        wrap.position.set(0, 0, 0);
-        wrap.rotation.set(0, 0, 0);
-        wrap.add(tile);
-
-        const pick = new THREE.Mesh(
-          buildSphericalCellPickGeo(x, z),
-          PICK_MAT
-        );
-        wrap.add(pick);
+      if (h < -0.4) {
+        ({ r, g, b } = new THREE.Color(COL.deep));
+      } else if (h < SEA_LEVEL) {
+        const t = (h + 0.4) / (SEA_LEVEL + 0.4);
+        const c = new THREE.Color(COL.deep).lerp(new THREE.Color(COL.shore), t);
+        r = c.r; g = c.g; b = c.b;
+      } else if (h < SAND_TOP) {
+        ({ r, g, b } = new THREE.Color(COL.sand));
+      } else if (h < GRASS_TOP) {
+        const t = smoothstep(SAND_TOP, SAND_TOP + 0.15, h);
+        const c = new THREE.Color(COL.sand).lerp(new THREE.Color(COL.grass), t);
+        r = c.r; g = c.g; b = c.b;
+      } else if (h < ROCK_TOP) {
+        const t = smoothstep(GRASS_TOP, GRASS_TOP + 0.4, h);
+        const c = new THREE.Color(COL.grass).lerp(new THREE.Color(COL.rock), t);
+        r = c.r; g = c.g; b = c.b;
       } else {
-        tile.position.set(-0.5, 0, -0.5);
-
-        wrap.add(tile);
-        wrap.position.set(
-          x - mapSize / 2 + 0.5,
-          0,
-          z - mapSize / 2 + 0.5
-        );
-        wrap.rotation.y = info.rotY;
-
-        const pick = new THREE.Mesh(PICK_GEO, PICK_MAT);
-        pick.rotation.x = -Math.PI / 2;
-        pick.position.y = GRASS_H * 0.5;
-        wrap.add(pick);
+        const t = smoothstep(ROCK_TOP, ROCK_TOP + SNOW_FADE, h);
+        const c = new THREE.Color(COL.rock).lerp(new THREE.Color(COL.snow), t);
+        r = c.r; g = c.g; b = c.b;
       }
 
-      wrap.userData.gridX = x;
-      wrap.userData.gridZ = z;
-
-      return wrap;
+      colorArr[3 * i]     = r;
+      colorArr[3 * i + 1] = g;
+      colorArr[3 * i + 2] = b;
     }
 
-    function generate(size, waterProb, structure, seed) {
-      if (mapGroup) {
-        scene.remove(mapGroup);
-        disposeGroup(mapGroup);
-      }
-      mapGroup = new THREE.Group();
-      mapSize = size;
-
-      // === OCÉAN SPHÉRIQUE ===
-      const ocean = new THREE.Mesh(
-        new THREE.SphereGeometry(OCEAN_RADIUS, 128, 64),
-        matWater
-      );
-      ocean.receiveShadow = true;
-      mapGroup.add(ocean);
-
-      if (USE_SPHERE) {
-        gridHelper = buildSphericalGrid(size);
-      } else {
-        gridHelper = new THREE.GridHelper(size, size, 0x111111, 0x111111);
-        gridHelper.position.y = GRASS_H + 0.002;
-        gridHelper.material.transparent = true;
-        gridHelper.material.opacity = 0.3;
-      }
-
-      gridHelper.visible = showGridInput.checked;
-      mapGroup.add(gridHelper);
-
-      const rng = makeRng(seed);
-      grid = buildLandWaterGrid(size, waterProb, structure, rng);
-
-      tileWraps = Array.from({ length: size }, () => new Array(size));
-      for (let z = 0; z < size; z++) {
-        for (let x = 0; x < size; x++) {
-          const wrap = buildCellWrap(x, z);
-          tileWraps[z][x] = wrap;
-          mapGroup.add(wrap);
-        }
-      }
-
-      scene.add(mapGroup);
-
-      controls.target.set(0, 0, 0);
-      controls.update();
+    function writeVertexPosition(i) {
+      const r = BASE_RADIUS + heights[i];
+      posAttr.array[3 * i]     = unitDirs[3 * i]     * r;
+      posAttr.array[3 * i + 1] = unitDirs[3 * i + 1] * r;
+      posAttr.array[3 * i + 2] = unitDirs[3 * i + 2] * r;
     }
 
-    function rebuildCellAt(x, z) {
-      const old = tileWraps[z][x];
-      if (old) {
-        mapGroup.remove(old);
-        disposeGroup(old);
-      }
-      const wrap = buildCellWrap(x, z);
-      tileWraps[z][x] = wrap;
-      mapGroup.add(wrap);
+    // Initial paint: all sea-floor color. Every vertex starts a bit below sea level
+    // so the planet begins as an ocean world the user paints land into.
+    for (let i = 0; i < N; i++) {
+      heights[i] = -0.5;
+      writeVertexPosition(i);
+      colorVertex(i);
     }
+    posAttr.needsUpdate = true;
+    planetGeo.attributes.color.needsUpdate = true;
+    planetGeo.computeVertexNormals();
 
-    function toggleCellAt(x, z) {
-      if (x < 0 || z < 0 || x >= mapSize || z >= mapSize) return;
+    // ---------- Brush ----------
+    let brushRadius   = 0.25; // radians of arc on the unit sphere
+    let brushStrength = 1.5;  // height units per second of holding
+    let brushRaise    = true; // false = lower
+    let paintMode     = true; // when true, right-drag paints; when false, right-drag pans
+    let paused        = false;
 
-      grid[z][x] = grid[z][x] ? 0 : 1;
-
-      for (let dz = -1; dz <= 1; dz++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = wrapX(x + dx);
-          const nz = z + dz;
-
-          if (nz >= 0 && nz < mapSize) {
-            rebuildCellAt(nx, nz);
-          }
-        }
-      }
-    }
-
-    // ---------- Click-to-toggle ----------
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    let pointerDownX = 0, pointerDownY = 0;
-    const CLICK_DRAG_THRESHOLD = 5; // px — anything beyond this counts as an orbit drag, not a click
+    let isPainting = false;
+    let lastHitLocal = null; // hit point in planetGroup local space
 
-    renderer.domElement.addEventListener('pointerdown', (e) => {
-      pointerDownX = e.clientX;
-      pointerDownY = e.clientY;
+    // Brush cursor — a thin ring oriented to the surface tangent plane.
+    const brushRingGeo = new THREE.RingGeometry(0.95, 1.0, 64);
+    const brushRingMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      depthTest: false,
     });
+    const brushRing = new THREE.Mesh(brushRingGeo, brushRingMat);
+    brushRing.renderOrder = 999;
+    brushRing.visible = false;
+    scene.add(brushRing);
 
-    renderer.domElement.addEventListener('pointerup', (e) => {
-      if (e.button !== 0) return;
-      if (Math.abs(e.clientX - pointerDownX) > CLICK_DRAG_THRESHOLD ||
-        Math.abs(e.clientY - pointerDownY) > CLICK_DRAG_THRESHOLD) return;
-      if (!mapGroup) return;
+    function updateBrushRing(hitWorld, hitNormalWorld, radiusWorld) {
+      brushRing.position.copy(hitWorld);
+      brushRing.lookAt(hitWorld.clone().add(hitNormalWorld));
+      brushRing.position.addScaledVector(hitNormalWorld, 0.02);
+      brushRing.scale.setScalar(radiusWorld);
+      brushRing.visible = true;
+    }
 
+    // arcLen ≈ angularRadius * R, where R is the radial distance at the hit.
+    function brushArcWorldRadius(hitRadius) {
+      return brushRadius * hitRadius;
+    }
+
+    // Apply the brush to all vertices within the angular footprint.
+    function applyBrush(centerLocal, dt) {
+      const cx = centerLocal.x, cy = centerLocal.y, cz = centerLocal.z;
+      const invLen = 1 / Math.hypot(cx, cy, cz);
+      const ux = cx * invLen, uy = cy * invLen, uz = cz * invLen;
+
+      const cosCut = Math.cos(brushRadius);
+      const dir = brushRaise ? 1 : -1;
+      const delta = dir * brushStrength * dt;
+
+      let touchedAny = false;
+
+      for (let i = 0; i < N; i++) {
+        const dx = unitDirs[3 * i];
+        const dy = unitDirs[3 * i + 1];
+        const dz = unitDirs[3 * i + 2];
+        const dot = dx * ux + dy * uy + dz * uz;
+        if (dot <= cosCut) continue;
+
+        const ang = Math.acos(Math.min(1, dot));
+        const t = ang / brushRadius;
+        const f = 1 - t * t;
+        const falloff = f * f; // (1 - t^2)^2
+
+        heights[i] += delta * falloff;
+        writeVertexPosition(i);
+        colorVertex(i);
+        touchedAny = true;
+      }
+
+      if (touchedAny) {
+        posAttr.needsUpdate = true;
+        planetGeo.attributes.color.needsUpdate = true;
+        planetGeo.computeVertexNormals();
+      }
+    }
+
+    // ---------- Pointer handling ----------
+    function setPointerFromEvent(e) {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
+    }
 
-      const hits = raycaster.intersectObject(mapGroup, true);
-      for (const hit of hits) {
-        let obj = hit.object;
-        while (obj && obj.userData.gridX === undefined) obj = obj.parent;
-        if (obj) {
-          toggleCellAt(obj.userData.gridX, obj.userData.gridZ);
-          return;
-        }
-      }
+    function raycastPlanet() {
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObject(planetMesh, false);
+      if (hits.length === 0) return null;
+      return hits[0];
+    }
+
+    function worldToPlanetLocal(worldPoint) {
+      return planetGroup.worldToLocal(worldPoint.clone());
+    }
+
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.button !== 2) return;
+      if (!paintMode) return;
+      e.preventDefault();
+      setPointerFromEvent(e);
+      const hit = raycastPlanet();
+      if (!hit) return;
+      isPainting = true;
+      lastHitLocal = worldToPlanetLocal(hit.point);
+      renderer.domElement.setPointerCapture(e.pointerId);
     });
 
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      setPointerFromEvent(e);
+      if (!paintMode) {
+        brushRing.visible = false;
+        return;
+      }
+      const hit = raycastPlanet();
+      if (!hit) {
+        brushRing.visible = false;
+        if (isPainting) lastHitLocal = null;
+        return;
+      }
+      const nWorld = hit.face.normal.clone()
+        .transformDirection(planetMesh.matrixWorld)
+        .normalize();
+      updateBrushRing(hit.point, nWorld, brushArcWorldRadius(hit.point.length()));
+      if (isPainting) lastHitLocal = worldToPlanetLocal(hit.point);
+    });
+
+    function endPaint(e) {
+      if (!isPainting) return;
+      isPainting = false;
+      lastHitLocal = null;
+      try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+    renderer.domElement.addEventListener('pointerup', endPaint);
+    renderer.domElement.addEventListener('pointercancel', endPaint);
+
+    // Suppress the browser context menu over the canvas while paint mode is on.
+    renderer.domElement.addEventListener('contextmenu', (e) => {
+      if (paintMode) e.preventDefault();
+    });
+
+    // ---------- Moons ----------
+    const matMoon = new THREE.MeshStandardMaterial({
+      color: 0xb6ada0,
+      roughness: 0.95,
+      metalness: 0.0,
+    });
+    const moonGeo = new THREE.SphereGeometry(1, 32, 16);
+
+    const MAX_MOONS = 4;
+    const MOON_REF_DISTANCE = 22;
+    let moonSpeedScalar = (40 / 3000) * Math.PI * 2;
+    const moons = [];
+    const moonSlotsInUse = new Set();
+
+    function moonOrbitPlane(slot) {
+      return {
+        inclination: (slot % 2 === 0 ? 1 : -1) * (0.08 + 0.18 * slot),
+        node: slot * 1.1,
+        phase: (slot / MAX_MOONS) * Math.PI * 2,
+      };
+    }
+
+    function allocateMoonSlot() {
+      for (let i = 0; i < MAX_MOONS; i++) {
+        if (!moonSlotsInUse.has(i)) {
+          moonSlotsInUse.add(i);
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function updateMoonPosition(m) {
+      const x0 = Math.cos(m.angle) * m.distance;
+      const z0 = Math.sin(m.angle) * m.distance;
+      const ci = Math.cos(m.inclination), si = Math.sin(m.inclination);
+      const y1 = -z0 * si;
+      const z1 = z0 * ci;
+      const cn = Math.cos(m.node), sn = Math.sin(m.node);
+      const xf = x0 * cn - z1 * sn;
+      const zf = x0 * sn + z1 * cn;
+      m.mesh.position.set(xf, y1, zf);
+    }
+
+    function addMoon(size, distance) {
+      if (moons.length >= MAX_MOONS) return null;
+      const slot = allocateMoonSlot();
+      if (slot < 0) return null;
+      const plane = moonOrbitPlane(slot);
+      const mesh = new THREE.Mesh(moonGeo, matMoon);
+      mesh.scale.setScalar(size);
+      scene.add(mesh);
+      const moon = {
+        mesh,
+        angle: plane.phase,
+        inclination: plane.inclination,
+        node: plane.node,
+        size,
+        distance,
+        slot,
+      };
+      moons.push(moon);
+      updateMoonPosition(moon);
+      return moon;
+    }
+
+    function removeMoonAt(index) {
+      const moon = moons[index];
+      if (!moon) return;
+      scene.remove(moon.mesh);
+      moonSlotsInUse.delete(moon.slot);
+      moons.splice(index, 1);
+    }
+
+    function setMoonSize(index, size) {
+      const m = moons[index];
+      if (!m) return;
+      m.size = size;
+      m.mesh.scale.setScalar(size);
+    }
+
+    function setMoonDistance(index, distance) {
+      const m = moons[index];
+      if (!m) return;
+      m.distance = distance;
+      updateMoonPosition(m);
+    }
+
+    function updateMoons(dt) {
+      for (const m of moons) {
+        const omega = moonSpeedScalar * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
+        m.angle += omega * dt;
+        updateMoonPosition(m);
+      }
+    }
+
+    // ---------- Stars ----------
+    const starCount = 2000;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 320;
+      starPositions[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      starPositions[i * 3 + 2] = r * Math.cos(phi);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 1.6,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      fog: false,
+    });
+    const stars = new THREE.Points(starGeo, starMat);
+    scene.add(stars);
+
+    // ---------- Planet rotation ----------
+    let rotationSpeed = (30 / 3000) * Math.PI * 2;
+    function updatePlanetRotation(dt) {
+      planetGroup.rotation.y += rotationSpeed * dt;
+    }
+
     // ---------- UI ----------
-    const sizeInput = document.getElementById('size');
-    const waterInput = document.getElementById('water');
-    const structureInput = document.getElementById('structure');
-    const seedInput = document.getElementById('seed');
-    const showGridInput = document.getElementById('showGrid');
-    const sizeVal = document.getElementById('sizeVal');
-    const waterVal = document.getElementById('waterVal');
-    const structureVal = document.getElementById('structureVal');
+    const brushRadiusInput   = document.getElementById('brushRadius');
+    const brushRadiusVal     = document.getElementById('brushRadiusVal');
+    const brushStrengthInput = document.getElementById('brushStrength');
+    const brushStrengthVal   = document.getElementById('brushStrengthVal');
+    const brushRaiseInput    = document.getElementById('brushRaise');
+    const paintModeInput     = document.getElementById('paintMode');
+    const pauseRotInput      = document.getElementById('pauseRot');
+    const daySpeedInput      = document.getElementById('daySpeed');
+    const daySpeedVal        = document.getElementById('daySpeedVal');
+    const moonSpeedInput     = document.getElementById('moonSpeed');
+    const moonSpeedVal       = document.getElementById('moonSpeedVal');
+    const moonsListEl        = document.getElementById('moonsList');
+    const addMoonBtn         = document.getElementById('addMoon');
 
-    sizeInput.oninput = () => sizeVal.textContent = sizeInput.value;
-    waterInput.oninput = () => waterVal.textContent = waterInput.value;
-    structureInput.oninput = () => structureVal.textContent = structureInput.value;
-    showGridInput.onchange = () => { if (gridHelper) gridHelper.visible = showGridInput.checked; };
+    // Slider 5..150 → 0.05..1.5 rad. Slider 1..50 → 0.1..5.0 strength.
+    function sliderToBrushRadius(v) { return v / 100; }
+    function sliderToBrushStrength(v) { return v / 10; }
 
-    document.getElementById('regen').onclick = () => {
-      generate(
-        parseInt(sizeInput.value, 10),
-        parseInt(waterInput.value, 10) / 100,
-        parseInt(structureInput.value, 10) / 100,
-        parseInt(seedInput.value, 10) || 1,
-      );
+    brushRadiusInput.oninput = () => {
+      brushRadius = sliderToBrushRadius(parseInt(brushRadiusInput.value, 10));
+      brushRadiusVal.textContent = brushRadius.toFixed(2);
+    };
+    brushStrengthInput.oninput = () => {
+      brushStrength = sliderToBrushStrength(parseInt(brushStrengthInput.value, 10));
+      brushStrengthVal.textContent = brushStrength.toFixed(1);
+    };
+    brushRaiseInput.onchange = () => { brushRaise = brushRaiseInput.checked; };
+    paintModeInput.onchange = () => {
+      paintMode = paintModeInput.checked;
+      controls.mouseButtons.RIGHT = paintMode ? null : THREE.MOUSE.PAN;
+      if (!paintMode) brushRing.visible = false;
+    };
+    pauseRotInput.onchange = () => { paused = pauseRotInput.checked; };
+    daySpeedInput.oninput = () => {
+      daySpeedVal.textContent = daySpeedInput.value;
+      rotationSpeed = (parseInt(daySpeedInput.value, 10) / 3000) * Math.PI * 2;
+    };
+    moonSpeedInput.oninput = () => {
+      moonSpeedVal.textContent = moonSpeedInput.value;
+      moonSpeedScalar = (parseInt(moonSpeedInput.value, 10) / 3000) * Math.PI * 2;
     };
 
-    const NO_J = { nw: false, ne: false, se: false, sw: false };
-    const TILE_DESCRIPTIONS = [
-      {
-        name: 'Grassland Only', type: 'LAND_FULL', junctions: NO_J, rotQuarters: 0,
-        desc: 'Fully inland tile — all grass, no coast.'
-      },
-      {
-        name: 'Coast (edge)', type: 'COAST_EDGE', junctions: NO_J, rotQuarters: 0,
-        desc: 'Land meeting water along one straight side. 4 rotations.'
-      },
-      {
-        name: 'Coast Corner', type: 'COAST_CORNER', junctions: NO_J, rotQuarters: 0,
-        desc: 'Land with water on two adjacent sides; the inland corner is rounded outward. 4 rotations.'
-      },
+    brushRadius = sliderToBrushRadius(parseInt(brushRadiusInput.value, 10));
+    brushRadiusVal.textContent = brushRadius.toFixed(2);
+    brushStrength = sliderToBrushStrength(parseInt(brushStrengthInput.value, 10));
+    brushStrengthVal.textContent = brushStrength.toFixed(1);
 
-      {
-        name: 'Side Inlet Coast', type: 'COAST_EDGE',
-        junctions: { nw: false, ne: true, se: false, sw: false }, rotQuarters: 2,
-        desc: 'Coast edge with a single rounded water inlet biting in from one of the far corners. 4 rotations.'
-      },
-      {
-        name: 'Triple Connector', type: 'COAST_EDGE',
-        junctions: { nw: true, ne: true, se: false, sw: false }, rotQuarters: 2,
-        desc: 'Coast edge with two rounded inlets at both far corners — connects three water cells. 4 rotations.'
-      },
-      {
-        name: 'Corner Inlet', type: 'COAST_CORNER',
-        junctions: { nw: false, ne: true, se: false, sw: false }, rotQuarters: 0,
-        desc: 'Coast corner with one additional rounded inlet on the inland side. 4 rotations.'
-      },
-      {
-        name: 'Sole Inward Rounded Corner', type: 'LAND_FULL',
-        junctions: { nw: false, ne: false, se: true, sw: false }, rotQuarters: 0,
-        desc: 'Land tile with a single rounded water bite at one corner. 4 rotations.'
-      },
-      {
-        name: 'Snake Transition', type: 'LAND_FULL',
-        junctions: { nw: true, ne: false, se: true, sw: false }, rotQuarters: 0,
-        desc: 'Land tile with rounded water bites at two opposite diagonal corners. 4 rotations.'
-      },
-      {
-        name: 'Twin Inlet Coast', type: 'LAND_FULL',
-        junctions: { nw: true, ne: true, se: false, sw: false }, rotQuarters: 0,
-        desc: 'Land tile with rounded water bites at two adjacent corners — merge into wide bay. 4 rotations.'
-      },
-      {
-        name: 'Three Inlets', type: 'LAND_FULL',
-        junctions: { nw: true, ne: true, se: true, sw: false }, rotQuarters: 0,
-        desc: 'Land tile with rounded water bites at three corners. 4 rotations.'
-      },
+    function renderMoonsList() {
+      moonsListEl.innerHTML = moons.map((m, i) => {
+        const sizeSlider = Math.round(m.size * 10);
+        const distSlider = Math.round(m.distance);
+        return `
+          <div class="moon-row" data-index="${i}">
+            <div class="moon-row-controls">
+              <label>Size <input class="moon-size-input" type="range" min="2" max="40" value="${sizeSlider}"><span class="val moon-size-val">${sizeSlider}</span></label>
+              <label>Dist <input class="moon-dist-input" type="range" min="14" max="60" value="${distSlider}"><span class="val moon-dist-val">${distSlider}</span></label>
+            </div>
+            <button class="moon-remove" type="button" aria-label="Remove moon">×</button>
+          </div>
+        `;
+      }).join('');
 
-      {
-        name: 'Land Strip', type: 'LAND_STRIP', junctions: NO_J, rotQuarters: 1,
-        desc: 'Narrow land bridge with water on opposite sides. 2 rotations.'
-      },
-      {
-        name: 'Peninsula', type: 'PENINSULA', junctions: NO_J, rotQuarters: 2,
-        desc: 'Land jutting into water on three sides. 4 rotations.'
-      },
-      {
-        name: 'Island', type: 'ISLAND', junctions: NO_J, rotQuarters: 0,
-        desc: 'Lonely land surrounded entirely by water.'
-      },
-      {
-        name: 'Water Zone', type: 'WATER', junctions: NO_J, rotQuarters: 0,
-        desc: 'Open water tile.'
-      },
-    ];
+      moonsListEl.querySelectorAll('.moon-row').forEach((row) => {
+        const index = parseInt(row.dataset.index, 10);
+        const sizeIn = row.querySelector('.moon-size-input');
+        const sizeValEl = row.querySelector('.moon-size-val');
+        const distIn = row.querySelector('.moon-dist-input');
+        const distValEl = row.querySelector('.moon-dist-val');
+        const rmBtn = row.querySelector('.moon-remove');
+        sizeIn.oninput = () => {
+          sizeValEl.textContent = sizeIn.value;
+          setMoonSize(index, parseInt(sizeIn.value, 10) / 10);
+        };
+        distIn.oninput = () => {
+          distValEl.textContent = distIn.value;
+          setMoonDistance(index, parseInt(distIn.value, 10));
+        };
+        rmBtn.onclick = () => {
+          removeMoonAt(index);
+          renderMoonsList();
+        };
+      });
 
-    function colHex(c) { return '#' + c.toString(16).padStart(6, '0'); }
-
-    function tileSvg(type, junctions, rotQuarters) {
-      const water = colHex(COL.water);
-      if (type === 'WATER') {
-        return `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="${water}"/></svg>`;
-      }
-      const sandRect = getLandRect(type);
-      if (!sandRect) {
-        return `<svg viewBox="0 0 100 100"><rect width="100" height="100" fill="${water}"/></svg>`;
-      }
-      const states = getCornerStates(type, junctions || NO_J);
-      const sandShape = makeRoundedShape(sandRect, CORNER_R, COAST_W, states);
-
-      const grassRect = getGrassRect(type, sandRect);
-
-      const grassShape = makeRoundedShape(
-        grassRect,
-        CORNER_R,
-        COAST_W + SAND_W,
-        states
-      );
-      const sandPts = sandShape.extractPoints(12).shape;
-      const grassPts = grassShape.extractPoints(12).shape;
-
-      // Shape Y is mirrored from world Z; convert to SVG Y (down) by negating.
-      function ptsToPath(pts) {
-        if (!pts.length) return '';
-        let d = `M ${(pts[0].x * 100).toFixed(2)} ${(-pts[0].y * 100).toFixed(2)}`;
-        for (let i = 1; i < pts.length; i++) {
-          d += ` L ${(pts[i].x * 100).toFixed(2)} ${(-pts[i].y * 100).toFixed(2)}`;
-        }
-        return d + ' Z';
-      }
-
-      const sand = colHex(COL.sandSide);
-      const grass = colHex(COL.grass);
-      // World rotY +π/2 (CCW from above) corresponds to SVG rotate(-90) (CCW with y-down).
-      const angleDeg = -90 * (rotQuarters || 0);
-      return `<svg viewBox="0 0 100 100">
-    <rect width="100" height="100" fill="${water}"/>
-    <g transform="rotate(${angleDeg} 50 50)">
-      <path d="${ptsToPath(sandPts)}" fill="${sand}" fill-rule="evenodd"/>
-      <path d="${ptsToPath(grassPts)}" fill="${grass}" fill-rule="evenodd"/>
-    </g>
-  </svg>`;
+      addMoonBtn.disabled = moons.length >= MAX_MOONS;
     }
 
-    function buildTileList() {
-      const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      document.getElementById('tileList').innerHTML = TILE_DESCRIPTIONS.map(t => `
-    <li class="tile-item">
-      <div class="tile-preview">${tileSvg(t.type, t.junctions, t.rotQuarters)}</div>
-      <div class="tile-info">
-        <p class="tile-name">${escape(t.name)}</p>
-        <p class="tile-desc">${escape(t.desc)}</p>
-      </div>
-    </li>
-  `).join('');
-    }
+    addMoonBtn.onclick = () => {
+      const defaultDistance = 18 + moons.length * 8;
+      if (addMoon(1.2, defaultDistance)) renderMoonsList();
+    };
 
-    const drawer = document.getElementById('drawer');
-    document.getElementById('drawerToggle').onclick = () => drawer.classList.toggle('open');
-    document.getElementById('drawerClose').onclick = () => drawer.classList.remove('open');
-    buildTileList();
+    addMoon(1.2, 22);
+    renderMoonsList();
 
-    generate(18, 0.42, 0.55, 7);
-
+    // ---------- Resize ----------
     addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
     });
 
+    // ---------- Animate ----------
+    const clock = new THREE.Clock();
     (function loop() {
       requestAnimationFrame(loop);
       controls.update();
+      const dt = clock.getDelta();
+      if (!paused) updatePlanetRotation(dt);
+      updateMoons(dt);
+      if (isPainting && lastHitLocal) applyBrush(lastHitLocal, dt);
       renderer.render(scene, camera);
     })();

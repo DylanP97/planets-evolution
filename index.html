@@ -4,32 +4,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Procedural Tile Map</title>
+  <title>Planet Painter</title>
    <link rel="stylesheet" href="style.css"/>
 </head>
 
 <body>
   <div id="ui">
-    <h1>Tile Map Generator</h1>
-    <label>Grid size <input id="size" type="range" min="4" max="40" value="18"><span class="val"
-        id="sizeVal">18</span></label>
-    <label>Water % <input id="water" type="range" min="0" max="100" value="42"><span class="val"
-        id="waterVal">42</span></label>
-    <label>Continents <input id="structure" type="range" min="0" max="100" value="55"><span class="val"
-        id="structureVal">55</span></label>
-    <label>Seed <input id="seed" type="number" value="7"></label>
-    <label>Show grid <input id="showGrid" type="checkbox" checked></label>
-    <button id="regen">Regenerate</button>
-    <div id="legend">Drag to orbit · scroll to zoom · right-drag to pan</div>
-  </div>
-  <button id="drawerToggle">Tile Types</button>
-  <aside id="drawer">
-    <div class="drawer-header">
-      <h2>Tile Types</h2>
-      <button id="drawerClose" aria-label="Close">×</button>
+    <h1>Planet Painter</h1>
+    <label>Brush radius <input id="brushRadius" type="range" min="5" max="150" value="25"><span class="val" id="brushRadiusVal">0.25</span></label>
+    <label>Brush strength <input id="brushStrength" type="range" min="1" max="50" value="15"><span class="val" id="brushStrengthVal">1.5</span></label>
+    <label>Raise (uncheck = lower) <input id="brushRaise" type="checkbox" checked></label>
+    <label>Paint with right-click <input id="paintMode" type="checkbox" checked></label>
+    <label>Pause rotation <input id="pauseRot" type="checkbox"></label>
+    <label>Day speed <input id="daySpeed" type="range" min="0" max="100" value="30"><span class="val" id="daySpeedVal">30</span></label>
+    <label>Moon speed <input id="moonSpeed" type="range" min="0" max="100" value="40"><span class="val" id="moonSpeedVal">40</span></label>
+    <div id="moonsSection">
+      <div class="moons-section-header">
+        <span>Moons</span>
+        <button id="addMoon" type="button" class="small-btn">+ Add moon</button>
+      </div>
+      <div id="moonsList"></div>
     </div>
-    <ul id="tileList"></ul>
-  </aside>
+    <div id="legend">Left-drag: orbit · Scroll: zoom · Right-drag: paint (hold Shift modifier via uncheck Raise to lower)</div>
+  </div>
   <canvas id="c"></canvas>
 
   <script type="importmap">
