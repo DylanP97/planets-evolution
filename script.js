@@ -284,6 +284,8 @@
       uniform vec3  uSunDir;
       uniform vec3  uBodyCenter;
       uniform float uBodyRadius;
+      uniform float uGasRadius;
+      uniform float uGasOpacity;
 
       float hash11(float n) { return fract(sin(n * 127.1) * 43758.5453); }
       float noise1(float x) {
@@ -341,6 +343,34 @@
         }
 
         float alpha = uIntensity * (0.28 + 0.72 * bands) * gapMask * edge;
+
+        // Gas occlusion: depth buffer can't help us here because the gas shell
+        // uses depthWrite:false (so it can blend with the body). Without this
+        // check, the back half of the ring shows straight through a thick
+        // atmosphere or a gas-giant body. We ray-march the camera→fragment ray
+        // against the planet's gas sphere and attenuate alpha by how much gas
+        // sits in front of the fragment.
+        if (uGasOpacity > 0.0 && uGasRadius > 0.0) {
+          vec3 toFrag = vWorldPos - cameraPosition;
+          float distToFrag = length(toFrag);
+          vec3 rayDir = toFrag / max(distToFrag, 1e-4);
+          vec3 toBody = uBodyCenter - cameraPosition;
+          float tBody = dot(toBody, rayDir);
+          // Only occlude when the gas sphere sits between camera and fragment.
+          if (tBody > 0.0 && tBody < distToFrag) {
+            float perp2 = dot(toBody, toBody) - tBody * tBody;
+            float gasR2 = uGasRadius * uGasRadius;
+            if (perp2 < gasR2) {
+              // Center of the disc → ray goes through the full diameter →
+              // strongest occlusion. Near the limb → ray clips a thin slice →
+              // weakest occlusion. Squaring softens the falloff so the gas
+              // silhouette doesn't terminate with a hard ring on the limb.
+              float depthFactor = sqrt(max(0.0, 1.0 - perp2 / gasR2));
+              alpha *= 1.0 - clamp(depthFactor * uGasOpacity, 0.0, 1.0);
+            }
+          }
+        }
+
         gl_FragColor = vec4(col * light * mix(0.30, 1.0, shadow), clamp(alpha, 0.0, 1.0));
       }
     `;
@@ -365,6 +395,11 @@
           uSunDir:     { value: new THREE.Vector3(1, 0, 0) }, // refreshed per-frame
           uBodyCenter: { value: new THREE.Vector3() },
           uBodyRadius: { value: 1.0 },
+          // Gas occluder — refreshed per-frame so atmo/ring slider changes take
+          // effect immediately. uGasOpacity=0 short-circuits the check, so
+          // bodies without gas pay no shader cost beyond a uniform fetch.
+          uGasRadius:  { value: 0.0 },
+          uGasOpacity: { value: 0.0 },
         },
         transparent: true,
         depthWrite: false,
@@ -1054,6 +1089,7 @@
     renderer.domElement.addEventListener('pointerdown', (e) => {
       if (e.button !== 2) return;
       if (!paintMode) return;
+      if (viewMode !== 'orbit') return; // brush is meaningless mid-pick / on surface
       e.preventDefault();
       setPointerFromEvent(e);
       const hb = raycastBodies();
@@ -1074,7 +1110,8 @@
     renderer.domElement.addEventListener('pointermove', (e) => {
       setPointerFromEvent(e);
       // City tool drops a single marker on click — no brush footprint to preview.
-      if (!paintMode || currentTool === 'city') {
+      // Same for surface walk modes — no brush is active there.
+      if (!paintMode || currentTool === 'city' || viewMode !== 'orbit') {
         brushRing.visible = false;
         return;
       }
@@ -1123,7 +1160,8 @@
     const MOON_DETAIL = 4;            // ~1280 verts; smaller bodies don't need planet-level density
     const MAX_MOONS = 4;              // per parent planet
     const MOON_REF_DISTANCE = 22;
-    let moonSpeedScalar = (40 / 3000) * Math.PI * 2;
+    // Each moon now owns its own orbital speed; this is the default for new moons.
+    const DEFAULT_MOON_SPEED = (40 / 3000) * Math.PI * 2;
     let moonSeedCounter = 0;          // ensures each new moon gets a distinct seed
     const moons = [];
     // Slot tracking is per-parent so each planet has its own 0..MAX_MOONS slots.
@@ -1196,6 +1234,7 @@
         node: plane.node,
         size,
         distance,
+        speed: DEFAULT_MOON_SPEED,
         slot,
       };
       moons.push(moon);
@@ -1233,7 +1272,8 @@
 
     function updateMoons(dt) {
       for (const m of moons) {
-        const omega = moonSpeedScalar * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
+        const speed = m.speed ?? DEFAULT_MOON_SPEED;
+        const omega = speed * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
         m.angle += omega * dt;
         updateMoonPosition(m);
       }
@@ -1382,7 +1422,26 @@
           u.uBodyCenter.value.copy(_bodyPosTmp);
           // World radius includes the body group's scale so the planet shadow
           // on the ring tracks visually no matter the planet size.
-          u.uBodyRadius.value = b.baseRadius * b.group.scale.x;
+          const worldScale = b.group.scale.x;
+          u.uBodyRadius.value = b.baseRadius * worldScale;
+          // Gas occluder: where the line of sight to a ring fragment passes
+          // through the gas sphere, the shader fades alpha so a thick
+          // atmosphere (or gas-giant body) hides the back half of the ring.
+          // For 'full' gas the body IS the gas — opacity tracks density.
+          // For 'atmosphere' shells, both density and coverage matter (sparse
+          // clouds don't block much regardless of how dense each clump is).
+          if (b.matter && b.matter.gas) {
+            const thick = b.gasThickness ?? 1.0;
+            u.uGasRadius.value = b.baseRadius * thick * worldScale;
+            const density  = b.gasDensity  ?? 0.5;
+            const coverage = b.gasCoverage ?? 0.5;
+            u.uGasOpacity.value = b.matter.gas === 'full'
+              ? density
+              : density * coverage;
+          } else {
+            u.uGasRadius.value  = 0.0;
+            u.uGasOpacity.value = 0.0;
+          }
         }
       }
     }
@@ -1659,7 +1718,8 @@
       } else {
         const m = moons.find(mn => mn.body === body);
         if (!m) return;
-        const omega = moonSpeedScalar * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
+        const speed = m.speed ?? DEFAULT_MOON_SPEED;
+        const omega = speed * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
         const period = omega > 1e-6 ? (Math.PI * 2 / omega) : Infinity;
         infoEls.orbitDist.textContent = m.distance.toFixed(1) + ' u';
         infoEls.orbitOmega.textContent = omega.toFixed(3) + ' rad/s';
@@ -1669,17 +1729,8 @@
     }
 
     // ---------- Random names ----------
-    // Two name sources live side-by-side: a hand-curated cosmic word bank
-    // (mythology + astronomy + Greek letters) and a dynamic CDN import of
-    // `unique-names-generator`. The cosmic source is always available; the
-    // library source loads in the background and falls back to cosmic if the
-    // network fetch fails, so the rename button never breaks.
+    // Hand-curated cosmic word bank (mythology + astronomy + Greek letters).
     let systemName = 'Sol';
-    let nameSource = 'cosmic'; // 'cosmic' | 'library'
-    let unameLib = null;
-    import('https://esm.sh/unique-names-generator@4')
-      .then(mod => { unameLib = mod; })
-      .catch(err => { console.warn('unique-names-generator failed to load; library mode will fall back to cosmic.', err); });
 
     const COSMIC_WORDS = {
       greek: ['Alpha','Beta','Gamma','Delta','Epsilon','Zeta','Eta','Theta','Iota','Kappa','Lambda','Mu','Nu','Xi','Omicron','Pi','Rho','Sigma','Tau','Upsilon','Phi','Chi','Psi','Omega'],
@@ -1712,23 +1763,8 @@
       return _pick(COSMIC_WORDS.mythos) + ' ' + _pick(COSMIC_WORDS.designators);
     }
 
-    function generateLibrary(kind) {
-      if (!unameLib || !unameLib.uniqueNamesGenerator) return generateCosmic(kind);
-      const { uniqueNamesGenerator, adjectives, animals, colors, names } = unameLib;
-      const cfg = (dicts, sep = ' ') => ({
-        dictionaries: dicts, style: 'capital', separator: sep, length: dicts.length,
-      });
-      try {
-        if (kind === 'moon')   return uniqueNamesGenerator(cfg([colors, animals]));
-        if (kind === 'system') return uniqueNamesGenerator(cfg([names], '')) + ' System';
-        return uniqueNamesGenerator(cfg([adjectives, animals], '-'));
-      } catch (_) {
-        return generateCosmic(kind);
-      }
-    }
-
     function generateName(kind) {
-      return nameSource === 'library' ? generateLibrary(kind) : generateCosmic(kind);
+      return generateCosmic(kind);
     }
 
     // ---------- UI ----------
@@ -1763,8 +1799,6 @@
     const sculptLowerBtn     = document.getElementById('sculptLower');
     
     const pauseRotInput      = document.getElementById('pauseRot');
-    const moonSpeedInput     = document.getElementById('moonSpeed');
-    const moonSpeedVal       = document.getElementById('moonSpeedVal');
     const moonsListEl        = document.getElementById('moonsList');
     const addMoonBtn         = document.getElementById('addMoon');
     const seedInput          = document.getElementById('seedInput');
@@ -1915,10 +1949,6 @@
     };
 
     pauseRotInput.onchange = () => { paused = pauseRotInput.checked; };
-    moonSpeedInput.oninput = () => {
-      moonSpeedVal.textContent = moonSpeedInput.value;
-      moonSpeedScalar = (parseInt(moonSpeedInput.value, 10) / 3000) * Math.PI * 2;
-    };
 
     const showOrbitsInput = document.getElementById('showOrbits');
     orbitLinesGroup.visible = showOrbitsInput.checked;
@@ -1997,8 +2027,6 @@
       updateInfoPanel();
     };
 
-    focusPlanetBtn.onclick = () => setFocus(planet);
-
     // Initialize values
     syncBrushRadius(parseInt(brushRadiusInput.value, 10));
     brushStrength = sliderToBrushStrength(parseInt(brushStrengthInput.value, 10));
@@ -2029,8 +2057,9 @@
     const classifyArchSection = archetypeSelect.closest('label');
     const classifyGenLabels  = [genAmpInput.closest('label'), genSeaInput.closest('label')];
     const rosterHintEl       = document.getElementById('rosterHint');
+    const rosterSectionEl    = document.getElementById('rosterSection');
+    const planetListEl       = document.getElementById('planetList');
     const deployPlanetBtn    = document.getElementById('deployPlanetBtn');
-    const removePlanetBtn    = document.getElementById('removePlanetBtn');
     const bodyOrbitSectionEl = document.getElementById('bodyOrbitSection');
     const bodyOrbitHeaderEl  = document.getElementById('bodyOrbitHeader');
     const bodyDistInput      = document.getElementById('bodyDistInput');
@@ -2041,9 +2070,14 @@
     const bodySpinRow        = document.getElementById('bodySpinRow');
     const bodySpinInput      = document.getElementById('bodySpinInput');
     const bodySpinVal        = document.getElementById('bodySpinVal');
+    const bodyMoonSpeedRow   = document.getElementById('bodyMoonSpeedRow');
+    const bodyMoonSpeedInput = document.getElementById('bodyMoonSpeedInput');
+    const bodyMoonSpeedVal   = document.getElementById('bodyMoonSpeedVal');
     const bodySizeInput      = document.getElementById('bodySizeInput');
     const bodySizeVal        = document.getElementById('bodySizeVal');
     const satellitesSectionEl= document.getElementById('satellitesSection');
+    const atmoSectionEl      = document.getElementById('atmoSection');
+    const ringsSectionEl     = document.getElementById('ringsSection');
 
     // Range mapping. Different ranges for planets vs moons so the slider feels
     // sensible at either scale.
@@ -2056,6 +2090,11 @@
     const PLANET_SPIN = { sliderMin: 0,   sliderMax: 100, div: 3000 };
     const spinSliderToRad = v => (v / PLANET_SPIN.div) * Math.PI * 2;
     const spinRadToSlider = w => Math.round((w / (Math.PI * 2)) * PLANET_SPIN.div);
+    // Moon-speed slider uses the same mapping that used to drive the global
+    // moon-speed knob, only now per-moon.
+    const MOON_SPEED_DIV = 3000;
+    const moonSliderToSpeed = v => (v / MOON_SPEED_DIV) * Math.PI * 2;
+    const moonSpeedToSlider = s => Math.round((s / (Math.PI * 2)) * MOON_SPEED_DIV);
 
     function setRange(input, min, max) {
       input.min = String(min); input.max = String(max);
@@ -2064,8 +2103,45 @@
     function applyFocusToLeftPanel() {
       const isPlanet = focusedBody && focusedBody.kind === 'planet';
       const isMoon   = focusedBody && focusedBody.kind === 'moon';
+      const isSystem = !focusedBody && !focusedCity;
+      // Cities anchor their controls to the host body — re-use the planet/moon
+      // layout for the body they belong to.
+      const focusKind = isPlanet ? 'planet'
+                      : isMoon   ? 'moon'
+                      : focusedCity ? (focusedCity.body.kind === 'moon' ? 'moon' : 'planet')
+                      : 'system';
 
-      // --- Classify tab ---
+      // --- Tab visibility (driven by data-focus on each tab button) ---
+      // Each tab button declares which focus kinds it's relevant to. Hidden
+      // tabs are stripped from layout entirely so the menu feels purpose-built
+      // for the focused element instead of a static 5-tab grid with dimmed
+      // sections. Belt-and-braces: class + inline style + disabled, because a
+      // single CSS rule can be defeated by browser cache or theme overrides.
+      let firstVisibleTab = null;
+      let activeStillVisible = false;
+      tabBtns.forEach(btn => {
+        const allowed = (btn.dataset.focus || '').split(/\s+/);
+        const visible = allowed.includes(focusKind);
+        btn.classList.toggle('is-hidden', !visible);
+        btn.style.display = visible ? '' : 'none';
+        btn.disabled = !visible;
+        // Also hide the matching tab-content so an old `.active` from a
+        // previous focus can't keep panels showing through.
+        const content = document.getElementById(`tab-${btn.dataset.tab}`);
+        if (content && !visible) content.classList.remove('active');
+        if (visible) {
+          if (!firstVisibleTab) firstVisibleTab = btn;
+          if (btn.classList.contains('active')) activeStillVisible = true;
+        }
+      });
+      // If the active tab got hidden by the new focus, switch to System
+      // (always visible) or whichever visible tab comes first.
+      if (!activeStillVisible && firstVisibleTab) {
+        const systemBtn = Array.from(tabBtns).find(b => b.dataset.tab === 'system' && b.style.display !== 'none');
+        (systemBtn || firstVisibleTab).click();
+      }
+
+      // --- Classify tab (planet only) ---
       if (isPlanet) {
         classifyContextEl.textContent = `Editing: ${focusedBody.name}`;
         archetypeSelect.value = focusedBody.archetype || 'terrestrial';
@@ -2077,36 +2153,23 @@
         classifyArchSection.classList.remove('is-disabled-section');
         classifyGenLabels.forEach(l => l && l.classList.remove('is-disabled-section'));
         regenBtn.disabled = false;
-        removePlanetBtn.disabled = planets.length <= 1;
-        rosterHintEl.textContent = `${planets.length} planet${planets.length === 1 ? '' : 's'} in system · keep ≥ 1`;
-      } else if (isMoon) {
-        classifyContextEl.textContent = `Editing: ${focusedBody.name} (satellite)`;
-        const moonEntry = moons.find(m => m.body === focusedBody);
-        seedInput.value = (moonEntry && moonEntry.seed) || '';
-        genAmpInput.value = Math.round((focusedBody.currentAmp ?? 1.6) * 10);
-        genSeaInput.value = Math.round((focusedBody.currentSea ?? 0.0) * 100);
-        syncGenLabels();
-        // Archetype doesn't apply to moons — gray it out but keep regen usable.
-        classifyArchSection.classList.add('is-disabled-section');
-        classifyGenLabels.forEach(l => l && l.classList.remove('is-disabled-section'));
-        regenBtn.disabled = false;
-        removePlanetBtn.disabled = true;
-        rosterHintEl.textContent = 'Focus a planet to add or remove planets';
-      } else {
-        // City focus or system view
-        const lbl = focusedCity ? `Editing: ${focusedCity.name}` : 'No body focused · system view';
-        classifyContextEl.textContent = lbl;
-        classifyArchSection.classList.add('is-disabled-section');
-        classifyGenLabels.forEach(l => l && l.classList.add('is-disabled-section'));
-        regenBtn.disabled = true;
-        removePlanetBtn.disabled = true;
-        rosterHintEl.textContent = focusedCity
-          ? 'Focus the planet to manage roster'
-          : 'No planet focused · click ↓ on the nav to focus one';
       }
 
       // --- System tab ---
-      if (isPlanet) {
+      // Section visibility:
+      //   roster        ↔ system focus
+      //   bodyOrbit     ↔ planet | moon focus
+      //   satellites    ↔ planet focus
+      //   bodyMoonSpeed ↔ moon focus
+      rosterSectionEl.classList.toggle('is-hidden-section', !isSystem);
+      bodyOrbitSectionEl.classList.toggle('is-hidden-section', !(isPlanet || isMoon));
+      satellitesSectionEl.style.display = isPlanet ? '' : 'none';
+
+      if (isSystem) {
+        systemContextEl.textContent = `Editing: ${systemName} System`;
+        rosterHintEl.textContent = `${planets.length} planet${planets.length === 1 ? '' : 's'} in system · keep ≥ 1`;
+        renderPlanetList();
+      } else if (isPlanet) {
         systemContextEl.textContent = `Editing: ${focusedBody.name}`;
         const entry = planets.find(p => p.body === focusedBody);
         bodyOrbitHeaderEl.textContent = 'Orbit (around star)';
@@ -2116,6 +2179,7 @@
         setRange(bodySpinInput, PLANET_SPIN.sliderMin, PLANET_SPIN.sliderMax);
         bodySpeedRow.style.display = '';
         bodySpinRow.style.display = '';
+        bodyMoonSpeedRow.style.display = 'none';
         if (entry) {
           bodyDistInput.value = Math.round(entry.orbit.distance);
           bodyDistVal.textContent = entry.orbit.distance.toFixed(0);
@@ -2128,34 +2192,35 @@
         bodySizeInput.value = Math.round(focusedBody.group.scale.x * PLANET_SIZE.div);
         bodySizeVal.textContent = focusedBody.group.scale.x.toFixed(2);
         bodyOrbitSectionEl.classList.remove('is-disabled-section');
-        satellitesSectionEl.style.display = '';
       } else if (isMoon) {
         systemContextEl.textContent = `Editing: ${focusedBody.name}`;
         const m = moons.find(mn => mn.body === focusedBody);
         bodyOrbitHeaderEl.textContent = `Orbit (around ${m?.parent?.name || 'parent'})`;
         setRange(bodyDistInput, MOON_DIST.sliderMin, MOON_DIST.sliderMax);
         setRange(bodySizeInput, MOON_SIZE.sliderMin, MOON_SIZE.sliderMax);
-        bodySpeedRow.style.display = 'none'; // moon speed is global
-        bodySpinRow.style.display = 'none';  // spin is planets-only for now
+        bodySpeedRow.style.display = 'none';
+        bodySpinRow.style.display = 'none';
+        bodyMoonSpeedRow.style.display = '';
         if (m) {
           bodyDistInput.value = Math.round(m.distance);
           bodyDistVal.textContent = m.distance.toFixed(0);
           bodySizeInput.value = Math.round(m.size * MOON_SIZE.div);
           bodySizeVal.textContent = m.size.toFixed(2);
+          const slider = moonSpeedToSlider(m.speed ?? DEFAULT_MOON_SPEED);
+          bodyMoonSpeedInput.value = Math.max(1, Math.min(100, slider));
+          bodyMoonSpeedVal.textContent = String(bodyMoonSpeedInput.value);
         }
         bodyOrbitSectionEl.classList.remove('is-disabled-section');
-        satellitesSectionEl.style.display = 'none'; // moons don't host satellites
       } else {
-        systemContextEl.textContent = focusedCity
-          ? `Editing: ${focusedCity.name} (city)`
-          : 'No body focused';
-        bodyOrbitSectionEl.classList.add('is-disabled-section');
-        satellitesSectionEl.style.display = focusedCity ? 'none' : 'none';
+        // City focus — show host body controls instead of disabling everything.
+        systemContextEl.textContent = focusedCity ? `Editing: ${focusedCity.name} (city)` : 'No body focused';
       }
 
-      // --- Environment tab: atmosphere sliders ---
+      // --- Environment tab: hide atmo + rings entirely for moons (not just
+      //     disabled), since they're conceptually planet-only.
+      atmoSectionEl.classList.toggle('is-hidden-section', !isPlanet);
+      ringsSectionEl.classList.toggle('is-hidden-section', !isPlanet);
       syncAtmoSlidersToFocus();
-      // --- Environment tab: ring controls ---
       syncRingsToFocus();
     }
 
@@ -2276,6 +2341,16 @@
       }
     };
 
+    // Per-moon orbital speed. Slider only acts when a moon is focused.
+    bodyMoonSpeedInput.oninput = () => {
+      if (focusedBody?.kind !== 'moon') return;
+      const v = parseInt(bodyMoonSpeedInput.value, 10);
+      const m = moons.find(mn => mn.body === focusedBody);
+      if (m) m.speed = moonSliderToSpeed(v);
+      bodyMoonSpeedVal.textContent = String(v);
+      updateLiveInfo();
+    };
+
     // ---------- Add / Remove planet ----------
     const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'];
     function nextPlanetName() {
@@ -2329,10 +2404,9 @@
       return body;
     }
 
-    function removeFocusedPlanet() {
-      if (!focusedBody || focusedBody.kind !== 'planet') return;
+    function removePlanetBody(target) {
+      if (!target || target.kind !== 'planet') return;
       if (planets.length <= 1) return;
-      const target = focusedBody;
       // Remove moons of this planet first.
       for (let i = moons.length - 1; i >= 0; i--) {
         if (moons[i].parent === target) {
@@ -2375,17 +2449,53 @@
         target.ringMesh.geometry.dispose();
         target.ringMesh.material.dispose();
       }
-      setFocus(planets[0].body);
+      // Bounce to system view: the focus may have been pointing at the planet
+      // itself, one of its moons, or a city on it — all destroyed above.
+      setSystemFocus();
       renderCityList();
     }
 
     deployPlanetBtn.onclick = () => {
       const b = deployNewPlanet();
-      if (b) setFocus(b);
+      if (b) {
+        renderPlanetList();
+        renderNavBodies();
+      }
     };
-    removePlanetBtn.onclick = removeFocusedPlanet;
 
-    focusPlanetBtn.onclick = () => setFocus(planet);
+    // Reset Camera: recenter on whatever is currently in focus, not always Earth.
+    focusPlanetBtn.onclick = () => {
+      if (focusedCity) setCityFocus(focusedCity);
+      else if (focusedBody) setFocus(focusedBody);
+      else setSystemFocus();
+    };
+
+    function renderPlanetList() {
+      if (!planetListEl) return;
+      if (planets.length === 0) {
+        planetListEl.innerHTML = `<div class="empty-state">No planets · deploy one to begin</div>`;
+        return;
+      }
+      const canRemove = planets.length > 1;
+      planetListEl.innerHTML = planets.map((p, i) => {
+        const arch = ARCHETYPES[p.body.archetype || 'terrestrial']?.name || 'Planet';
+        const focusedCls = focusedBody === p.body ? ' is-focused' : '';
+        return `
+          <div class="planet-row${focusedCls}" data-index="${i}">
+            <span class="planet-row-name">${p.body.name}</span>
+            <span class="planet-row-arch">${arch}</span>
+            <button class="planet-focus" type="button" title="Focus">◎</button>
+            <button class="planet-remove" type="button" aria-label="Remove planet" title="Remove" ${canRemove ? '' : 'disabled'}>×</button>
+          </div>`;
+      }).join('');
+      planetListEl.querySelectorAll('.planet-row').forEach(row => {
+        const idx = parseInt(row.dataset.index, 10);
+        const entry = planets[idx];
+        if (!entry) return;
+        row.querySelector('.planet-focus').onclick = () => setFocus(entry.body);
+        row.querySelector('.planet-remove').onclick = () => removePlanetBody(entry.body);
+      });
+    }
 
     function renderMoonsList() {
       renderNavBodies();
@@ -2462,7 +2572,8 @@
     }
 
     function renderFocusBadges() {
-      focusPlanetBtn.classList.toggle('focused', focusedBody === planet);
+      // "Reset Camera" recenters whatever's currently in focus, so no need for
+      // a per-target highlight on the button itself.
       renderMoonsList();
     }
 
@@ -2478,7 +2589,6 @@
     const navRightBtn= document.getElementById('navRight');
     const navBreadcrumbEl = document.getElementById('navBreadcrumb');
     const navRandomBtn    = document.getElementById('navRandomBtn');
-    const nameSourceSelect = document.getElementById('nameSourceSelect');
 
     // navNameEl is contenteditable. While the user has it focused for typing,
     // skip programmatic updates so renders don't clobber their unsaved input.
@@ -2604,6 +2714,10 @@
         sibCount = moons.filter(mn => mn.parent === m?.parent).length;
       }
       navLeftBtn.disabled = navRightBtn.disabled = sibCount < 2;
+
+      // Visit availability mirrors the nav state — refresh whenever the focus
+      // changes. Defined later in the file; guard for first-call ordering.
+      if (typeof updateVisitButtonState === 'function') updateVisitButtonState();
     }
 
     if (navUpBtn) {
@@ -2612,6 +2726,313 @@
       navLeftBtn.onclick  = () => navSibling(-1);
       navRightBtn.onclick = () => navSibling(1);
     }
+
+    // ---------- Surface walk ----------
+    // Lets the user stand on a planet/moon as a microscopic person. Three modes:
+    //   orbit  — default; OrbitControls drives the camera.
+    //   pick   — Visit button armed, awaiting a click on a valid landing spot.
+    //   surface— camera is at ground level; left-drag = look, scroll = FOV zoom.
+    // Eligibility: body.matter.solid && kind is 'planet' or 'moon'. Bodies with
+    // matter.solid === false (gas/ice giants) auto-fail; clicks below sea level
+    // fail too (liquid surface).
+
+    const navVisitBtn        = document.getElementById('navVisit');
+    const surfaceOverlay     = document.getElementById('surfaceOverlay');
+    const surfaceLocationEl  = document.getElementById('surfaceLocationName');
+    const surfaceExitBtn     = document.getElementById('surfaceExitBtn');
+    const pickToastEl        = document.getElementById('pickToast');
+
+    let viewMode = 'orbit';                // 'orbit' | 'pick' | 'surface'
+    let pickTargetBody = null;             // body being targeted in pick mode (focused at activation)
+    const surfaceState = {
+      body: null,
+      localEye: new THREE.Vector3(),       // eye position in body-local (mesh) coords
+      localUp:  new THREE.Vector3(0, 1, 0),// surface normal in body-local
+      localFwd: new THREE.Vector3(0, 0, 1),// initial forward, tangent to surface
+      localRight: new THREE.Vector3(1, 0, 0),
+      yaw: 0,
+      pitch: 0,
+      fov: 60,
+      eyeHeight: 0.04,                     // body-local units above surface
+      // Saved orbit state, restored on exit.
+      savedFov: 45,
+      savedNear: 0.1,
+      savedFar: 4000,
+      savedCamPos: new THREE.Vector3(),
+      savedTarget: new THREE.Vector3(),
+      // Atmosphere shell side gets flipped to DoubleSide when inside so the
+      // shader renders against the back faces (sky).
+      savedGasSide: THREE.FrontSide,
+      gasMeshAdjusted: null,               // the gasMesh whose side we touched
+    };
+
+    function isBodyVisitable(body) {
+      if (!body) return false;
+      if (body.kind !== 'planet' && body.kind !== 'moon') return false;
+      return !!(body.matter && body.matter.solid);
+    }
+
+    function updateVisitButtonState() {
+      if (!navVisitBtn) return;
+      const canVisit = !focusedCity && isBodyVisitable(focusedBody);
+      navVisitBtn.disabled = !canVisit;
+      navVisitBtn.classList.toggle('active', viewMode === 'pick' || viewMode === 'surface');
+      if (viewMode === 'surface') {
+        navVisitBtn.querySelector('.nav-action-label').textContent = 'ON SURFACE';
+      } else if (viewMode === 'pick') {
+        navVisitBtn.querySelector('.nav-action-label').textContent = 'PICK A SPOT…';
+      } else {
+        navVisitBtn.querySelector('.nav-action-label').textContent = 'VISIT SURFACE';
+      }
+    }
+
+    let pickToastTimer = 0;
+    function flashPickToast(msg) {
+      if (!pickToastEl) return;
+      pickToastEl.textContent = msg;
+      pickToastEl.classList.add('show');
+      clearTimeout(pickToastTimer);
+      pickToastTimer = setTimeout(() => pickToastEl.classList.remove('show'), 1800);
+    }
+
+    function enterPickMode() {
+      if (viewMode !== 'orbit') return;
+      if (!isBodyVisitable(focusedBody)) return;
+      viewMode = 'pick';
+      pickTargetBody = focusedBody;
+      document.body.classList.add('pick-mode');
+      // Hide the sculpt ring immediately — it stays painted on the surface
+      // until the next pointermove otherwise, which feels stale.
+      brushRing.visible = false;
+      // Disable orbit drag so the next left-click goes to our pick handler.
+      controls.enabled = false;
+      updateVisitButtonState();
+    }
+
+    function exitPickMode() {
+      if (viewMode !== 'pick') return;
+      viewMode = 'orbit';
+      pickTargetBody = null;
+      document.body.classList.remove('pick-mode');
+      controls.enabled = true;
+      updateVisitButtonState();
+    }
+
+    // Build an orthonormal basis at a body-local point. Up is the radial unit
+    // vector; forward is an arbitrary tangent (we pick the world-Y projection,
+    // falling back to world-X if the up vector is nearly aligned with Y so we
+    // never get a degenerate cross product at the poles).
+    function buildLocalFrame(localPos, outUp, outFwd, outRight) {
+      outUp.copy(localPos).normalize();
+      const ref = Math.abs(outUp.y) > 0.95
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0);
+      outRight.copy(ref).cross(outUp).normalize();
+      outFwd.copy(outUp).cross(outRight).normalize();
+    }
+
+    function enterSurfaceMode(body, hitPoint) {
+      // hitPoint comes in as a world-space Vector3 from the raycast result.
+      const localHit = body.mesh.worldToLocal(hitPoint.clone());
+      // Snap the eye to the local surface normal at the picked point. This
+      // matters more than the picked point's exact radius — the icosphere
+      // vertices form the visible "ground", and we want the camera to ride
+      // their height field, not float over the click coordinate.
+      surfaceState.body = body;
+      surfaceState.eyeHeight = Math.max(0.012, body.baseRadius * 0.003);
+      buildLocalFrame(localHit, surfaceState.localUp, surfaceState.localFwd, surfaceState.localRight);
+      // Place the eye at (vertex height + eyeHeight) along the surface normal.
+      // The picked point's local radius approximates the local ground level.
+      const groundRadius = localHit.length();
+      surfaceState.localEye.copy(surfaceState.localUp).multiplyScalar(groundRadius + surfaceState.eyeHeight);
+      surfaceState.yaw = 0;
+      surfaceState.pitch = 0;
+      surfaceState.fov = 60;
+
+      // Save orbit state for clean restore.
+      surfaceState.savedFov = camera.fov;
+      surfaceState.savedNear = camera.near;
+      surfaceState.savedFar = camera.far;
+      surfaceState.savedCamPos.copy(camera.position);
+      surfaceState.savedTarget.copy(controls.target);
+
+      // Atmosphere from inside — flip the shell to DoubleSide so the inside
+      // faces render. We remember the prior side per visit so re-entering
+      // can't compound the change.
+      if (body.gasMesh && body.gasMesh.visible) {
+        surfaceState.gasMeshAdjusted = body.gasMesh;
+        surfaceState.savedGasSide = body.gasMesh.material.side;
+        body.gasMesh.material.side = THREE.DoubleSide;
+        body.gasMesh.material.needsUpdate = true;
+      } else {
+        surfaceState.gasMeshAdjusted = null;
+      }
+
+      camera.fov = surfaceState.fov;
+      camera.near = 0.001;
+      camera.far = surfaceState.savedFar;
+      camera.updateProjectionMatrix();
+
+      controls.enabled = false;
+      document.body.classList.remove('pick-mode');
+      document.body.classList.add('surface-mode');
+      surfaceOverlay.setAttribute('aria-hidden', 'false');
+      if (surfaceLocationEl) surfaceLocationEl.textContent = body.name;
+      viewMode = 'surface';
+      pickTargetBody = null;
+      updateVisitButtonState();
+      updateSurfaceCamera();
+    }
+
+    function exitSurfaceMode() {
+      if (viewMode !== 'surface') return;
+      // Restore camera projection + transform.
+      camera.fov = surfaceState.savedFov;
+      camera.near = surfaceState.savedNear;
+      camera.far = surfaceState.savedFar;
+      camera.updateProjectionMatrix();
+      camera.position.copy(surfaceState.savedCamPos);
+      controls.target.copy(surfaceState.savedTarget);
+      camera.up.set(0, 1, 0);
+      // Restore atmo shell side.
+      if (surfaceState.gasMeshAdjusted) {
+        surfaceState.gasMeshAdjusted.material.side = surfaceState.savedGasSide;
+        surfaceState.gasMeshAdjusted.material.needsUpdate = true;
+        surfaceState.gasMeshAdjusted = null;
+      }
+      surfaceState.body = null;
+      controls.enabled = true;
+      document.body.classList.remove('surface-mode');
+      surfaceOverlay.setAttribute('aria-hidden', 'true');
+      viewMode = 'orbit';
+      updateVisitButtonState();
+    }
+
+    // Per-frame: rebuild the camera transform from the body's current world
+    // matrix. The body spins on its axis and orbits the sun; by transforming
+    // the local eye/look vectors through body.mesh.matrixWorld every frame,
+    // the camera naturally rides along — sun and stars wheel overhead.
+    const _worldEye    = new THREE.Vector3();
+    const _worldLook   = new THREE.Vector3();
+    const _worldUp     = new THREE.Vector3();
+    const _localLookDir= new THREE.Vector3();
+    function updateSurfaceCamera() {
+      const body = surfaceState.body;
+      if (!body) return;
+      body.mesh.updateMatrixWorld();
+
+      // Local look direction: start from forward, rotate by pitch about right,
+      // then by yaw about up. Order matters — yaw last so the horizon stays
+      // level relative to the surface (not the camera).
+      _localLookDir.copy(surfaceState.localFwd)
+        .applyAxisAngle(surfaceState.localRight, surfaceState.pitch)
+        .applyAxisAngle(surfaceState.localUp, surfaceState.yaw)
+        .normalize();
+
+      _worldEye.copy(surfaceState.localEye).applyMatrix4(body.mesh.matrixWorld);
+      _worldUp.copy(surfaceState.localUp).transformDirection(body.mesh.matrixWorld);
+      _worldLook.copy(_localLookDir).transformDirection(body.mesh.matrixWorld)
+        .add(_worldEye);
+
+      camera.position.copy(_worldEye);
+      camera.up.copy(_worldUp);
+      camera.lookAt(_worldLook);
+    }
+
+    // ---------- Surface input ----------
+    let surfaceDragging = false;
+    let surfaceDragLastX = 0;
+    let surfaceDragLastY = 0;
+    const SURFACE_LOOK_SPEED = 0.0035; // radians per pixel
+    const SURFACE_PITCH_LIMIT = Math.PI * 0.49;
+
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (viewMode === 'pick') {
+        e.preventDefault();
+        setPointerFromEvent(e);
+        raycaster.setFromCamera(pointer, camera);
+        // Only consider the body that was focused when pick mode started, so
+        // the user can't accidentally land on a moon hovering near the planet.
+        if (!pickTargetBody || !pickTargetBody.mesh.visible) {
+          flashPickToast('Target unavailable');
+          exitPickMode();
+          return;
+        }
+        const hits = raycaster.intersectObject(pickTargetBody.mesh, false);
+        if (hits.length === 0) {
+          flashPickToast('Aim at the body');
+          return;
+        }
+        const hit = hits[0];
+        // Reject points below sea level — that's liquid surface. We compare the
+        // local hit radius to baseRadius (heights[i] == 0 is sea level, which
+        // corresponds to a local radius of baseRadius).
+        const localHit = pickTargetBody.mesh.worldToLocal(hit.point.clone());
+        if (localHit.length() < pickTargetBody.baseRadius - 0.001) {
+          flashPickToast('Liquid surface — pick land');
+          return;
+        }
+        enterSurfaceMode(pickTargetBody, hit.point);
+        return;
+      }
+      if (viewMode === 'surface') {
+        e.preventDefault();
+        surfaceDragging = true;
+        surfaceDragLastX = e.clientX;
+        surfaceDragLastY = e.clientY;
+        renderer.domElement.setPointerCapture(e.pointerId);
+      }
+    });
+
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      if (!surfaceDragging || viewMode !== 'surface') return;
+      const dx = e.clientX - surfaceDragLastX;
+      const dy = e.clientY - surfaceDragLastY;
+      surfaceDragLastX = e.clientX;
+      surfaceDragLastY = e.clientY;
+      surfaceState.yaw   -= dx * SURFACE_LOOK_SPEED;
+      surfaceState.pitch += dy * SURFACE_LOOK_SPEED;
+      if (surfaceState.pitch >  SURFACE_PITCH_LIMIT) surfaceState.pitch =  SURFACE_PITCH_LIMIT;
+      if (surfaceState.pitch < -SURFACE_PITCH_LIMIT) surfaceState.pitch = -SURFACE_PITCH_LIMIT;
+    });
+
+    const endSurfaceDrag = (e) => {
+      if (!surfaceDragging) return;
+      surfaceDragging = false;
+      try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    renderer.domElement.addEventListener('pointerup', endSurfaceDrag);
+    renderer.domElement.addEventListener('pointercancel', endSurfaceDrag);
+
+    // Scroll = FOV zoom in surface mode. We piggyback on the canvas wheel
+    // event with capture so we can intercept it before OrbitControls (which
+    // is disabled anyway, but the listener still exists).
+    renderer.domElement.addEventListener('wheel', (e) => {
+      if (viewMode !== 'surface') return;
+      e.preventDefault();
+      const step = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+      surfaceState.fov = Math.max(20, Math.min(95, surfaceState.fov * step));
+      camera.fov = surfaceState.fov;
+      camera.updateProjectionMatrix();
+    }, { passive: false });
+
+    // ESC cancels pick mode or exits surface mode. Keeps a clean way out
+    // when the user gets stuck without reaching the on-screen button.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (viewMode === 'pick') exitPickMode();
+      else if (viewMode === 'surface') exitSurfaceMode();
+    });
+
+    if (navVisitBtn) {
+      navVisitBtn.onclick = () => {
+        if (viewMode === 'orbit') enterPickMode();
+        else if (viewMode === 'pick') exitPickMode();
+        else if (viewMode === 'surface') exitSurfaceMode();
+      };
+    }
+    if (surfaceExitBtn) surfaceExitBtn.onclick = exitSurfaceMode;
 
     addMoonBtn.onclick = () => {
       const parent = (focusedBody && focusedBody.kind === 'planet') ? focusedBody : planet;
@@ -2696,11 +3117,6 @@
       }
     });
 
-    if (nameSourceSelect) {
-      nameSourceSelect.value = nameSource;
-      nameSourceSelect.addEventListener('change', () => { nameSource = nameSourceSelect.value; });
-    }
-
     // Seed default moons from the solar system spec so Earth gets the Moon,
     // Jupiter gets its Galilean crew, etc. Names/seeds are pinned per moon.
     SOLAR_SYSTEM_SPEC.forEach((spec, i) => {
@@ -2743,6 +3159,10 @@
       updateSunLightForFocus();
       updateFocusTracking();
       controls.update();
+      // In surface mode the camera rides the focused body — recompute its
+      // transform from the body's current world matrix every frame so spin
+      // and orbit naturally wheel the sky overhead. Cheap no-op otherwise.
+      if (viewMode === 'surface') updateSurfaceCamera();
       if (isPainting && lastHitLocal && activeBrushBody) {
         applyBrushToBody(activeBrushBody, lastHitLocal, dt);
       }

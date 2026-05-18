@@ -11,14 +11,14 @@
 <body>
   <div id="ui">
     <div class="ui-tabs">
-      <button class="tab-btn active" data-tab="classify" title="Planet Type & Seed">Classify</button>
-      <button class="tab-btn" data-tab="sculpt" title="Terrain Shaping">Sculpt</button>
-      <button class="tab-btn" data-tab="environment" title="Biomes & Painting">Envir</button>
-      <button class="tab-btn" data-tab="colonies" title="Settlements">Colony</button>
-      <button class="tab-btn" data-tab="system" title="Orbit & Moons">System</button>
+      <button class="tab-btn is-hidden" data-tab="classify" data-focus="planet" title="Planet Type & Seed">Classify</button>
+      <button class="tab-btn is-hidden" data-tab="sculpt" data-focus="planet moon" title="Terrain Shaping">Sculpt</button>
+      <button class="tab-btn is-hidden" data-tab="environment" data-focus="planet moon" title="Biomes & Painting">Envir</button>
+      <button class="tab-btn is-hidden" data-tab="colonies" data-focus="planet moon" title="Settlements">Colony</button>
+      <button class="tab-btn active" data-tab="system" data-focus="system planet moon" title="Orbit & Moons">System</button>
     </div>
 
-    <div id="tab-classify" class="tab-content active">
+    <div id="tab-classify" class="tab-content">
       <p class="context-banner" id="classifyContext">Editing: Planet I</p>
 
       <div class="section-header" id="archetypeHeader">1. Planetary Archetype</div>
@@ -54,13 +54,6 @@
       <label>Amplitude <input id="genAmp" type="range" min="5" max="50" value="20"><span class="val" id="genAmpVal">2.0</span></label>
       <label>Sea Level <input id="genSea" type="range" min="0" max="95" value="55"><span class="val" id="genSeaVal">55%</span></label>
       <button id="regenBtn" class="full-btn">Generate World</button>
-
-      <div class="section-header" style="margin-top:14px">Planet Roster</div>
-      <p class="hint" id="rosterHint">Deploy or decommission planets in this system</p>
-      <div class="btn-group">
-        <button id="deployPlanetBtn" class="small-btn" style="flex:1">+ Deploy Planet</button>
-        <button id="removePlanetBtn" class="small-btn" style="flex:1">– Remove Focused</button>
-      </div>
     </div>
 
     <div id="tab-sculpt" class="tab-content">
@@ -85,16 +78,20 @@
       <label>Radius <input id="brushRadiusB" type="range" min="5" max="50" value="25"><span class="val" id="brushRadiusValB">0.25</span></label>
       <p class="hint" id="biomeHint">Tools adapt to the focused body</p>
 
-      <div class="section-header" style="margin-top:14px" id="atmoHeader">Atmosphere</div>
-      <label>Size <input id="atmoThick" type="range" min="100" max="140" value="110"><span class="val" id="atmoThickVal">1.10</span></label>
-      <label>Density <input id="atmoDensity" type="range" min="0" max="100" value="20"><span class="val" id="atmoDensityVal">0.20</span></label>
-      <label>Coverage <input id="atmoCoverage" type="range" min="0" max="100" value="35"><span class="val" id="atmoCoverageVal">0.35</span></label>
-      <p class="hint" id="atmoHint">No atmosphere on this body</p>
+      <div id="atmoSection">
+        <div class="section-header" style="margin-top:14px" id="atmoHeader">Atmosphere</div>
+        <label>Size <input id="atmoThick" type="range" min="100" max="140" value="110"><span class="val" id="atmoThickVal">1.10</span></label>
+        <label>Density <input id="atmoDensity" type="range" min="0" max="100" value="20"><span class="val" id="atmoDensityVal">0.20</span></label>
+        <label>Coverage <input id="atmoCoverage" type="range" min="0" max="100" value="35"><span class="val" id="atmoCoverageVal">0.35</span></label>
+        <p class="hint" id="atmoHint">No atmosphere on this body</p>
+      </div>
 
-      <div class="section-header" style="margin-top:14px" id="ringsHeader">Rings</div>
-      <label>Enabled <input id="ringsEnabled" type="checkbox"></label>
-      <label>Intensity <input id="ringsIntensity" type="range" min="0" max="100" value="65"><span class="val" id="ringsIntensityVal">0.65</span></label>
-      <p class="hint" id="ringsHint">Focus a planet to add rings</p>
+      <div id="ringsSection">
+        <div class="section-header" style="margin-top:14px" id="ringsHeader">Rings</div>
+        <label>Enabled <input id="ringsEnabled" type="checkbox"></label>
+        <label>Intensity <input id="ringsIntensity" type="range" min="0" max="100" value="65"><span class="val" id="ringsIntensityVal">0.65</span></label>
+        <p class="hint" id="ringsHint">Focus a planet to add rings</p>
+      </div>
     </div>
 
     <div id="tab-colonies" class="tab-content">
@@ -104,27 +101,30 @@
       <div id="cityList" class="scroll-list"></div>
     </div>
 
-    <div id="tab-system" class="tab-content">
+    <div id="tab-system" class="tab-content active">
       <p class="context-banner" id="systemContext">Editing: Planet I</p>
+
+      <div id="rosterSection">
+        <div class="section-header">Planet Roster</div>
+        <p class="hint" id="rosterHint">Deploy or decommission planets in this system</p>
+        <button id="deployPlanetBtn" class="full-btn">+ Deploy Planet</button>
+        <div id="planetList"></div>
+      </div>
 
       <div id="bodyOrbitSection">
         <div class="section-header" id="bodyOrbitHeader">Orbital Profile</div>
         <label id="bodyDistRow">Distance <input id="bodyDistInput" type="range" min="120" max="900" value="220"><span class="val" id="bodyDistVal">220</span></label>
         <label id="bodySpeedRow">Orbit Speed <input id="bodySpeedInput" type="range" min="1" max="40" value="8"><span class="val" id="bodySpeedVal">0.08</span></label>
+        <label id="bodyMoonSpeedRow">Speed <input id="bodyMoonSpeedInput" type="range" min="1" max="100" value="40"><span class="val" id="bodyMoonSpeedVal">40</span></label>
         <label id="bodySpinRow">Spin <input id="bodySpinInput" type="range" min="0" max="100" value="30"><span class="val" id="bodySpinVal">0.06</span></label>
         <label id="bodySizeRow">Size <input id="bodySizeInput" type="range" min="3" max="30" value="10"><span class="val" id="bodySizeVal">1.0</span></label>
       </div>
 
-      <div class="section-header" style="margin-top:10px">Dynamics</div>
-      <label>Moon Speed <input id="moonSpeed" type="range" min="0" max="100" value="40"><span class="val" id="moonSpeedVal">40</span></label>
-      <label>Show Orbits <input id="showOrbits" type="checkbox" checked></label>
-      <label>Pause <input id="pauseRot" type="checkbox"></label>
-      <label>Name Style
-        <select id="nameSourceSelect">
-          <option value="cosmic">Cosmic</option>
-          <option value="library">Library</option>
-        </select>
-      </label>
+      <div id="dynamicsSection">
+        <div class="section-header" style="margin-top:10px">Dynamics</div>
+        <label>Show Orbits <input id="showOrbits" type="checkbox" checked></label>
+        <label>Pause <input id="pauseRot" type="checkbox"></label>
+      </div>
 
       <div id="satellitesSection">
         <div class="section-header" style="margin-top:10px">
@@ -198,7 +198,27 @@
     <div class="nav-row nav-row-down">
       <button class="nav-arrow" id="navDown" type="button" title="Zoom in">▼</button>
     </div>
+    <div class="nav-row nav-row-visit">
+      <button class="nav-action" id="navVisit" type="button" title="Stand on this surface">
+        <span class="nav-action-glyph">👣</span><span class="nav-action-label">VISIT SURFACE</span>
+      </button>
+    </div>
   </nav>
+
+  <div id="surfaceOverlay" aria-hidden="true">
+    <div id="surfaceTopBar">
+      <div class="surface-info">
+        <div class="surface-eyebrow">Surface View</div>
+        <div class="surface-name" id="surfaceLocationName">—</div>
+      </div>
+      <button id="surfaceExitBtn" type="button" title="Return to orbital view">▲ RETURN TO ORBIT</button>
+    </div>
+    <div id="surfaceCrosshair"></div>
+    <div id="surfaceHint">Drag to look around · Scroll to zoom</div>
+  </div>
+
+  <div id="pickHint" aria-hidden="true">Click on solid land to land there · Esc to cancel</div>
+  <div id="pickToast" aria-live="polite"></div>
 
   <div id="scanOverlay"></div>
   <canvas id="c"></canvas>
