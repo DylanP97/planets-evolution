@@ -10,11 +10,13 @@
 
 <body>
   <div id="ui">
+    <div class="scan-line"></div>
     <div class="ui-tabs">
       <button class="tab-btn is-hidden" data-tab="classify" data-focus="planet" title="Planet Type & Seed">Classify</button>
       <button class="tab-btn is-hidden" data-tab="sculpt" data-focus="planet moon" title="Terrain Shaping">Sculpt</button>
       <button class="tab-btn is-hidden" data-tab="environment" data-focus="planet moon" title="Biomes & Painting">Envir</button>
       <button class="tab-btn is-hidden" data-tab="colonies" data-focus="planet moon" title="Settlements">Colony</button>
+      <button class="tab-btn is-hidden" data-tab="satellites" data-focus="planet" title="Satellites & Probes">Sats</button>
       <button class="tab-btn active" data-tab="system" data-focus="system planet moon" title="Orbit & Moons">System</button>
     </div>
 
@@ -101,6 +103,26 @@
       <div id="cityList" class="scroll-list"></div>
     </div>
 
+    <div id="tab-satellites" class="tab-content">
+      <p class="context-banner" id="satellitesContext">Editing: Planet I</p>
+
+      <div id="satellitesSection">
+        <div class="section-header">
+          Satellites
+          <button id="addMoon" class="small-btn">+ Deploy</button>
+        </div>
+        <div id="moonsList"></div>
+      </div>
+
+      <div id="probesSection">
+        <div class="section-header" style="margin-top:10px">
+          Probes
+          <button id="addProbe" class="small-btn">+ Deploy</button>
+        </div>
+        <div id="probesList"></div>
+      </div>
+    </div>
+
     <div id="tab-system" class="tab-content active">
       <p class="context-banner" id="systemContext">Editing: Planet I</p>
 
@@ -124,14 +146,6 @@
         <div class="section-header" style="margin-top:10px">Dynamics</div>
         <label>Show Orbits <input id="showOrbits" type="checkbox" checked></label>
         <label>Pause <input id="pauseRot" type="checkbox"></label>
-      </div>
-
-      <div id="satellitesSection">
-        <div class="section-header" style="margin-top:10px">
-          Satellites
-          <button id="addMoon" class="small-btn">+ Deploy</button>
-        </div>
-        <div id="moonsList"></div>
       </div>
     </div>
 

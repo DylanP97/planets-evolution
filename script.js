@@ -1,5 +1,6 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
     // ---------- Planet constants ----------
     const BASE_RADIUS = 12;          // planet radius; moons declare their own
@@ -143,11 +144,15 @@
     // when gasThickness rescales the shell.
     const GAS_VERT = /* glsl */ `
       varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      varying vec3 vBodyCenter;
       varying vec3 vViewDir;
       varying vec3 vLocalNormal;
       void main() {
         vLocalNormal = normalize(position);
         vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vBodyCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vViewDir = normalize(cameraPosition - wp.xyz);
         gl_Position = projectionMatrix * viewMatrix * wp;
@@ -156,13 +161,19 @@
     const GAS_FRAG = /* glsl */ `
       precision highp float;
       varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      varying vec3 vBodyCenter;
       varying vec3 vViewDir;
       varying vec3 vLocalNormal;
-      uniform vec3  uColor;
+      uniform vec3  uColor;      // cloud color (white-ish on Earth, yellow on Venus, ...)
+      uniform vec3  uSkyTint;    // baseline sky color away from clouds (Rayleigh tint)
       uniform vec3  uSunDir;
       uniform float uDensity;
       uniform float uMode;       // 0 = atmosphere, 1 = full gas
       uniform float uCoverage;   // 0 = empty sky, 1 = total overcast (atmosphere only)
+      uniform float uOpaqueSky;  // 1 = render as solid occluding sky (used inside dense atmospheres)
+      uniform float uTime;       // seconds, drives cloud drift
+      uniform float uWindSpeed;  // radians/sec around the body's Y axis, 0 = static
 
       // Cheap value-noise FBM. Good enough for cloud shapes at this scale.
       float hash3(vec3 p) {
@@ -199,25 +210,73 @@
       }
 
       void main() {
-        float NdotV = clamp(abs(dot(vWorldNormal, vViewDir)), 0.0, 1.0);
-        float fr = 1.0 - NdotV;                  // 1 at silhouette, 0 at center
-        float n  = fbm(vLocalNormal * 3.5);      // 0..1 cloud field
+        float NdotV   = clamp(abs(dot(vWorldNormal, vViewDir)), 0.0, 1.0);
+        float fr      = 1.0 - NdotV;             // 1 at silhouette, 0 at center
+        float lambert = max(0.0, dot(vWorldNormal, normalize(uSunDir)));
 
         vec3  col = uColor;
         float alpha;
 
         if (uMode < 0.5) {
-          // Atmosphere: sparse cloud clumps. uCoverage slides the noise threshold
-          // so 0 → almost no clouds and 1 → near-total overcast. No rim haze
-          // and an explicit limb-fade so the shell doesn't read as a visible
-          // dome around the body — the user only sees scattered clouds.
-          float thresh = 0.95 - uCoverage * 0.90; // 0.95 (empty) .. 0.05 (overcast)
-          float cloud = smoothstep(thresh, thresh + 0.18, n);
-          float limbFade = smoothstep(0.0, 0.35, NdotV);
-          alpha = cloud * uDensity * 1.6 * limbFade;
+          // ---- Atmosphere ----
+          // Cloud noise sampled in a wind-rotated local frame so cloud cells
+          // drift around the body's Y axis (zonal winds). Rotation is in
+          // local space so the body's own spin underneath doesn't double-shift it.
+          float ang = uTime * uWindSpeed;
+          float wc  = cos(ang);
+          float ws  = sin(ang);
+          vec3  windDir = vec3(
+             wc * vLocalNormal.x + ws * vLocalNormal.z,
+                  vLocalNormal.y,
+            -ws * vLocalNormal.x + wc * vLocalNormal.z
+          );
+          float n      = fbm(windDir * 3.5);
+          float thresh = 0.95 - uCoverage * 0.90;
+          float cloud  = smoothstep(thresh - 0.10, thresh + 0.28, n);
+
+          // Sky color = Rayleigh tint, bleached toward the sun for forward-scatter glow.
+          vec3  viewDir = normalize(-vViewDir);
+          float sunDot  = max(0.0, dot(normalize(uSunDir), viewDir));
+          vec3  skyCol  = mix(uSkyTint, vec3(1.0), pow(sunDot, 6.0) * 0.65);
+
+          // Night-side gating: daytime sky is opaque because sun-scattered
+          // light washes out stars (not because the air itself is solid), so
+          // we gate alpha on the sun term. Very dense atmospheres (Venus,
+          // storm) stay opaque at night too via a density-driven floor.
+          float nightFloor = clamp((uDensity - 0.5) * 2.0, 0.0, 1.0);
+          float sunFactor  = mix(max(0.10, nightFloor), 1.00, lambert);
+
+          // Is the camera inside the shell? Every surface fragment sits on
+          // the shell, so we can use this fragment's own distance-from-center
+          // as the shell's world radius. vBodyCenter comes from the vertex
+          // stage (modelMatrix isn't reliably available in the fragment stage
+          // across all WebGL stacks).
+          float shellRad = length(vWorldPos - vBodyCenter);
+          float camDist  = length(cameraPosition - vBodyCenter);
+
+          float skyAlpha;
+          float cloudAlpha;
+          if (camDist < shellRad) {
+            // From the surface: near-opaque sky during day (subject to night
+            // gating). Path factor saturates the horizon faster than the
+            // zenith — grazing rays cross more air.
+            float pathFactor = 1.0 / max(NdotV, 0.20);
+            skyAlpha   = clamp(uDensity * 3.0 * sunFactor * pathFactor, 0.0, 1.0);
+            cloudAlpha = cloud * sunFactor;
+          } else {
+            // From orbit: surface visible at disc center, blue glow at the
+            // limb where the line of sight grazes through more air. Clouds
+            // remain visible across the whole disc.
+            float rim = pow(1.0 - NdotV, 1.8);
+            skyAlpha   = uDensity * rim;
+            cloudAlpha = cloud * uDensity * 1.6;
+          }
+
+          col   = mix(skyCol, uColor, cloud);
+          alpha = max(skyAlpha, cloudAlpha);
         } else {
-          // Full gas: gentle banding gives the Jupiter-stripe feel without
-          // explicit textures. Fresnel falloff softens the silhouette.
+          // ---- Full gas (gas giants) ----
+          float n     = fbm(vLocalNormal * 3.5);
           float bands = 0.5 + 0.5 * sin(vLocalNormal.y * 6.0 + n * 2.5);
           col = mix(uColor * 0.82, uColor * 1.06, bands);
           // Dense at center, fading right to zero at the rim so the silhouette
@@ -227,12 +286,24 @@
           alpha = uDensity * core;
         }
 
-        // Sun lighting: dim the night side but keep clouds slightly visible.
-        float lambert = max(0.0, dot(vWorldNormal, normalize(uSunDir)));
-        float light   = mix(0.30, 1.10, lambert);
+        // Day/night color dimming (alpha was already gated by sunFactor in
+        // the atmosphere path; this keeps colors readable on the night side
+        // without going pitch-black).
+        float light = mix(0.30, 1.10, lambert);
         col *= light;
 
-        gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+        float a = clamp(alpha, 0.0, 1.0);
+        if (uOpaqueSky > 0.5) {
+          // Inside a dense atmosphere we promote the shell to the opaque
+          // queue so it occludes other bodies (otherwise the transparent
+          // queue draws this last and we see e.g. Earth's clouds through
+          // Venus's sky). Drop pixels too thin to count as sky so we don't
+          // occlude with see-through gaps, and force the rest to full alpha
+          // since blending is no longer doing the work.
+          if (a < 0.5) discard;
+          a = 1.0;
+        }
+        gl_FragColor = vec4(col, a);
       }
     `;
 
@@ -242,10 +313,14 @@
         fragmentShader: GAS_FRAG,
         uniforms: {
           uColor:    { value: new THREE.Color(0xffffff) },
+          uSkyTint:  { value: new THREE.Color(0x87ceeb) }, // overwritten per-body in applyMatterToBody
           uSunDir:   { value: new THREE.Vector3(1, 0, 0) }, // overwritten per-frame by updateSunLightForFocus
           uDensity:  { value: 0.18 },
           uMode:     { value: 0.0 },
           uCoverage: { value: 0.35 },
+          uOpaqueSky:{ value: 0.0 },
+          uTime:     { value: 0.0 },
+          uWindSpeed:{ value: 0.05 },
         },
         transparent: true,
         depthWrite: false,
@@ -408,7 +483,7 @@
     }
 
     function createBody({ kind, name, baseRadius, detail, palette, hasOcean, initialHeight = -0.5 }) {
-      const geo = new THREE.IcosahedronGeometry(baseRadius, detail).toNonIndexed();
+      const geo = new THREE.IcosahedronGeometry(baseRadius, detail);
       const posAttr = geo.attributes.position;
       const N = posAttr.count;
       const unitDirs = new Float32Array(N * 3);
@@ -757,22 +832,22 @@
     // gasThickness is multiplied with baseRadius (1.0 = surface; 1.20 = +20%).
     // gasDensity is the shell's base opacity (0..1).
     const ARCHETYPE_MATTER = {
-      terrestrial: { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xffffff, gasThickness: 1.10, gasDensity: 0.45, gasCoverage: 0.35 },
-      ocean:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xcce7ff, gasThickness: 1.10, gasDensity: 0.50, gasCoverage: 0.40 },
-      gas_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0xc89060, gasThickness: 1.00, gasDensity: 0.95, gasCoverage: 0.50 },
-      ice_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0x88bbee, gasThickness: 1.00, gasDensity: 0.92, gasCoverage: 0.50 },
+      terrestrial: { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xffffff, skyTint: 0x87ceeb, gasThickness: 1.10, gasDensity: 0.45, gasCoverage: 0.35, windSpeed: 0.03 },
+      ocean:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xcce7ff, skyTint: 0x9ad0e6, gasThickness: 1.10, gasDensity: 0.50, gasCoverage: 0.40, windSpeed: 0.04 },
+      gas_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0xc89060, gasThickness: 1.00, gasDensity: 0.95, gasCoverage: 0.50, windSpeed: 0.12 },
+      ice_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0x88bbee, gasThickness: 1.00, gasDensity: 0.92, gasCoverage: 0.50, windSpeed: 0.08 },
       desert:      { solid: true,  liquid: false, gas: false },
-      lava:        { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff8844, gasThickness: 1.08, gasDensity: 0.55, gasCoverage: 0.40 },
-      ice_planet:  { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xccddee, gasThickness: 1.05, gasDensity: 0.30, gasCoverage: 0.25 },
-      jungle:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xe8f5e0, gasThickness: 1.12, gasDensity: 0.55, gasCoverage: 0.65 },
-      swamp:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xc5d4a8, gasThickness: 1.10, gasDensity: 0.60, gasCoverage: 0.55 },
-      toxic:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xadff2f, gasThickness: 1.15, gasDensity: 0.70, gasCoverage: 0.70 },
-      venusian:    { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xe6c870, gasThickness: 1.16, gasDensity: 1.00, gasCoverage: 1.00 },
+      lava:        { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff8844, skyTint: 0xc4441a, gasThickness: 1.08, gasDensity: 0.55, gasCoverage: 0.40, windSpeed: 0.10 },
+      ice_planet:  { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xccddee, skyTint: 0xb8d8ec, gasThickness: 1.05, gasDensity: 0.30, gasCoverage: 0.25, windSpeed: 0.02 },
+      jungle:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xe8f5e0, skyTint: 0xb6dba0, gasThickness: 1.12, gasDensity: 0.55, gasCoverage: 0.65, windSpeed: 0.04 },
+      swamp:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xc5d4a8, skyTint: 0x96a878, gasThickness: 1.10, gasDensity: 0.60, gasCoverage: 0.55, windSpeed: 0.02 },
+      toxic:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xadff2f, skyTint: 0x70c020, gasThickness: 1.15, gasDensity: 0.70, gasCoverage: 0.70, windSpeed: 0.06 },
+      venusian:    { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xe6c870, skyTint: 0xe6c870, gasThickness: 1.16, gasDensity: 1.00, gasCoverage: 1.00, windSpeed: 0.01 },
       metal:       { solid: true,  liquid: false, gas: false },
-      carbon:      { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0x555555, gasThickness: 1.06, gasDensity: 0.45, gasCoverage: 0.40 },
+      carbon:      { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0x555555, skyTint: 0x303030, gasThickness: 1.06, gasDensity: 0.45, gasCoverage: 0.40, windSpeed: 0.03 },
       moon_like:   { solid: true,  liquid: false, gas: false },
-      storm:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xaaaaff, gasThickness: 1.18, gasDensity: 0.80, gasCoverage: 0.85 },
-      living:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff99cc, gasThickness: 1.08, gasDensity: 0.50, gasCoverage: 0.45 },
+      storm:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xaaaaff, skyTint: 0x6878a0, gasThickness: 1.18, gasDensity: 0.80, gasCoverage: 0.85, windSpeed: 0.18 },
+      living:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff99cc, skyTint: 0xe682b5, gasThickness: 1.08, gasDensity: 0.50, gasCoverage: 0.45, windSpeed: 0.05 },
       rogue:       { solid: true,  liquid: false, gas: false },
     };
 
@@ -800,7 +875,9 @@
           body.gasCoverage  = matterCfg.gasCoverage  ?? 0.35;
           const u = body.gasMesh.material.uniforms;
           u.uColor.value.setHex(matterCfg.gasCol || 0xffffff);
+          u.uSkyTint.value.setHex(matterCfg.skyTint ?? matterCfg.gasCol ?? 0x87ceeb);
           u.uMode.value = matterCfg.gas === 'full' ? 1.0 : 0.0;
+          u.uWindSpeed.value = matterCfg.windSpeed ?? 0.05;
           applyGasShell(body);
           body.gasMesh.visible = true;
         } else {
@@ -1276,6 +1353,183 @@
         const omega = speed * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
         m.angle += omega * dt;
         updateMoonPosition(m);
+      }
+    }
+
+    // ---------- Probes (artificial satellites) ----------
+    // Unlike moons, probes are not editable bodies — they're a loaded 3D mesh
+    // (.glb) orbiting a parent planet. They reuse the moon orbit math but skip
+    // the createBody pipeline entirely (no terrain, biome, archetype, etc.).
+    const MAX_PROBES = 4;
+    const PROBE_REF_DISTANCE = 22;
+    const DEFAULT_PROBE_SPEED = (60 / 3000) * Math.PI * 2; // a touch faster than moons
+    const PROBE_BASE_SIZE = 1.0; // target on-screen length at size === 1
+    let probeSeedCounter = 0;
+    const probes = [];
+    const probeSlotsByParent = new Map();
+
+    // Cached parsed GLB. Each addSatellite clones it so multiple probes share
+    // geometry/material instances and we only pay the network/parse cost once.
+    let satelliteTemplate = null;
+    let satelliteTemplateLoading = null;
+
+    function loadSatelliteTemplate() {
+      if (satelliteTemplate) return Promise.resolve(satelliteTemplate);
+      if (satelliteTemplateLoading) return satelliteTemplateLoading;
+      const loader = new GLTFLoader();
+      satelliteTemplateLoading = new Promise((resolve, reject) => {
+        loader.load(
+          '3d_objects/satellite.glb',
+          (gltf) => {
+            const root = gltf.scene;
+            // Center the model on its bounding-box center so orbit pivot is sane.
+            const bbox = new THREE.Box3().setFromObject(root);
+            const center = bbox.getCenter(new THREE.Vector3());
+            root.position.sub(center);
+            // Normalize so the model's longest axis is PROBE_BASE_SIZE units.
+            const size = bbox.getSize(new THREE.Vector3());
+            const longest = Math.max(size.x, size.y, size.z) || 1;
+            const norm = PROBE_BASE_SIZE / longest;
+            root.scale.multiplyScalar(norm);
+            satelliteTemplate = root;
+            resolve(root);
+          },
+          undefined,
+          (err) => {
+            console.error('[probe] failed to load satellite.glb', err);
+            reject(err);
+          }
+        );
+      });
+      return satelliteTemplateLoading;
+    }
+
+    function probeOrbitPlane(slot) {
+      // Offset the inclination/node from moons so a planet with both doesn't
+      // end up with co-planar orbits.
+      return {
+        inclination: (slot % 2 === 0 ? 1 : -1) * (0.22 + 0.14 * slot),
+        node: slot * 0.85 + 0.4,
+        phase: (slot / MAX_PROBES) * Math.PI * 2 + Math.PI / 5,
+      };
+    }
+
+    function allocateProbeSlot(parent) {
+      let used = probeSlotsByParent.get(parent);
+      if (!used) { used = new Set(); probeSlotsByParent.set(parent, used); }
+      for (let i = 0; i < MAX_PROBES; i++) {
+        if (!used.has(i)) { used.add(i); return i; }
+      }
+      return -1;
+    }
+
+    function freeProbeSlot(parent, slot) {
+      const used = probeSlotsByParent.get(parent);
+      if (used) used.delete(slot);
+    }
+
+    function updateProbePosition(p) {
+      const x0 = Math.cos(p.angle) * p.distance;
+      const z0 = Math.sin(p.angle) * p.distance;
+      const ci = Math.cos(p.inclination), si = Math.sin(p.inclination);
+      const y1 = -z0 * si;
+      const z1 = z0 * ci;
+      const cn = Math.cos(p.node), sn = Math.sin(p.node);
+      const xf = x0 * cn - z1 * sn;
+      const zf = x0 * sn + z1 * cn;
+      const pp = p.parent ? p.parent.group.position : { x: 0, y: 0, z: 0 };
+      p.mesh.position.set(xf + pp.x, y1 + pp.y, zf + pp.z);
+    }
+
+    function addSatellite(parent, size, distance, opts = {}) {
+      const host = parent || planet;
+      if (!host) return null;
+      const ownCount = probes.reduce((n, p) => n + (p.parent === host ? 1 : 0), 0);
+      if (ownCount >= MAX_PROBES) return null;
+      const slot = allocateProbeSlot(host);
+      if (slot < 0) return null;
+      const plane = probeOrbitPlane(slot);
+      const name = opts.name || `${host.name} · Probe ${ownCount + 1}`;
+      // A placeholder mesh holds the slot until the GLB resolves — that way
+      // sliders and orbit math work the instant the user clicks Deploy.
+      const group = new THREE.Group();
+      group.name = name;
+      group.scale.setScalar(size);
+      scene.add(group);
+
+      const probe = {
+        mesh: group,
+        parent: host,
+        name,
+        seed: opts.seed || ('probe-' + (++probeSeedCounter)),
+        angle: plane.phase,
+        inclination: plane.inclination,
+        node: plane.node,
+        size,
+        distance,
+        speed: DEFAULT_PROBE_SPEED,
+        slot,
+        // Small per-frame self-rotation so the satellite looks alive in orbit.
+        spin: 0.5 + Math.random() * 0.3,
+      };
+      probes.push(probe);
+      updateProbePosition(probe);
+
+      loadSatelliteTemplate().then((template) => {
+        // Probe may have been removed before the GLB resolved — bail then.
+        if (!probes.includes(probe)) return;
+        const clone = template.clone(true);
+        group.add(clone);
+      }).catch(() => {
+        // Fallback marker so the user still sees something if the GLB fails.
+        if (!probes.includes(probe)) return;
+        const fallback = new THREE.Mesh(
+          new THREE.BoxGeometry(0.6, 0.6, 0.6),
+          new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.5, roughness: 0.4 })
+        );
+        group.add(fallback);
+      });
+
+      return probe;
+    }
+
+    function removeSatelliteAt(index) {
+      const probe = probes[index];
+      if (!probe) return;
+      scene.remove(probe.mesh);
+      probe.mesh.traverse((obj) => {
+        if (obj.isMesh) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            mats.forEach(m => m.dispose());
+          }
+        }
+      });
+      freeProbeSlot(probe.parent, probe.slot);
+      probes.splice(index, 1);
+    }
+
+    function setSatelliteSize(index, size) {
+      const p = probes[index];
+      if (!p) return;
+      p.size = size;
+      p.mesh.scale.setScalar(size);
+    }
+
+    function setSatelliteDistance(index, distance) {
+      const p = probes[index];
+      if (!p) return;
+      p.distance = distance;
+      updateProbePosition(p);
+    }
+
+    function updateSatellites(dt) {
+      for (const p of probes) {
+        const omega = p.speed * Math.pow(PROBE_REF_DISTANCE / p.distance, 1.5);
+        p.angle += omega * dt;
+        p.mesh.rotation.y += p.spin * dt;
+        updateProbePosition(p);
       }
     }
 
@@ -1783,6 +2037,7 @@
         if (tab === 'sculpt') currentTool = 'land';
         else if (tab === 'environment') currentTool = 'biome';
         else if (tab === 'colonies') currentTool = 'city';
+        else if (tab === 'satellites') currentTool = 'none';
         else currentTool = 'none';
       };
     });
@@ -1801,6 +2056,8 @@
     const pauseRotInput      = document.getElementById('pauseRot');
     const moonsListEl        = document.getElementById('moonsList');
     const addMoonBtn         = document.getElementById('addMoon');
+    const probesListEl       = document.getElementById('probesList');
+    const addProbeBtn        = document.getElementById('addProbe');
     const seedInput          = document.getElementById('seedInput');
     const genAmpInput        = document.getElementById('genAmp');
     const genAmpVal          = document.getElementById('genAmpVal');
@@ -1811,6 +2068,7 @@
     const focusPlanetBtn     = document.getElementById('focusPlanet');
     const focusNameEl        = document.getElementById('focusName');
 
+    const satellitesContext  = document.getElementById('satellitesContext');
     const archetypeSelect    = document.getElementById('archetypeSelect');
 
     archetypeSelect.onchange = () => {
@@ -2155,15 +2413,18 @@
         regenBtn.disabled = false;
       }
 
+      // --- Satellites tab ---
+      if (isPlanet) {
+        satellitesContext.textContent = `Editing: ${focusedBody.name}`;
+      }
+
       // --- System tab ---
       // Section visibility:
       //   roster        ↔ system focus
       //   bodyOrbit     ↔ planet | moon focus
-      //   satellites    ↔ planet focus
       //   bodyMoonSpeed ↔ moon focus
       rosterSectionEl.classList.toggle('is-hidden-section', !isSystem);
       bodyOrbitSectionEl.classList.toggle('is-hidden-section', !(isPlanet || isMoon));
-      satellitesSectionEl.style.display = isPlanet ? '' : 'none';
 
       if (isSystem) {
         systemContextEl.textContent = `Editing: ${systemName} System`;
@@ -2223,7 +2484,6 @@
       syncAtmoSlidersToFocus();
       syncRingsToFocus();
     }
-
     // Mirror focused body's gas state into the atmo sliders + hint. If the
     // focused body has no gas (or isn't a planet), gray out the controls and
     // explain why so the panel doesn't look broken.
@@ -2422,6 +2682,10 @@
           moons.splice(i, 1);
         }
       }
+      // Remove probes orbiting this planet.
+      for (let i = probes.length - 1; i >= 0; i--) {
+        if (probes[i].parent === target) removeSatelliteAt(i);
+      }
       // Remove cities on this planet.
       for (let i = cities.length - 1; i >= 0; i--) {
         if (cities[i].body === target) {
@@ -2571,10 +2835,76 @@
       addMoonBtn.disabled = own.length >= MAX_MOONS;
     }
 
+    function renderProbesList() {
+      const parent = (focusedBody && focusedBody.kind === 'planet') ? focusedBody : null;
+      const own = parent ? probes.filter(p => p.parent === parent) : [];
+
+      if (!parent) {
+        probesListEl.innerHTML = '';
+        addProbeBtn.disabled = true;
+        return;
+      }
+
+      if (own.length === 0) {
+        probesListEl.innerHTML = `<div class="empty-state">No probes in orbit · deploy one to begin</div>`;
+        addProbeBtn.disabled = false;
+        return;
+      }
+
+      probesListEl.innerHTML = own.map((p, i) => {
+        const sizeSlider = Math.round(p.size * 10);
+        const distSlider = Math.round(p.distance);
+        return `
+          <div class="moon-card" data-local="${i}">
+            <div class="moon-card-header">
+              <span class="moon-card-title">${p.name}</span>
+              <div class="moon-card-actions">
+                <button class="probe-remove moon-remove small-btn" type="button" aria-label="Remove probe">×</button>
+              </div>
+            </div>
+            <div class="moon-card-body">
+              <label>Size <input class="probe-size-input" type="range" min="2" max="40" value="${sizeSlider}"><span class="val probe-size-val">${sizeSlider}</span></label>
+              <label>Dist <input class="probe-dist-input" type="range" min="14" max="60" value="${distSlider}"><span class="val probe-dist-val">${distSlider}</span></label>
+              <div class="moon-meta">
+                <span>Probe · ${p.seed}</span>
+                <span>d ${p.distance.toFixed(0)} u</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      probesListEl.querySelectorAll('.moon-card').forEach((row) => {
+        const localIdx = parseInt(row.dataset.local, 10);
+        const probeRef = own[localIdx];
+        const globalIdx = () => probes.indexOf(probeRef);
+        const sizeIn = row.querySelector('.probe-size-input');
+        const sizeValEl = row.querySelector('.probe-size-val');
+        const distIn = row.querySelector('.probe-dist-input');
+        const distValEl = row.querySelector('.probe-dist-val');
+        const rmBtn = row.querySelector('.probe-remove');
+        sizeIn.oninput = () => {
+          sizeValEl.textContent = sizeIn.value;
+          setSatelliteSize(globalIdx(), parseInt(sizeIn.value, 10) / 10);
+        };
+        distIn.oninput = () => {
+          distValEl.textContent = distIn.value;
+          setSatelliteDistance(globalIdx(), parseInt(distIn.value, 10));
+        };
+        rmBtn.onclick = () => {
+          removeSatelliteAt(globalIdx());
+          renderProbesList();
+        };
+      });
+
+      addProbeBtn.disabled = own.length >= MAX_PROBES;
+    }
+
     function renderFocusBadges() {
       // "Reset Camera" recenters whatever's currently in focus, so no need for
       // a per-target highlight on the button itself.
       renderMoonsList();
+      renderProbesList();
     }
 
     // ---------- Hierarchy navigation ----------
@@ -2760,10 +3090,11 @@
       savedFar: 4000,
       savedCamPos: new THREE.Vector3(),
       savedTarget: new THREE.Vector3(),
-      // Atmosphere shell side gets flipped to DoubleSide when inside so the
-      // shader renders against the back faces (sky).
-      savedGasSide: THREE.FrontSide,
-      gasMeshAdjusted: null,               // the gasMesh whose side we touched
+      // Atmosphere shell gets reconfigured when inside: flipped to DoubleSide
+      // so the inside faces render, and (for dense atmospheres) promoted to
+      // an opaque occluder so other bodies don't bleed through the sky.
+      gasMeshAdjusted: null,               // the gasMesh whose material we touched
+      savedGas: null,                      // snapshot of material state to restore on exit
     };
 
     function isBodyVisitable(body) {
@@ -2857,15 +3188,35 @@
       surfaceState.savedTarget.copy(controls.target);
 
       // Atmosphere from inside — flip the shell to DoubleSide so the inside
-      // faces render. We remember the prior side per visit so re-entering
-      // can't compound the change.
+      // faces render, and if the atmosphere is dense enough to read as a
+      // solid sky, promote it to the opaque queue with depthWrite on so it
+      // properly occludes other bodies in the scene. We snapshot the prior
+      // material state per visit so re-entering can't compound the change.
       if (body.gasMesh && body.gasMesh.visible) {
+        const mat = body.gasMesh.material;
         surfaceState.gasMeshAdjusted = body.gasMesh;
-        surfaceState.savedGasSide = body.gasMesh.material.side;
-        body.gasMesh.material.side = THREE.DoubleSide;
-        body.gasMesh.material.needsUpdate = true;
+        surfaceState.savedGas = {
+          side:        mat.side,
+          transparent: mat.transparent,
+          depthWrite:  mat.depthWrite,
+          opaqueSky:   mat.uniforms.uOpaqueSky.value,
+        };
+        mat.side = THREE.DoubleSide;
+
+        // Perceived sky opacity: density alone is what makes the sky read
+        // as a solid wall from inside (the Rayleigh baseline always paints
+        // the sky between clouds), so coverage doesn't gate this anymore.
+        // Full-gas mode obviously also tracks density.
+        const density = mat.uniforms.uDensity.value;
+        if (density > 0.5) {
+          mat.transparent = false;
+          mat.depthWrite  = true;
+          mat.uniforms.uOpaqueSky.value = 1.0;
+        }
+        mat.needsUpdate = true;
       } else {
         surfaceState.gasMeshAdjusted = null;
+        surfaceState.savedGas = null;
       }
 
       camera.fov = surfaceState.fov;
@@ -2894,11 +3245,17 @@
       camera.position.copy(surfaceState.savedCamPos);
       controls.target.copy(surfaceState.savedTarget);
       camera.up.set(0, 1, 0);
-      // Restore atmo shell side.
-      if (surfaceState.gasMeshAdjusted) {
-        surfaceState.gasMeshAdjusted.material.side = surfaceState.savedGasSide;
-        surfaceState.gasMeshAdjusted.material.needsUpdate = true;
+      // Restore atmo shell material state (side + opaque-sky promotion).
+      if (surfaceState.gasMeshAdjusted && surfaceState.savedGas) {
+        const mat = surfaceState.gasMeshAdjusted.material;
+        const s = surfaceState.savedGas;
+        mat.side        = s.side;
+        mat.transparent = s.transparent;
+        mat.depthWrite  = s.depthWrite;
+        mat.uniforms.uOpaqueSky.value = s.opaqueSky;
+        mat.needsUpdate = true;
         surfaceState.gasMeshAdjusted = null;
+        surfaceState.savedGas = null;
       }
       surfaceState.body = null;
       controls.enabled = true;
@@ -3044,6 +3401,16 @@
       }
     };
 
+    addProbeBtn.onclick = () => {
+      const parent = (focusedBody && focusedBody.kind === 'planet') ? focusedBody : planet;
+      if (!parent) return;
+      const ownCount = probes.reduce((n, p) => n + (p.parent === parent ? 1 : 0), 0);
+      const defaultDistance = 16 + ownCount * 6;
+      if (addSatellite(parent, 1.0, defaultDistance)) {
+        renderProbesList();
+      }
+    };
+
     // ---------- Renaming ----------
     // Inline edit (click the focused name in the nav) + a 🎲 button that
     // pulls from generateName(). Renaming touches a lot of surfaces — moon
@@ -3057,6 +3424,7 @@
       }
       renderNavBodies();
       renderMoonsList();
+      renderProbesList();
       renderCityList();
       updateInfoPanel();
       updateBiomeTools();
@@ -3129,6 +3497,7 @@
       });
     });
     renderMoonsList();
+    renderProbesList();
     updateBiomeTools();
     // Default to the system-wide view so the user sees the whole replica at
     // load — the eight planets at a glance.
@@ -3147,14 +3516,22 @@
     // Light updates (clock + orbit values) refresh several times per second; we
     // throttle so we're not writing DOM every single frame.
     let liveInfoAccum = 0;
+    // Cloud-drift clock. Advances only when unpaused so wind freezes when the
+    // sim is paused, matching how orbital motion behaves.
+    let gasTime = 0;
     (function loop() {
       requestAnimationFrame(loop);
       const dt = clock.getDelta();
       if (!paused) {
         updatePlanetOrbits(dt);
         updatePlanetRotation(dt);
+        gasTime += dt;
+        for (const b of bodies) {
+          if (b.gasMesh) b.gasMesh.material.uniforms.uTime.value = gasTime;
+        }
       }
       updateMoons(dt);
+      updateSatellites(dt);
       updateCityMarkers();
       updateSunLightForFocus();
       updateFocusTracking();

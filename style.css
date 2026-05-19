@@ -24,9 +24,12 @@ canvas {
     display: flex;
     flex-direction: column;
     width: 300px;
+    max-height: calc(100vh - 40px);
     box-shadow: 0 0 30px rgba(0, 242, 255, 0.15), inset 0 0 15px rgba(0, 242, 255, 0.1);
     overflow: hidden;
 }
+
+.ui-tabs, #footer { flex-shrink: 0; }
 
 /* Decorative corners */
 #ui::before, #ui::after {
@@ -85,8 +88,15 @@ canvas {
 
 .tab-content.active {
   display: flex;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   animation: contentFade 0.4s ease-out;
 }
+
+.tab-content.active::-webkit-scrollbar { width: 5px; }
+.tab-content.active::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); }
+.tab-content.active::-webkit-scrollbar-thumb { background: rgba(0, 242, 255, 0.3); }
 
 @keyframes contentFade {
   from { opacity: 0; transform: translateY(5px); }
@@ -268,7 +278,8 @@ select, input.text-input {
 }
 
 /* ---------- Moon / satellite cards ---------- */
-#moonsList {
+#moonsList,
+#probesList {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -518,16 +529,16 @@ select, input.text-input {
     text-shadow: 0 0 8px rgba(0, 242, 255, 0.5);
 }
 
-/* Scanning line effect */
-#ui::before {
-  content: '';
+/* Scanning line effect — its own element so it doesn't clobber the
+   ::before corner decoration in the top-left. */
+.scan-line {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 1px;
   background: rgba(0, 242, 255, 0.15);
-  z-index: 20;
+  z-index: 4;
   pointer-events: none;
   animation: scanLine 6s linear infinite;
 }
