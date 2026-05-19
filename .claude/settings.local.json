@@ -23,7 +23,18 @@
       "Bash(gh repo *)",
       "Bash(where gh *)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" --version)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(awk 'NR>=145 && NR<=310 {print NR\": \"$0}' script.js)",
+      "Bash(awk 'NR>=145 && NR<=308' script.js)",
+      "Bash(LC_ALL=C.UTF-8 awk 'NR>=337 && NR<=451' script.js)",
+      "Bash(LC_ALL=C.UTF-8 awk 'NR>=145 && NR<=310')",
+      "Bash(awk 'NR>=145 && NR<=260')",
+      "Bash(awk 'NR>=19990 && NR<=20010 {print NR\": \"$0}')",
+      "Bash(awk 'NR>=20170 && NR<=20190 {print NR\": \"$0}')",
+      "Bash(awk 'NR>=20290 && NR<=20330 {print NR\": \"$0}')",
+      "Bash(awk 'NR>=19425 && NR<=19470 {print NR\": \"$0}')",
+      "Bash(git rm *)",
+      "Bash(git -C \"C:\\\\Users\\\\dylan\\\\desktop\\\\planet tiles\" diff --stat HEAD)"
     ]
   }
 }

@@ -72,11 +72,23 @@
 
     <div id="tab-environment" class="tab-content">
       <div class="section-header">4. Surface Environment</div>
-      <label>Characteristics
+      <label id="biomeRow">Characteristics
         <select id="biomeSelect">
           <option value="0">Natural State</option>
         </select>
       </label>
+      <div id="gasPaintSection" style="display:none">
+        <label>Mode
+          <div class="btn-group">
+            <button id="gasModeBands" class="tool-btn active" type="button">Bands</button>
+            <button id="gasModeStamp" class="tool-btn" type="button">Stamp</button>
+          </div>
+        </label>
+        <label>Color
+          <input id="gasPaintColor" type="color" value="#cc9966">
+        </label>
+        <button id="gasClearStamps" class="small-btn" type="button">Clear Stamps</button>
+      </div>
       <label>Radius <input id="brushRadiusB" type="range" min="5" max="50" value="25"><span class="val" id="brushRadiusValB">0.25</span></label>
       <p class="hint" id="biomeHint">Tools adapt to the focused body</p>
 
