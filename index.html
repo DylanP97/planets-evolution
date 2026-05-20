@@ -43,6 +43,7 @@
           <option value="storm">Storm Planet</option>
           <option value="living">Living Planet</option>
           <option value="rogue">Rogue Planet</option>
+          <option value="star">Star</option>
         </select>
       </label>
 
@@ -81,13 +82,13 @@
         <label>Mode
           <div class="btn-group">
             <button id="gasModeBands" class="tool-btn active" type="button">Bands</button>
-            <button id="gasModeStamp" class="tool-btn" type="button">Stamp</button>
+            <button id="gasModeStamp" class="tool-btn" type="button">Whirlpool</button>
           </div>
         </label>
-        <label>Color
-          <input id="gasPaintColor" type="color" value="#cc9966">
+        <label id="gasBiomeRow">Composition
+          <select id="gasBiomeSelect"></select>
         </label>
-        <button id="gasClearStamps" class="small-btn" type="button">Clear Stamps</button>
+        <button id="gasRandomize" class="small-btn" type="button">Randomize</button>
       </div>
       <label>Radius <input id="brushRadiusB" type="range" min="5" max="50" value="25"><span class="val" id="brushRadiusValB">0.25</span></label>
       <p class="hint" id="biomeHint">Tools adapt to the focused body</p>
@@ -97,6 +98,8 @@
         <label>Size <input id="atmoThick" type="range" min="100" max="140" value="110"><span class="val" id="atmoThickVal">1.10</span></label>
         <label>Density <input id="atmoDensity" type="range" min="0" max="100" value="20"><span class="val" id="atmoDensityVal">0.20</span></label>
         <label>Coverage <input id="atmoCoverage" type="range" min="0" max="100" value="35"><span class="val" id="atmoCoverageVal">0.35</span></label>
+        <label>Complex Winds <input id="atmoComplexWinds" type="checkbox"></label>
+        <label>Cloud Drift <input id="atmoCloudDrift" type="range" min="0" max="100" value="0"><span class="val" id="atmoCloudDriftVal">0.00</span></label>
         <p class="hint" id="atmoHint">No atmosphere on this body</p>
       </div>
 
@@ -240,7 +243,7 @@
       <button id="surfaceExitBtn" type="button" title="Return to orbital view">▲ RETURN TO ORBIT</button>
     </div>
     <div id="surfaceCrosshair"></div>
-    <div id="surfaceHint">Drag to look around · Scroll to zoom</div>
+    <div id="surfaceHint">WASD / arrows to walk · Shift to sprint · Drag to look · Scroll to zoom</div>
   </div>
 
   <div id="pickHint" aria-hidden="true">Click on solid land to land there · Esc to cancel</div>

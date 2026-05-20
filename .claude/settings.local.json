@@ -34,7 +34,9 @@
       "Bash(awk 'NR>=20290 && NR<=20330 {print NR\": \"$0}')",
       "Bash(awk 'NR>=19425 && NR<=19470 {print NR\": \"$0}')",
       "Bash(git rm *)",
-      "Bash(git -C \"C:\\\\Users\\\\dylan\\\\desktop\\\\planet tiles\" diff --stat HEAD)"
+      "Bash(git -C \"C:\\\\Users\\\\dylan\\\\desktop\\\\planet tiles\" diff --stat HEAD)",
+      "Read(//c/Users/dylan/desktop/planet tiles/**)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

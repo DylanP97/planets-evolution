@@ -30,6 +30,7 @@ Each row maps a banner in `script.js` to its line range. After editing, re-grep 
 | 3   | Palettes                      | 148–164     | `PLANET_PALETTE`, `MOON_PALETTE`.                                                                       |
 | 4   | Body framework                | 165–184     | `BODY_HEIGHT_SCALE`, `MAX/MIN_LAND_HEIGHT`, the `bodies` registry, `smoothstep`.                        |
 | 5   | Gas shader                    | 185–403     | GLSL for atmosphere + full-gas modes (`uMode = 0 \| 1`). `makeGasMaterial()` factory.                   |
+| 5b  | Plasma shader                 | —           | GLSL for the animated star photosphere ("lava ocean"). `makePlasmaMaterial()` + `makeCoronaMaterial()`; lights the Sun + corona halo here, builds `plasmaTickUniforms`. |
 | 6   | Ring shader                   | 404–557     | GLSL for planetary rings. `RING_INNER/OUTER_FACTOR`, `makeRingMaterial()`.                              |
 | 7   | Body creation                 | 558–827     | `createBody()`, vertex writers, `applyBrushToBody()`, `commitBodyChanges()`.                            |
 | 8   | Terrain generation            | 828–887     | Hash/RNG, `buildTerrainBasis`, `sampleTerrainNoise` (sum-of-sines FBM).                                 |
@@ -57,7 +58,7 @@ Each row maps a banner in `script.js` to its line range. After editing, re-grep 
 | 30  | Add / Remove planet           | 2730–3028   | `deployNewPlanet`, `removePlanetBody`, `renderPlanetList`, moons/probes list renderers.                 |
 | 31  | Hierarchy navigation          | 3029–3184   | Bottom-nav arrows: `navUp`, `navDown`, `navSibling`, `renderNavBodies`.                                 |
 | 32  | Surface walk                  | 3185–3424   | `enterPickMode` → click → `enterSurfaceMode` → `updateSurfaceCamera`. State in `surfaceState`.          |
-| 33  | Surface input                 | 3425–3539   | Drag-look, scroll-zoom, the satellite/moon "deploy" buttons in the satellites tab.                     |
+| 33  | Surface input                 | 3425–3539   | Drag-look, scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
 | 34  | Renaming                      | 3540–3632   | `setBodyName`, `setSystemName`, `commitFocusName`. Triggers re-render fan-out.                          |
 | 35  | Init + Resize                 | 3633–3639   | Window-resize listener (and seed moons / final `setSystemFocus()` just above it).                       |
 | 36  | Animate                       | 3640–end    | The frame loop. Drives orbits, rotations, gas time, cities, lights, surface camera, render.             |
@@ -95,8 +96,9 @@ Created by `createBody({ kind, name, baseRadius, detail, palette, hasOcean })`. 
   colorArr,     // Float32Array(N*3) — vertex colors written by colorBodyVertex
   oceanMesh,    // SphereGeometry at baseRadius; hidden when matter.liquid === false
   gasMesh,      // SphereGeometry at baseRadius * gasThickness; uses gas shader
+  plasmaMesh,   // SphereGeometry at baseRadius; animated star photosphere (plasma shader); hidden unless matter.plasma
   ringMesh,     // RingGeometry; planet-only feature
-  matter: { solid, liquid, gas },   // gas: false | 'atmosphere' | 'full'
+  matter: { solid, liquid, gas, plasma },  // gas: false | 'atmosphere' | 'full'; plasma: true on stars
   gasMode: 'none' | 'atmosphere' | 'full',
   gasThickness, gasDensity, gasCoverage,
   rings:  { enabled, intensity },
@@ -181,13 +183,20 @@ Pausing freezes orbits, spin, and cloud drift; moons + probes + brush keep going
 - `uOpaqueSky` is flipped on during surface mode for dense atmospheres so the sky reads as solid, not see-through.
 - Rings (`RING_*`): one body-aligned thin disk; alpha falls off radially and is darkened in the planet's shadow cone.
 
+### Shaders — plasma (the fourth matter type)
+
+- `makePlasmaMaterial()` builds the emissive, self-lit star surface used by the Sun (`sunMesh.material` is swapped to it after the factory exists) and by any body with `matter.plasma` (the `star` archetype). It's opaque, casts/receives no shadows, and ignores `uSunDir` — a star lights itself.
+- The frag shader is a domain-warped value-noise FBM sampled on the local unit direction (so the pattern is radius-independent): a slow swirling convection layer plus a faster bubbling layer, a time-shifting threshold that lifts and pulses bright white-hot cells, dark sunspot lanes in the troughs, and a fresnel limb term. Colors ramp deep-orange → orange → yellow → white-hot.
+- The Sun also gets `makeCoronaMaterial()` — an additive back-faced halo shell (`coronaMesh`) that fakes bloom without a postprocessing pass.
+- `uTime` for the Sun, corona, and every visible plasma body is advanced by `plasmaTime` in the animate loop **every frame, paused or not** — a star never freezes (unlike `gasTime`, which stops on pause). The Sun + corona uniforms are collected in `plasmaTickUniforms`.
+
 ### Surface walk — the three modes
 
 Single state variable, `viewMode`, gates everything: `'orbit' | 'pick' | 'surface'`.
 
 - **orbit** (default): OrbitControls drive the camera. Brush works. Click `VISIT SURFACE` button → `enterPickMode`.
 - **pick**: OrbitControls disabled. Next left-click on the focused body's mesh → `enterSurfaceMode`. Bodies fail the eligibility check if `matter.solid === false` (gas/ice giants).
-- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Drag = look, scroll = FOV zoom. `updateSurfaceCamera` reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
+- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Drag = look, scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (clamped to sea level on ocean bodies); the eye lerps to `ground + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
 
 Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the gas mesh's side (`DoubleSide` → `BackSide` again), and any `uOpaqueSky` override.
 

@@ -224,20 +224,23 @@
       uniform float uMode;       // 0 = atmosphere, 1 = full gas
       uniform float uCoverage;   // 0 = empty sky, 1 = total overcast (atmosphere only)
       uniform float uOpaqueSky;  // 1 = render as solid occluding sky (used inside dense atmospheres)
+      uniform float uShellScale; // gasThickness: shell radius / surface radius (orbit-halo limb math)
       uniform float uTime;       // seconds, drives cloud drift
       uniform float uWindSpeed;  // radians/sec around the body's Y axis, 0 = static
+      uniform float uWindMode;   // 0 = uniform zonal drift, 1 = multi-band winds (Hadley/Ferrel/Polar)
       uniform sampler2D uBandTex; // full-gas only: 1D LUT (south→north) sampled by latitude
       uniform float uUseBands;   // 0 = ignore LUT (use uColor flat); 1 = mix bands fully
 
-      // Feature stamps (full-gas only): per-body procedural blobs for vortices
-      // like Jupiter's Great Red Spot. Up to GAS_MAX_FEATURES are blended into
-      // col in order; the JS side gates how many are active via uFeatureCount.
+      // Whirlpool vortices (full-gas only). Each vortex rotates the sampling
+      // direction in a Gaussian-decaying disc around its center, so the band
+      // LUT gets *re-sampled* with twisted coordinates — bands curl inward
+      // around the vortex like a real storm rather than being overpainted
+      // with a flat decal.
       #define GAS_MAX_FEATURES 8
       uniform int   uFeatureCount;
       uniform vec3  uFeatureCenters[GAS_MAX_FEATURES];     // unit dir in body-local frame
       uniform float uFeatureRadii[GAS_MAX_FEATURES];       // angular radius (radians)
-      uniform vec3  uFeatureColors[GAS_MAX_FEATURES];
-      uniform float uFeatureIntensities[GAS_MAX_FEATURES]; // 0..1 multiplier
+      uniform float uFeatureStrengths[GAS_MAX_FEATURES];   // peak rotation (radians) at center
 
       // Cheap value-noise FBM. Good enough for cloud shapes at this scale.
       float hash3(vec3 p) {
@@ -298,22 +301,41 @@
           // Cloud noise sampled in a wind-rotated local frame so cloud cells
           // drift around the body's Y axis (zonal winds). Rotation is in
           // local space so the body's own spin underneath doesn't double-shift it.
-          float ang = uTime * uWindSpeed;
-          float wc  = cos(ang);
-          float ws  = sin(ang);
+          //
+          // uWindMode=0 → all latitudes drift the same direction (simple zonal).
+          // uWindMode=1 → multi-band winds: rotation rate varies with latitude,
+          //   producing alternating bands of opposing flow that look like real
+          //   Hadley/Ferrel/Polar cells. Latitude-dependent rotation also adds
+          //   a slow meridional drift (slight Y-axis sample offset) so cells
+          //   don't track perfect latitude lines.
+          float lat       = vLocalNormal.y;                          // sin of latitude
+          float bandRate  = mix(1.0, sin(lat * 3.14159 * 1.5) * 1.8, uWindMode);
+          float ang       = uTime * uWindSpeed * bandRate;
+          float wc        = cos(ang);
+          float ws        = sin(ang);
           vec3  windDir = vec3(
              wc * vLocalNormal.x + ws * vLocalNormal.z,
                   vLocalNormal.y,
             -ws * vLocalNormal.x + wc * vLocalNormal.z
           );
+          // Meridional drift in band mode: a slow N-S sample offset that
+          // breaks up the pure rotational shear so cloud cells appear to
+          // migrate between bands instead of streaking infinitely east/west.
+          windDir.y += uWindMode * sin(uTime * uWindSpeed * 0.6 + lat * 4.0) * 0.08;
           float n      = fbm(windDir * 3.5);
           float thresh = 0.95 - uCoverage * 0.90;
           float cloud  = smoothstep(thresh - 0.10, thresh + 0.28, n);
 
           // Sky color = Rayleigh tint, bleached toward the sun for forward-scatter glow.
+          // During twilight (low dayMix) we warp the forward-scatter color from
+          // white toward a warm dusk/dawn orange, so the bright spot near the
+          // sun direction reads as a sunset glow rather than a daytime flare.
           vec3  viewDir = normalize(-vViewDir);
           float sunDot  = max(0.0, dot(normalize(uSunDir), viewDir));
-          vec3  skyCol  = mix(uSkyTint, vec3(1.0), pow(sunDot, 6.0) * 0.65);
+          float twilightWeight = smoothstep(0.30, 0.0, dayMix); // peaks at terminator
+          vec3  duskTint  = vec3(1.00, 0.55, 0.20);
+          vec3  bleachCol = mix(vec3(1.0), duskTint, twilightWeight);
+          vec3  skyCol    = mix(uSkyTint, bleachCol, pow(sunDot, 6.0) * 0.65);
 
           // Day/night gating uses dayMix so the inside-the-shell case picks
           // up the camera's planetary lambert (uniform sky brightness on the
@@ -329,7 +351,7 @@
           // *other* than solar noon left the sky at 0.6-0.9 alpha and the
           // gas-shell planets (Venus/Jupiter/Saturn/Neptune) bled through.
           float nightFloor = clamp((uDensity - 0.5) * 2.0, 0.0, 1.0);
-          float daySat     = smoothstep(0.0, 0.15, dayMix);
+          float daySat     = smoothstep(0.0, 0.25, dayMix);
           float sunFactor  = mix(nightFloor, 1.00, daySat);
 
           float skyAlpha;
@@ -346,16 +368,52 @@
             skyAlpha   = clamp(uDensity * 3.0 * sunFactor * pathFactor, 0.0, 1.0);
             cloudAlpha = cloud * sunFactor;
           } else {
-            // From orbit: surface visible at disc center, blue glow at the
-            // limb where the line of sight grazes through more air. Clouds
-            // remain visible across the whole disc.
-            float rim = pow(1.0 - NdotV, 1.8);
-            skyAlpha   = uDensity * rim;
+            // From orbit: a thin blue halo that hugs the planet's SURFACE —
+            // NOT a glassy dome the width of the (deliberately fat) shell.
+            // The shell geometry sits ~10% above the surface so it can clear
+            // the tallest mountains and still wrap the camera in surface view;
+            // we must NOT let the halo's apparent thickness follow it. Instead
+            // shade by the line-of-sight impact parameter b — the perpendicular
+            // distance from the body center to the view ray through this
+            // fragment:
+            //   b < R       → the ray hits the solid planet: clear sky over
+            //                 the disc (halo = 0; surface/clouds show through).
+            //   R ≤ b ≤ Rs  → the ray grazes only atmosphere: limb glow,
+            //                 brightest right at the surface (b≈R) and fading
+            //                 to nothing by the shell top (b≈Rs).
+            // Rs is this fragment's distance from center (sphere ⇒ constant);
+            // R is recovered as Rs / gasThickness so it tracks group scaling.
+            // Clouds stay visible across the whole disc (real geometry).
+            vec3  OC   = vBodyCenter - cameraPosition;
+            vec3  rayD = normalize(vWorldPos - cameraPosition);
+            float tca  = dot(OC, rayD);
+            float b    = sqrt(max(0.0, dot(OC, OC) - tca * tca));
+            float R    = shellRad / max(1.0001, uShellScale);
+            float band = clamp((b - R) / max(1e-4, shellRad - R), 0.0, 1.0);
+            float overAir = step(R, b);            // 0 over the disc, 1 past the limb
+            float halo = overAir * pow(1.0 - band, 2.0);
+            float nightFade = mix(0.12, 1.0, shellLambert);
+            skyAlpha   = uDensity * halo * 1.8 * nightFade;
             cloudAlpha = cloud * uDensity * 1.6;
           }
 
           col   = mix(skyCol, uColor, cloud);
           alpha = max(skyAlpha, cloudAlpha);
+
+          // Sunset/sunrise horizon glow: keeps the sun-facing horizon bright
+          // and warm during twilight while the rest of the sky fades. Without
+          // this the whole sky drops out together and the transition reads
+          // as a snap. horizonness peaks at the horizon (NdotV→0), sunSide
+          // weights toward the sun direction, twilightWeight peaks at the
+          // terminator. Mix col toward duskTint with the same weighting so
+          // the alpha-boosted horizon also LOOKS orange.
+          if (inside) {
+            float horizonness = pow(1.0 - NdotV, 0.6);
+            float sunSide     = pow(max(0.0, sunDot), 1.5);
+            float sunsetBand  = horizonness * sunSide * twilightWeight;
+            alpha = max(alpha, sunsetBand * 0.85);
+            col   = mix(col, duskTint, sunsetBand * 0.65);
+          }
 
           // Sun disc + halo seen through the atmosphere. Only contributes
           // from inside the shell (we don't want to ghost a sun spot onto
@@ -372,44 +430,41 @@
           }
         } else {
           // ---- Full gas (gas giants) ----
-          // Base color per latitude: sample the band LUT and blend over uColor
-          // by uUseBands. Latitude is y of the unit normal, mapped to [0,1].
-          // A small noise wobble (~few percent of axis) wavers band edges so
-          // they don't read as perfectly straight stripes.
-          float n     = fbm(vLocalNormal * 3.5);
-          float lat   = vLocalNormal.y * 0.5 + 0.5;
-          float latW  = clamp(lat + (n - 0.5) * 0.04, 0.0, 1.0);
-          vec3  bandCol = texture2D(uBandTex, vec2(latW, 0.5)).rgb;
-          vec3  baseCol = mix(uColor, bandCol, uUseBands);
-          float bands = 0.5 + 0.5 * sin(vLocalNormal.y * 6.0 + n * 2.5);
-          col = mix(baseCol * 0.82, baseCol * 1.06, bands);
-
-          // Feature stamps (Great Red Spot-style vortices). For each active
-          // feature, take the angular distance from this fragment to the
-          // feature center, soft-falloff it to a circular mask, and blend a
-          // per-feature color modulated by FBM turbulence so the spot reads as
-          // a roiling vortex rather than a flat decal. Seeding FBM with the
-          // feature index gives each spot its own pattern.
+          // Whirlpools first: rotate the sampling direction around each
+          // vortex's axis with a Gaussian-decaying rotation amount. The same
+          // warped direction then drives both the band LUT lookup and the
+          // procedural banding pattern, so the entire color field appears to
+          // spiral into each vortex — bands wrap, fbm noise twists, all in
+          // one coherent flow.
+          vec3 warped = vLocalNormal;
           for (int i = 0; i < GAS_MAX_FEATURES; i++) {
             if (i >= uFeatureCount) break;
             float fr = uFeatureRadii[i];
             if (fr <= 1e-4) continue;
             vec3  fc = uFeatureCenters[i];
+            // Inside-vortex check uses the ORIGINAL direction so the vortex
+            // stays anchored to a real-world location even as warped drifts
+            // from earlier vortices in the loop.
             float cd = clamp(dot(vLocalNormal, fc), -1.0, 1.0);
             float ang = acos(cd);
-            if (ang > fr * 1.30) continue;
+            if (ang > fr) continue;
             float t = ang / fr;
-            // 1 at center, ramping to 0 between t=0.55 and t=1.20 so spots have
-            // a defined core with soft edges (matches the visual feel of GRS).
-            float core = 1.0 - smoothstep(0.55, 1.20, t);
-            vec3  seedOff = fc * 6.31 + vec3(float(i) * 7.0);
-            float swirl   = fbm(vLocalNormal * 9.0 + seedOff);
-            vec3  fcol    = uFeatureColors[i];
-            // Dark core, lighter periphery — reads like a churning vortex.
-            vec3  fmix    = mix(fcol * 0.70, fcol * 1.18, swirl);
-            float mask    = clamp(core * uFeatureIntensities[i], 0.0, 1.0);
-            col = mix(col, fmix, mask);
+            float falloff = exp(-3.0 * t * t);   // strongest at center
+            float rot = uFeatureStrengths[i] * falloff;
+            // Rodrigues' rotation around axis fc by angle rot.
+            float cs = cos(rot);
+            float sn = sin(rot);
+            warped = warped * cs
+                   + cross(fc, warped) * sn
+                   + fc * dot(fc, warped) * (1.0 - cs);
           }
+          float n     = fbm(warped * 3.5);
+          float lat   = warped.y * 0.5 + 0.5;
+          float latW  = clamp(lat + (n - 0.5) * 0.04, 0.0, 1.0);
+          vec3  bandCol = texture2D(uBandTex, vec2(latW, 0.5)).rgb;
+          vec3  baseCol = mix(uColor, bandCol, uUseBands);
+          float bands = 0.5 + 0.5 * sin(warped.y * 6.0 + n * 2.5);
+          col = mix(baseCol * 0.82, baseCol * 1.06, bands);
           // Dense at center, fading right to zero at the rim so the silhouette
           // feathers out — the body looks like it "stems from" the center
           // instead of being clipped to a hard circle.
@@ -425,16 +480,17 @@
 
         float a = clamp(alpha, 0.0, 1.0);
         if (uOpaqueSky > 0.5) {
-          // Inside a visible atmosphere we promote the shell to the opaque
-          // queue so it ACTUALLY occludes other bodies via depth test —
-          // transparent rendering wasn't hiding far-away gas planets even
-          // at alpha=1.0 in practice. Discard threshold is low (0.05) so
-          // the day→night transition stays smooth: with pathFactor already
-          // gated by dayMix, alpha falls almost uniformly across the sky
-          // at twilight, so 0.05 is crossed everywhere at nearly the same
-          // moment — no razor-edge "blue band → black" artifact.
-          if (a < 0.05) discard;
-          a = 1.0;
+          // Opaque-queue path: the shell renders with depthWrite so far
+          // planets fail the depth test, AND alphaToCoverage is enabled on
+          // the material so partial alpha dithers across MSAA samples
+          // instead of snapping to a binary "full opaque / discard" edge.
+          // Effect: covered samples occlude background (sky is real), un-
+          // covered samples leak through (stars/planets visible). As alpha
+          // smoothly drops through twilight, more samples become uncovered,
+          // giving a true gradient sunset rather than an instant toggle.
+          // Discard at 0.02 is just a perf gate — anything below that is
+          // invisible anyway.
+          if (a < 0.02) discard;
         }
         gl_FragColor = vec4(col, a);
       }
@@ -454,9 +510,51 @@
       return tex;
     })();
 
-    // Cap on simultaneous feature stamps (vortices/spots) per gas planet. Must
-    // match GAS_MAX_FEATURES in the gas shader; bumping requires editing both.
+    // Cap on simultaneous whirlpools per gas planet. Must match
+    // GAS_MAX_FEATURES in the gas shader; bumping requires editing both.
     const GAS_MAX_FEATURES = 8;
+
+    // Named atmospheric compositions for the Bands brush + randomizer. Each
+    // biome is tagged with the archetypes it belongs to so the Composition
+    // dropdown can filter to the focused planet's flavour:
+    //   gas_giant — brown → beige gradient (Jupiter / Saturn family)
+    //   ice_giant — dark blue → white-ice gradient (Uranus / Neptune family)
+    // Ordering inside each palette runs darkest → lightest so the dropdown
+    // reads as a ramp.
+    const GAS_BIOMES = [
+      // ---- Gas giant: brown → beige ----
+      { id: 'dark_layer',      name: 'Dark Layer',      color: 0x4a3528, archs: ['gas_giant'] },
+      { id: 'storm_belt',      name: 'Storm Belt',      color: 0x5e2f1d, archs: ['gas_giant'] },
+      { id: 'lower_cloud',     name: 'Lower Cloud',     color: 0x8a5a3a, archs: ['gas_giant'] },
+      { id: 'great_spot',      name: 'Great Spot',      color: 0xb5462c, archs: ['gas_giant'] },
+      { id: 'ammonia_sulfide', name: 'NH4SH Cloud',     color: 0xc16a4f, archs: ['gas_giant'] },
+      { id: 'sulfur',          name: 'Sulfur Layer',    color: 0xd4912d, archs: ['gas_giant'] },
+      { id: 'mid_cloud',       name: 'Mid Cloud',       color: 0xc6a378, archs: ['gas_giant'] },
+      { id: 'upper_haze',      name: 'Upper Haze',      color: 0xe8d5b0, archs: ['gas_giant'] },
+      { id: 'ammonia',         name: 'Ammonia Belt',    color: 0xefe5b8, archs: ['gas_giant'] },
+      { id: 'helium_sheath',   name: 'Helium Sheath',   color: 0xf5f0e8, archs: ['gas_giant', 'ice_giant'] },
+      // ---- Ice giant: dark blue → white ice ----
+      { id: 'hydrogen_deep',   name: 'Hydrogen Deep',   color: 0x1f3b6e, archs: ['ice_giant'] },
+      { id: 'methane_sea',     name: 'Methane Sea',     color: 0x3a6cb4, archs: ['ice_giant'] },
+      { id: 'methane',         name: 'Methane',         color: 0x5e8fc2, archs: ['ice_giant'] },
+      { id: 'phosphine',       name: 'Phosphine',       color: 0x6c91c8, archs: ['ice_giant'] },
+      { id: 'aurora',          name: 'Aurora Glow',     color: 0x6cdcc1, archs: ['ice_giant'] },
+      { id: 'methane_ice',     name: 'Methane Ice',     color: 0x71c6cf, archs: ['ice_giant'] },
+      { id: 'polar_cap',       name: 'Polar Cap',       color: 0xc4cfde, archs: ['ice_giant'] },
+      { id: 'frost_veil',      name: 'Frost Veil',      color: 0xd8e8f0, archs: ['ice_giant'] },
+      { id: 'ice_crystal',     name: 'Ice Crystal',     color: 0xeaf4fb, archs: ['ice_giant'] },
+      { id: 'white_ice',       name: 'White Ice',       color: 0xfafdff, archs: ['ice_giant'] },
+    ];
+
+    function gasBiomesForArchetype(arch) {
+      const key = arch || 'gas_giant';
+      const list = GAS_BIOMES.filter(b => b.archs.includes(key));
+      return list.length ? list : GAS_BIOMES.filter(b => b.archs.includes('gas_giant'));
+    }
+
+    function gasBiomeById(id) {
+      return GAS_BIOMES.find(b => b.id === id) || null;
+    }
 
     function makeGasMaterial() {
       return new THREE.ShaderMaterial({
@@ -470,25 +568,221 @@
           uMode:     { value: 0.0 },
           uCoverage: { value: 0.35 },
           uOpaqueSky:{ value: 0.0 },
+          uShellScale:{ value: 1.10 }, // refreshed by applyGasShell from body.gasThickness
           uTime:     { value: 0.0 },
           uWindSpeed:{ value: 0.05 },
+          uWindMode: { value: 0.0 }, // 0 = uniform zonal, 1 = multi-band Hadley/Ferrel/Polar
           uBandTex:  { value: DEFAULT_BAND_TEX },
           uUseBands: { value: 0.0 },
-          // Feature stamp arrays are sized to GAS_MAX_FEATURES (must match the
+          // Whirlpool arrays are sized to GAS_MAX_FEATURES (must match the
           // shader's #define). Slots beyond uFeatureCount are ignored at draw
           // time, but the arrays still need full allocation so Three.js can
           // bind contiguous storage to the uniform.
-          uFeatureCount:       { value: 0 },
-          uFeatureCenters:     { value: Array.from({ length: GAS_MAX_FEATURES }, () => new THREE.Vector3(0, 1, 0)) },
-          uFeatureRadii:       { value: new Float32Array(GAS_MAX_FEATURES) },
-          uFeatureColors:      { value: Array.from({ length: GAS_MAX_FEATURES }, () => new THREE.Vector3(0, 0, 0)) },
-          uFeatureIntensities: { value: new Float32Array(GAS_MAX_FEATURES) },
+          uFeatureCount:     { value: 0 },
+          uFeatureCenters:   { value: Array.from({ length: GAS_MAX_FEATURES }, () => new THREE.Vector3(0, 1, 0)) },
+          uFeatureRadii:     { value: new Float32Array(GAS_MAX_FEATURES) },
+          uFeatureStrengths: { value: new Float32Array(GAS_MAX_FEATURES) },
         },
         transparent: true,
         depthWrite: false,
         side: THREE.FrontSide,
       });
     }
+
+    // ====== 5b. Plasma shader (star surfaces) ======
+    // The fourth matter type, after solid / liquid / gas. A self-luminous
+    // animated photosphere — an "ocean of lava" churning over a sphere. Used by
+    // the Sun and by the `star` archetype. The look is entirely procedural and
+    // emissive (no sun-direction lighting — a star lights itself):
+    //   - domain-warped FBM gives slow swirling convection currents
+    //   - a faster granulation layer makes the surface bubble
+    //   - a time-shifting threshold lifts bright cells to white-hot and pulses
+    //     them, so hot zones drift and breathe instead of sitting still
+    //   - dark filament lanes (sunspot-ish) appear in the cold troughs
+    //   - a fresnel limb term adds a corona-bright rim
+    // Noise is sampled on the local unit direction, so the pattern is stable
+    // regardless of the sphere's world radius (Sun vs. a small star planet).
+    const PLASMA_VERT = /* glsl */ `
+      varying vec3 vLocalDir;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      void main() {
+        vLocalDir = normalize(position);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vViewDir = normalize(cameraPosition - wp.xyz);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `;
+    const PLASMA_FRAG = /* glsl */ `
+      precision highp float;
+      varying vec3 vLocalDir;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      uniform float uTime;
+      uniform float uScale;     // base convection-cell frequency
+      uniform float uSpeed;     // overall flow-rate multiplier
+      uniform vec3  uColorDeep; // coldest troughs / sunspot lanes (deep orange)
+      uniform vec3  uColorLow;  // orange granulation
+      uniform vec3  uColorMid;  // bright yellow photosphere
+      uniform vec3  uColorHot;  // white-hot faculae
+
+      // Value-noise FBM (same construction as the gas shader).
+      float hash3(vec3 p) {
+        p = fract(p * 0.3183099 + 0.1);
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+      }
+      float vnoise(vec3 x) {
+        vec3 p = floor(x);
+        vec3 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        float n000 = hash3(p + vec3(0,0,0));
+        float n100 = hash3(p + vec3(1,0,0));
+        float n010 = hash3(p + vec3(0,1,0));
+        float n110 = hash3(p + vec3(1,1,0));
+        float n001 = hash3(p + vec3(0,0,1));
+        float n101 = hash3(p + vec3(1,0,1));
+        float n011 = hash3(p + vec3(0,1,1));
+        float n111 = hash3(p + vec3(1,1,1));
+        return mix(
+          mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+          mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+          f.z);
+      }
+      float fbm(vec3 x) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 5; i++) {
+          v += a * vnoise(x);
+          x *= 2.07;
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      // Domain-warped convection: warp the sample point by a slowly-scrolling
+      // noise vector field so cells stretch and curl into each other (the
+      // "flowing lava" feel), then add a faster, finer bubbling layer.
+      float plasmaField(vec3 p, float t) {
+        vec3 q = vec3(
+          fbm(p + vec3(0.0, 0.0, t * 0.06)),
+          fbm(p + vec3(5.2, 1.3, t * 0.05)),
+          fbm(p + vec3(1.7, 9.2, t * 0.07))
+        );
+        vec3 warped = p + 2.0 * q;
+        float flow = fbm(warped + vec3(t * 0.04, 0.0, 0.0));
+        float bubble = fbm(p * 2.6 + vec3(-t * 0.16, t * 0.13, t * 0.11));
+        return flow * 0.68 + bubble * 0.32;
+      }
+
+      void main() {
+        vec3  dir = normalize(vLocalDir);
+        float t   = uTime * uSpeed;
+        float f   = plasmaField(dir * uScale, t);
+
+        // Bright cells drift and breathe: a per-location pulse phase keyed to
+        // the field value, so hot patches throb out of phase across the disc.
+        float pulse   = 0.5 + 0.5 * sin(t * 0.6 + f * 6.2831);
+        float hotZone = smoothstep(0.52, 0.86, f + pulse * 0.14);
+
+        // Color ramp: deep orange troughs → orange → yellow → white-hot.
+        vec3 col = mix(uColorDeep, uColorLow, smoothstep(0.12, 0.42, f));
+        col = mix(col, uColorMid, smoothstep(0.42, 0.68, f));
+        col = mix(col, uColorHot, hotZone);
+
+        // Dark convection lanes / sunspots in the coldest troughs.
+        float lane = smoothstep(0.14, 0.0, f);
+        col = mix(col, uColorDeep * 0.35, lane * 0.7);
+
+        // Emissive lift + corona-bright limb (fresnel). Values can exceed 1 so
+        // the rim and faculae read as glowing energy rather than flat paint.
+        col *= 1.28;
+        float NdotV = clamp(abs(dot(normalize(vWorldNormal), normalize(vViewDir))), 0.0, 1.0);
+        float rim = pow(1.0 - NdotV, 2.6);
+        col += uColorHot * rim * 0.85;
+
+        // Slow global flicker so the whole star feels alive and unstable.
+        col *= 0.94 + 0.06 * sin(t * 0.9);
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `;
+
+    function makePlasmaMaterial() {
+      return new THREE.ShaderMaterial({
+        vertexShader: PLASMA_VERT,
+        fragmentShader: PLASMA_FRAG,
+        uniforms: {
+          uTime:      { value: 0.0 },
+          uScale:     { value: 3.6 },
+          uSpeed:     { value: 1.0 },
+          uColorDeep: { value: new THREE.Color(0x5a0e00) }, // deep orange
+          uColorLow:  { value: new THREE.Color(0xc73a00) }, // orange
+          uColorMid:  { value: new THREE.Color(0xff9b1e) }, // yellow
+          uColorHot:  { value: new THREE.Color(0xfff4d0) }, // white-hot
+        },
+        side: THREE.FrontSide,
+        // Opaque, self-lit surface — depth writes so it occludes correctly and
+        // tone mapping is left off (default) so bright cells can bloom past 1.
+        transparent: false,
+        depthWrite: true,
+        fog: false,
+      });
+    }
+
+    // Additive corona halo: a slightly larger back-faced shell whose alpha
+    // falls off toward the limb, faking the bloom/glow of a stellar corona
+    // without a postprocessing pass. Used only for the Sun.
+    const CORONA_FRAG = /* glsl */ `
+      precision highp float;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      uniform float uTime;
+      uniform vec3  uColor;
+      void main() {
+        float NdotV = clamp(abs(dot(normalize(vWorldNormal), normalize(vViewDir))), 0.0, 1.0);
+        // Brightest at the limb (grazing angle), fading inward and outward.
+        float glow = pow(1.0 - NdotV, 2.2);
+        float flicker = 0.9 + 0.1 * sin(uTime * 0.7);
+        gl_FragColor = vec4(uColor, glow * 0.6 * flicker);
+      }
+    `;
+    function makeCoronaMaterial(colorHex) {
+      return new THREE.ShaderMaterial({
+        vertexShader: PLASMA_VERT, // reuses vWorldNormal / vViewDir varyings
+        fragmentShader: CORONA_FRAG,
+        uniforms: {
+          uTime:  { value: 0.0 },
+          uColor: { value: new THREE.Color(colorHex) },
+        },
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false,
+      });
+    }
+
+    // Light the Sun with the plasma shader (its MeshBasicMaterial placeholder is
+    // replaced here, after the factory exists). Tuned a touch larger-scale and
+    // slower than the default so the Sun reads as a vast, calm photosphere.
+    sunMesh.material.dispose();
+    sunMesh.material = makePlasmaMaterial();
+    sunMesh.material.uniforms.uScale.value = 3.0;
+    sunMesh.material.uniforms.uSpeed.value = 0.8;
+
+    // Corona halo around the Sun (additive bloom fake).
+    const coronaMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(SUN_RADIUS * 1.18, 48, 24),
+      makeCoronaMaterial(0xffb347)
+    );
+    coronaMesh.position.copy(sunMesh.position);
+    scene.add(coronaMesh);
+
+    // Uniform sets ticked every frame by the animate loop (always advancing —
+    // a star never freezes, even when the sim is paused).
+    const plasmaTickUniforms = [sunMesh.material.uniforms, coronaMesh.material.uniforms];
 
     // Latitudinal band paint state for full-gas planets. Stored per body and
     // sampled by the gas shader via uBandTex. The LUT runs south(0) → north
@@ -516,7 +810,13 @@
       tex.minFilter = THREE.LinearFilter;
       tex.wrapS = THREE.ClampToEdgeWrapping;
       tex.wrapT = THREE.ClampToEdgeWrapping;
-      body.gasPaint = { bandsRGB, data, tex, features: [] };
+      // Per-band biome id, used by the right-side composition panel and
+      // updated by paint / randomize. Seeded to the first biome of whatever
+      // archetype is being applied right now; randomizeGasBands replaces this
+      // wholesale at the end of regenerateBody.
+      const defaultBiome = (gasBiomesForArchetype(currentArchetype)[0] || GAS_BIOMES[0]).id;
+      const bandBiomes = new Array(GAS_BAND_COUNT).fill(defaultBiome);
+      body.gasPaint = { bandsRGB, data, tex, bandBiomes, features: [] };
       commitGasPaint(body.gasPaint);
       return body.gasPaint;
     }
@@ -561,29 +861,91 @@
         gp.bandsRGB[i * 3]     = gp.bandsRGB[i * 3]     * inv + gasPaintColor.r * k;
         gp.bandsRGB[i * 3 + 1] = gp.bandsRGB[i * 3 + 1] * inv + gasPaintColor.g * k;
         gp.bandsRGB[i * 3 + 2] = gp.bandsRGB[i * 3 + 2] * inv + gasPaintColor.b * k;
+        // Sharp biome reassignment for any band the brush touches — the
+        // composition panel should respond on the first frame of paint, not
+        // wait for the color lerp to converge.
+        if (selectedGasBiomeId) gp.bandBiomes[i] = selectedGasBiomeId;
         changed = true;
       }
       if (changed) commitGasPaint(gp);
     }
 
-    // Stamp a new feature (vortex / GRS-style spot) on a full-gas body at the
-    // pointer's hit direction. centerLocal is the click point in mesh-local
-    // space — we only care about its direction. Brush radius (in radians of
-    // arc) drives the stamp size; current gasPaintColor drives its color.
-    // Oldest features fall off when MAX is reached so the user can keep
-    // stamping without manual cleanup.
-    function addGasFeature(body, centerLocal) {
+    // Roll the band LUT from a deterministic seed: split latitudes into a
+    // few zones (3–6) and fill each with a randomly chosen biome's color,
+    // jittered per-band so the same biome reads as a textured stripe rather
+    // than a flat fill. Called from regenerateBody for fresh gas planets and
+    // from the Randomize button for explicit re-rolls.
+    function randomizeGasBands(body, seedStr) {
+      const gp = ensureGasPaint(body);
+      // body.archetype isn't set until registerPlanet runs, which is AFTER
+      // regenerateBody. currentArchetype is the right fallback during a
+      // fresh-planet bootstrap path.
+      const arch = body.archetype || currentArchetype || 'gas_giant';
+      const palette = gasBiomesForArchetype(arch);
+      const rng = makeRNG(hashSeed(String(seedStr || body.name || 'gas') + ':gas'));
+      const zoneCount = 3 + Math.floor(rng() * 4); // 3..6 zones
+      const edges = [0];
+      for (let z = 1; z < zoneCount; z++) edges.push(rng());
+      edges.push(1);
+      edges.sort((a, b) => a - b);
+      const zoneBiomes = [];
+      for (let z = 0; z < zoneCount; z++) {
+        zoneBiomes.push(palette[Math.floor(rng() * palette.length)]);
+      }
+      const tmpCol = new THREE.Color();
+      for (let i = 0; i < GAS_BAND_COUNT; i++) {
+        const lat = (i + 0.5) / GAS_BAND_COUNT;
+        let zi = 0;
+        for (let z = 0; z < zoneCount; z++) {
+          if (lat >= edges[z] && lat < edges[z + 1]) { zi = z; break; }
+        }
+        const biome = zoneBiomes[zi];
+        tmpCol.setHex(biome.color);
+        // Per-band brightness wobble inside the zone keeps adjacent bands of
+        // the same biome visually distinct, so a thick zone still shows
+        // texture instead of looking like one painted band.
+        const v = 0.85 + 0.22 * rng();
+        gp.bandsRGB[i * 3]     = Math.min(1, tmpCol.r * v);
+        gp.bandsRGB[i * 3 + 1] = Math.min(1, tmpCol.g * v);
+        gp.bandsRGB[i * 3 + 2] = Math.min(1, tmpCol.b * v);
+        gp.bandBiomes[i] = biome.id;
+      }
+      commitGasPaint(gp);
+    }
+
+    // Maximum cumulative rotation a single whirlpool can apply at its
+    // center. ~2π lets the user fully wind the bands around once; beyond
+    // that the result reads as visual noise.
+    const GAS_VORTEX_MAX_STRENGTH = Math.PI * 2;
+    // Per-second growth while held — at default ~3 sec to fully wind up.
+    const GAS_VORTEX_GROWTH_RATE  = (Math.PI * 2) / 3;
+
+    // Drop a new whirlpool at the pointer hit direction. Returns the vortex
+    // object so the caller can keep growing its strength while held. The
+    // vortex itself stores no color — it only rotates the band-sampling
+    // direction, so colors "wrap" rather than being overpainted.
+    function addGasVortex(body, centerLocal) {
       const gp = ensureGasPaint(body);
       const cx = centerLocal.x, cy = centerLocal.y, cz = centerLocal.z;
       const inv = 1 / (Math.hypot(cx, cy, cz) || 1);
-      const feat = {
+      const vortex = {
         dx: cx * inv, dy: cy * inv, dz: cz * inv,
         radius: brushRadius,
-        r: gasPaintColor.r, g: gasPaintColor.g, b: gasPaintColor.b,
-        intensity: 0.9,
+        strength: 0.0,
       };
-      gp.features.push(feat);
+      gp.features.push(vortex);
       while (gp.features.length > GAS_MAX_FEATURES) gp.features.shift();
+      updateGasFeatureUniforms(body);
+      return vortex;
+    }
+
+    // Advance an existing whirlpool's strength. Called per frame while the
+    // user holds the click — strength saturates at GAS_VORTEX_MAX_STRENGTH so
+    // bands fully wrap and then stop tightening (instead of becoming chaos).
+    function growGasVortex(body, vortex, dt) {
+      if (!vortex) return;
+      const next = vortex.strength + GAS_VORTEX_GROWTH_RATE * dt;
+      vortex.strength = next > GAS_VORTEX_MAX_STRENGTH ? GAS_VORTEX_MAX_STRENGTH : next;
       updateGasFeatureUniforms(body);
     }
 
@@ -607,17 +969,14 @@
       for (let i = 0; i < GAS_MAX_FEATURES; i++) {
         const f = feats[i];
         const centerVec = u.uFeatureCenters.value[i];
-        const colorVec  = u.uFeatureColors.value[i];
         if (f) {
           centerVec.set(f.dx, f.dy, f.dz);
-          colorVec.set(f.r, f.g, f.b);
           u.uFeatureRadii.value[i] = f.radius;
-          u.uFeatureIntensities.value[i] = f.intensity;
+          u.uFeatureStrengths.value[i] = f.strength;
         } else {
           centerVec.set(0, 1, 0);
-          colorVec.set(0, 0, 0);
           u.uFeatureRadii.value[i] = 0;
-          u.uFeatureIntensities.value[i] = 0;
+          u.uFeatureStrengths.value[i] = 0;
         }
       }
     }
@@ -841,6 +1200,19 @@
       gasMesh.renderOrder = 1; // render after the solid mesh so transparency blends right
       group.add(gasMesh);
 
+      // Plasma layer — an emissive, animated photosphere for stars. Replaces
+      // the solid surface entirely (matter.plasma hides body.mesh), so it sits
+      // at the surface radius. Opaque + self-lit, so it neither casts nor
+      // receives shadows. Hidden until an archetype turns plasma on.
+      const plasmaMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(baseRadius, 96, 64),
+        makePlasmaMaterial()
+      );
+      plasmaMesh.visible = false;
+      plasmaMesh.castShadow = false;
+      plasmaMesh.receiveShadow = false;
+      group.add(plasmaMesh);
+
       // Ring annulus, only meaningful on planets. RingGeometry is built in the
       // XY plane; rotating −π/2 around X lays it flat in the body's equatorial
       // (XZ) plane. Rings have rotational symmetry about Y so the planet's
@@ -863,10 +1235,10 @@
         kind, name, baseRadius, detail,
         palette: palette || (kind === 'planet' ? PLANET_PALETTE : MOON_PALETTE),
         group, mesh, geo, posAttr, N, unitDirs, heights, biomes, colorArr,
-        oceanMesh, gasMesh, ringMesh,
-        // Matter state. Moons keep matter.gas false; planets inherit from
-        // ARCHETYPE_MATTER on regenerate.
-        matter: { solid: true, liquid: !!hasOcean, gas: false },
+        oceanMesh, gasMesh, plasmaMesh, ringMesh,
+        // Matter state. Moons keep matter.gas/plasma false; planets inherit from
+        // ARCHETYPE_MATTER on regenerate. plasma is the fourth type (stars).
+        matter: { solid: true, liquid: !!hasOcean, gas: false, plasma: false },
         gasMode: 'none',
         gasThickness: 1.10,
         gasDensity: 0.18,
@@ -1013,9 +1385,12 @@
     // declared further below — those values exist at call time (animate loop).
     function applyBrushToBody(body, centerLocal, dt) {
       // Full-gas planets don't have an editable solid surface, so the brush
-      // edits the atmospheric band LUT instead of vertex heights/biomes.
+      // either drag-paints the band LUT (gasband) or grows the active
+      // whirlpool's strength (gaswhirl). Either way, vertex heights/biomes
+      // aren't touched.
       if (body.matter && body.matter.gas === 'full') {
         if (currentTool === 'gasband') applyGasPaintBrush(body, centerLocal, dt);
+        else if (currentTool === 'gaswhirl' && activeVortex) growGasVortex(body, activeVortex, dt);
         return;
       }
       const cx = centerLocal.x, cy = centerLocal.y, cz = centerLocal.z;
@@ -1136,6 +1511,7 @@
       storm: { name: 'Storm Planet', palette: { deep: 0x1a1a33, shore: 0x333366, sand: 0x4d4d99, grass: 0x6666cc, rock: 0x1a1a4d, snow: 0x9999ff }, hasOcean: true, oceanCol: 0x1a1a33, amp: 3.5, sea: 0.5 },
       living: { name: 'Living Planet', palette: { deep: 0x33001a, shore: 0x660033, sand: 0x99004d, grass: 0xcc0066, rock: 0x33001a, snow: 0xff0080 }, hasOcean: true, oceanCol: 0x4d0026, amp: 1.8, sea: 0.3 },
       rogue: { name: 'Rogue Planet', palette: { deep: 0x020205, shore: 0x050510, sand: 0x0a0a1a, grass: 0x101025, rock: 0x020208, snow: 0x1a1a33 }, hasOcean: false, amp: 2.0, sea: 0.0 },
+      star: { name: 'Star', palette: { deep: 0x3a0a00, shore: 0x7a1500, sand: 0xff6a00, grass: 0xffaa00, rock: 0xffd24d, snow: 0xfff4d0 }, hasOcean: false, amp: 1.0, sea: 0.0 },
     };
 
     // Each archetype declares its matter composition. `gas` is one of:
@@ -1162,6 +1538,8 @@
       storm:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xaaaaff, skyTint: 0x6878a0, gasThickness: 1.18, gasDensity: 0.80, gasCoverage: 0.85, windSpeed: 0.18 },
       living:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff99cc, skyTint: 0xe682b5, gasThickness: 1.08, gasDensity: 0.50, gasCoverage: 0.45, windSpeed: 0.05 },
       rogue:       { solid: true,  liquid: false, gas: false },
+      // Plasma matter: a star. No solid/liquid/gas — the body IS the photosphere.
+      star:        { solid: false, liquid: false, gas: false, plasma: true, plasmaCols: { deep: 0x5a0e00, low: 0xc73a00, mid: 0xff9b1e, hot: 0xfff4d0 } },
     };
 
     let currentArchetype = 'terrestrial';
@@ -1170,7 +1548,12 @@
     // meshes and tunes the gas shell. Pulled out of regenerateBody so the UI
     // (atmosphere sliders) can re-apply gas changes without re-running terrain.
     function applyMatterToBody(body, matterCfg, oceanCol) {
-      body.matter = { solid: !!matterCfg.solid, liquid: !!matterCfg.liquid, gas: matterCfg.gas || false };
+      body.matter = {
+        solid:  !!matterCfg.solid,
+        liquid: !!matterCfg.liquid,
+        gas:    matterCfg.gas || false,
+        plasma: !!matterCfg.plasma,
+      };
       body.mesh.visible = !!matterCfg.solid;
 
       if (body.oceanMesh) {
@@ -1186,11 +1569,18 @@
           body.gasThickness = matterCfg.gasThickness ?? 1.10;
           body.gasDensity   = matterCfg.gasDensity   ?? 0.20;
           body.gasCoverage  = matterCfg.gasCoverage  ?? 0.35;
+          // Wind/coverage realism options (default off — opt-in via UI).
+          // coveragePhase is a stable per-body offset so multiple planets
+          // with the same drift rate don't oscillate in lockstep.
+          if (body.windMode == null)        body.windMode = !!matterCfg.windMode;
+          if (body.coverageVariance == null) body.coverageVariance = matterCfg.coverageVariance ?? 0;
+          if (body.coveragePhase == null)    body.coveragePhase = Math.random() * Math.PI * 2;
           const u = body.gasMesh.material.uniforms;
           u.uColor.value.setHex(matterCfg.gasCol || 0xffffff);
           u.uSkyTint.value.setHex(matterCfg.skyTint ?? matterCfg.gasCol ?? 0x87ceeb);
           u.uMode.value = matterCfg.gas === 'full' ? 1.0 : 0.0;
           u.uWindSpeed.value = matterCfg.windSpeed ?? 0.05;
+          u.uWindMode.value  = body.windMode ? 1.0 : 0.0;
           if (matterCfg.gas === 'full') {
             const gp = ensureGasPaint(body);
             u.uBandTex.value = gp.tex;
@@ -1214,6 +1604,22 @@
           u.uFeatureCount.value = 0;
         }
       }
+
+      // Plasma photosphere (stars). Self-lit and opaque, so when on it replaces
+      // the (hidden) solid surface; the per-frame loop drives its uTime.
+      if (body.plasmaMesh) {
+        if (matterCfg.plasma) {
+          const pc = matterCfg.plasmaCols || {};
+          const pu = body.plasmaMesh.material.uniforms;
+          if (pc.deep != null) pu.uColorDeep.value.setHex(pc.deep);
+          if (pc.low  != null) pu.uColorLow.value.setHex(pc.low);
+          if (pc.mid  != null) pu.uColorMid.value.setHex(pc.mid);
+          if (pc.hot  != null) pu.uColorHot.value.setHex(pc.hot);
+          body.plasmaMesh.visible = true;
+        } else {
+          body.plasmaMesh.visible = false;
+        }
+      }
     }
 
     // ====== 10. Gas/rings appliers + regen ======
@@ -1225,6 +1631,9 @@
       const u = body.gasMesh.material.uniforms;
       u.uDensity.value  = Math.max(0, Math.min(1, body.gasDensity  ?? 0.2));
       u.uCoverage.value = Math.max(0, Math.min(1, body.gasCoverage ?? 0.35));
+      // The orbit-halo limb math needs the shell-to-surface radius ratio so it
+      // can recover the surface radius from the (scaled) shell radius.
+      u.uShellScale.value = body.gasThickness || 1.0;
     }
 
     // Push ring state from body.rings into the ringMesh. Visibility + intensity
@@ -1271,6 +1680,13 @@
         colorBodyVertex(body, i);
       }
       commitBodyChanges(body);
+      // Full-gas planets don't render the solid surface, but Generate World
+      // should still feel like "make this body fresh" — so re-roll the band
+      // composition from the same seed. Whirlpools survive (they're a separate
+      // edit layer, like a user's hand-paint on top).
+      if (body.kind === 'planet' && body.matter && body.matter.gas === 'full') {
+        randomizeGasBands(body, seedStr);
+      }
     }
 
     // ====== 11. Planets (orbiting the sun) ======
@@ -1437,13 +1853,19 @@
     let brushRaise    = true; // false = lower
     let paintMode     = true; // when true, right-drag paints; when false, right-drag pans
     let paused        = false;
-    let currentTool   = 'land'; // 'land' | 'biome' | 'city' | 'gasband' | 'gasstamp' | 'none'
+    let currentTool   = 'land'; // 'land' | 'biome' | 'city' | 'gasband' | 'gaswhirl' | 'none'
     let selectedBiome = BIOME.AUTO;
+    // Selected biome (drives gasPaintColor + bandBiomes tagging on stroke).
+    let selectedGasBiomeId = null;
     // Selected color for the atmospheric-band brush on full-gas planets.
     const gasPaintColor = new THREE.Color('#cc9966');
     // Active sub-mode for gas paint: 'gasband' = drag-paint latitude bands;
-    // 'gasstamp' = click to drop a feature stamp (Great Red Spot-style vortex).
+    // 'gaswhirl' = press-and-hold to grow a whirlpool that wraps surrounding
+    // bands around the click center (no overpaint — just direction warp).
     let gasPaintMode  = 'gasband';
+    // The whirlpool created on the current drag stroke; grown each frame in
+    // applyBrushToBody while the user holds the right button.
+    let activeVortex  = null;
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -1498,6 +1920,7 @@
         let target = null;
         if (b.mesh.visible) target = b.mesh;
         else if (b.matter && b.matter.gas === 'full' && b.gasMesh && b.gasMesh.visible) target = b.gasMesh;
+        else if (b.matter && b.matter.plasma && b.plasmaMesh && b.plasmaMesh.visible) target = b.plasmaMesh;
         if (!target) continue;
         meshes.push(target);
         meshToBody.set(target, b);
@@ -1527,13 +1950,16 @@
         const name = cityNameInput.value || 'New City';
         const localPos = worldToBodyLocal(hb.body, hb.hit.point);
         addCity(hb.body, name, localPos);
-      } else if (currentTool === 'gasstamp'
+      } else if (currentTool === 'gaswhirl'
                  && hb.body.matter && hb.body.matter.gas === 'full') {
-        // One-shot: drop a single feature stamp at the click point. No drag
-        // capture so the user doesn't accidentally smear multiple stamps in
-        // one stroke.
+        // Drop a fresh whirlpool at strength 0 and capture the pointer.
+        // applyBrushToBody will grow its strength each frame the user holds.
         const localPos = worldToBodyLocal(hb.body, hb.hit.point);
-        addGasFeature(hb.body, localPos);
+        activeVortex = addGasVortex(hb.body, localPos);
+        isPainting = true;
+        activeBrushBody = hb.body;
+        lastHitLocal = localPos;
+        renderer.domElement.setPointerCapture(e.pointerId);
       } else {
         isPainting = true;
         activeBrushBody = hb.body;
@@ -1577,6 +2003,7 @@
       isPainting = false;
       lastHitLocal = null;
       activeBrushBody = null;
+      activeVortex = null;
       try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
       updateInfoPanel();
     }
@@ -1857,6 +2284,11 @@
     function removeSatelliteAt(index) {
       const probe = probes[index];
       if (!probe) return;
+      // Drop focus to the host planet before tearing down the mesh so the
+      // camera tracker doesn't chase a removed object.
+      if (focusedProbe === probe) {
+        if (probe.parent) setFocus(probe.parent); else setSystemFocus();
+      }
       scene.remove(probe.mesh);
       probe.mesh.traverse((obj) => {
         if (obj.isMesh) {
@@ -2074,6 +2506,12 @@
     // so rotation/orbit naturally carries the target along).
     let focusedBody = planet;
     let focusedCity = null;
+    // Probes are not editable bodies, so they get their own focus slot rather
+    // than riding on focusedBody (which everywhere assumes a planet/moon with a
+    // .kind, .group, baseRadius, matter, …). When a probe is focused we keep
+    // focusedBody pointing at its host planet so the left panel stays anchored
+    // to that planet's Sats tab; focusedProbe distinguishes the two.
+    let focusedProbe = null;
 
     // Switch the focused body. Side effects: clears focusedCity, recenters
     // OrbitControls on the new body's world position at a sensible dolly
@@ -2081,6 +2519,7 @@
     function setFocus(body) {
       focusedBody = body;
       focusedCity = null;
+      focusedProbe = null;
       focusNameEl.textContent = body.name;
       const newTarget = new THREE.Vector3();
       body.group.getWorldPosition(newTarget);
@@ -2100,6 +2539,7 @@
     function setCityFocus(city) {
       focusedBody = city.body;
       focusedCity = city;
+      focusedProbe = null;
       focusNameEl.textContent = `${city.name} · ${city.body.name}`;
       const newTarget = new THREE.Vector3();
       city.mesh.getWorldPosition(newTarget);
@@ -2119,14 +2559,37 @@
       if (typeof applyFocusToLeftPanel === 'function') applyFocusToLeftPanel();
     }
 
+    // Focus on a probe. Mirrors setFocus but targets the probe's mesh group and
+    // keeps focusedBody on the host planet so the Sats tab stays in context.
+    function setProbeFocus(probe) {
+      focusedProbe = probe;
+      focusedCity = null;
+      focusedBody = probe.parent;
+      focusNameEl.textContent = probe.name;
+      const newTarget = new THREE.Vector3();
+      probe.mesh.getWorldPosition(newTarget);
+      // The mesh group is scaled by probe.size, so frame relative to that.
+      const desiredDist = Math.max(probe.size * 6, probe.size + 4);
+      let dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0.3, 1);
+      dir.normalize();
+      camera.position.copy(newTarget).addScaledVector(dir, desiredDist);
+      controls.target.copy(newTarget);
+      renderFocusBadges();
+      updateBiomeTools();
+      updateInfoPanel();
+      if (typeof applyFocusToLeftPanel === 'function') applyFocusToLeftPanel();
+    }
+
     // Per-frame: snap controls.target onto the focused body's current world
     // position so the camera stays glued to it as planets orbit and moons swing
     // around their parent. The camera position trails along by the same delta,
     // so the user's chosen viewing angle is preserved.
     function updateFocusTracking() {
-      if (!focusedBody) return;
       const newTarget = new THREE.Vector3();
-      if (focusedCity) focusedCity.mesh.getWorldPosition(newTarget);
+      if (focusedProbe) focusedProbe.mesh.getWorldPosition(newTarget);
+      else if (!focusedBody) return;
+      else if (focusedCity) focusedCity.mesh.getWorldPosition(newTarget);
       else focusedBody.group.getWorldPosition(newTarget);
       const delta = newTarget.clone().sub(controls.target);
       if (delta.lengthSq() > 1e-12) {
@@ -2280,8 +2743,50 @@
       moonSize:     document.getElementById('infoMoonSize'),
     };
 
+    // Composition rollup for full-gas planets: tally bandBiomes weighted by
+    // each band's actual surface area on the sphere (sin(latitude) — bands
+    // near the equator cover more surface than bands near the poles).
+    // Returns rows sorted by surface fraction descending so the dominant
+    // biome leads the panel.
+    function computeGasComposition(body) {
+      const gp = body.gasPaint;
+      if (!gp || !gp.bandBiomes) return [];
+      const tallies = new Map();
+      let total = 0;
+      for (let i = 0; i < GAS_BAND_COUNT; i++) {
+        const w = Math.sin(((i + 0.5) / GAS_BAND_COUNT) * Math.PI);
+        total += w;
+        const id = gp.bandBiomes[i];
+        tallies.set(id, (tallies.get(id) || 0) + w);
+      }
+      const rows = [];
+      for (const [id, w] of tallies) {
+        const biome = gasBiomeById(id);
+        if (!biome) continue;
+        rows.push({ id, name: biome.name, color: biome.color, frac: total > 0 ? w / total : 0 });
+      }
+      rows.sort((a, b) => b.frac - a.frac);
+      return rows;
+    }
+
     function updateInfoPanel() {
       if (!infoEls.name) return; // info panel removed from HTML — nothing to update
+      if (focusedProbe) {
+        // Probes are artificial satellites, not surveyable bodies — show their
+        // identity and orbit rather than composition/terrain stats.
+        infoEls.name.textContent = focusedProbe.name;
+        infoEls.subtitle.textContent = `Probe · seed "${focusedProbe.seed}"`;
+        infoEls.composition.innerHTML =
+          `<div class="info-row"><span>Artificial satellite</span></div>` +
+          `<div class="info-row"><span>Orbiting</span><span>${focusedProbe.parent?.name || '—'}</span></div>` +
+          `<div class="info-row"><span>Orbit dist</span><span>${focusedProbe.distance.toFixed(1)} u</span></div>`;
+        infoEls.peak.textContent = '—';
+        infoEls.verts.textContent = '—';
+        infoEls.moonsRow.style.display = 'none';
+        infoEls.timeSection.style.display = 'none';
+        infoEls.orbitSection.style.display = 'none';
+        return;
+      }
       if (!focusedBody) {
         // System view — no specific body in focus.
         infoEls.name.textContent = `${systemName} System`;
@@ -2297,34 +2802,74 @@
       }
       const body = focusedBody;
       infoEls.name.textContent = body.name;
+      const isPlasma = !!(body.matter && body.matter.plasma);
       const seed = body.kind === 'planet'
         ? (body.currentSeed || planetCurrentSeed)
         : (moons.find(m => m.body === body)?.seed || '');
-      infoEls.subtitle.textContent = (body.kind === 'planet' ? 'Planet' : 'Moon') + (seed ? ` · seed "${seed}"` : '');
+      const kindLabel = isPlasma ? 'Star' : (body.kind === 'planet' ? 'Planet' : 'Moon');
+      infoEls.subtitle.textContent = kindLabel + (seed ? ` · seed "${seed}"` : '');
 
-      const stats = computeBodyStats(body);
-      const order = body.kind === 'planet' ? PLANET_COMP_ORDER : MOON_COMP_ORDER;
-      const rows = [];
-      for (const key of order) {
-        const count = stats.counts[key] || 0;
-        if (count === 0) continue;
-        const meta = body.kind === 'planet' && key in BAND_KEY_TO_PALETTE
-          ? bandMeta(body, key)
-          : COMP_DISPLAY[key];
-        rows.push(
+      // Full-gas planets and stars don't have per-vertex biomes; their
+      // composition is reported from their own model (gas band LUT / fixed
+      // plasma layers). Peak/verts also swap — neither has a terrain peak.
+      const isGasFull = !!(body.matter && body.matter.gas === 'full');
+      let rows = [];
+      let stats = null;
+      if (isPlasma) {
+        // Fixed photosphere layers, colored from the body's plasma uniforms.
+        const pu = body.plasmaMesh && body.plasmaMesh.material.uniforms;
+        const hx = c => '#' + c.getHexString();
+        const layers = pu ? [
+          { name: 'Photosphere',    color: hx(pu.uColorMid.value),  frac: 0.62 },
+          { name: 'Granulation',    color: hx(pu.uColorLow.value),  frac: 0.24 },
+          { name: 'Bright Faculae', color: hx(pu.uColorHot.value),  frac: 0.09 },
+          { name: 'Cool Lanes',     color: hx(pu.uColorDeep.value), frac: 0.05 },
+        ] : [];
+        rows = layers.map(c =>
           `<div class="comp-row">` +
-          `<span class="comp-swatch" style="background:${meta.color}"></span>` +
-          `<span>${meta.label}</span>` +
-          `<span class="comp-pct">${fmtPct(count, stats.N)}</span>` +
+          `<span class="comp-swatch" style="background:${c.color}"></span>` +
+          `<span>${c.name}</span>` +
+          `<span class="comp-pct">${(c.frac * 100).toFixed(0)}%</span>` +
           `</div>`
         );
+      } else if (isGasFull) {
+        const comp = computeGasComposition(body);
+        rows = comp.map(c =>
+          `<div class="comp-row">` +
+          `<span class="comp-swatch" style="background:${hexFromNumber(c.color)}"></span>` +
+          `<span>${c.name}</span>` +
+          `<span class="comp-pct">${(c.frac * 100).toFixed(0)}%</span>` +
+          `</div>`
+        );
+      } else {
+        stats = computeBodyStats(body);
+        const order = body.kind === 'planet' ? PLANET_COMP_ORDER : MOON_COMP_ORDER;
+        for (const key of order) {
+          const count = stats.counts[key] || 0;
+          if (count === 0) continue;
+          const meta = body.kind === 'planet' && key in BAND_KEY_TO_PALETTE
+            ? bandMeta(body, key)
+            : COMP_DISPLAY[key];
+          rows.push(
+            `<div class="comp-row">` +
+            `<span class="comp-swatch" style="background:${meta.color}"></span>` +
+            `<span>${meta.label}</span>` +
+            `<span class="comp-pct">${fmtPct(count, stats.N)}</span>` +
+            `</div>`
+          );
+        }
       }
       infoEls.composition.innerHTML = rows.join('') || '<div class="info-row"><span>—</span></div>';
 
-      const worldPeak = peakWorldHeight(body, stats.peak);
-      const pctOfRadius = stats.peak * BODY_HEIGHT_SCALE * 100;
-      infoEls.peak.textContent = `${worldPeak.toFixed(2)} u (${pctOfRadius.toFixed(1)}%)`;
-      infoEls.verts.textContent = stats.N.toLocaleString();
+      if (isGasFull || isPlasma) {
+        infoEls.peak.textContent = '—';
+        infoEls.verts.textContent = body.N.toLocaleString();
+      } else {
+        const worldPeak = peakWorldHeight(body, stats.peak);
+        const pctOfRadius = stats.peak * BODY_HEIGHT_SCALE * 100;
+        infoEls.peak.textContent = `${worldPeak.toFixed(2)} u (${pctOfRadius.toFixed(1)}%)`;
+        infoEls.verts.textContent = stats.N.toLocaleString();
+      }
 
       const isPlanet = body.kind === 'planet';
       infoEls.moonsRow.style.display = isPlanet ? '' : 'none';
@@ -2337,6 +2882,7 @@
 
     function updateLiveInfo() {
       if (!infoEls.dayPeriod) return; // info panel removed from HTML
+      if (focusedProbe) return; // probe panel has no live day/orbit readouts
       if (!focusedBody) return;
       const body = focusedBody;
       if (body.kind === 'planet') {
@@ -2609,31 +3155,68 @@
       selectedBiome = parseInt(biomeSelect.value, 10);
     };
 
-    const gasPaintColorInput = document.getElementById('gasPaintColor');
-    gasPaintColorInput.oninput = () => {
-      gasPaintColor.set(gasPaintColorInput.value);
-    };
+    // Composition dropdown: drives gasPaintColor for the Bands brush and the
+    // biome tag written into bandBiomes during a stroke. The options are
+    // filtered to the focused planet's archetype palette by
+    // refreshGasBiomeOptions, called from applyFocusToLeftPanel.
+    const gasBiomeSelectEl = document.getElementById('gasBiomeSelect');
+    function applyGasBiome() {
+      if (!gasBiomeSelectEl) return;
+      const biome = gasBiomeById(gasBiomeSelectEl.value) || GAS_BIOMES[0];
+      gasPaintColor.setHex(biome.color);
+      selectedGasBiomeId = biome.id;
+    }
+    function refreshGasBiomeOptions(arch) {
+      if (!gasBiomeSelectEl) return;
+      const palette = gasBiomesForArchetype(arch);
+      const prev = gasBiomeSelectEl.value;
+      gasBiomeSelectEl.innerHTML = '';
+      palette.forEach((biome) => {
+        const opt = document.createElement('option');
+        opt.value = biome.id;
+        opt.textContent = biome.name;
+        gasBiomeSelectEl.appendChild(opt);
+      });
+      // Preserve the previous selection if the new palette still contains it
+      // (switching between two gas giants shouldn't reset the dropdown).
+      if (palette.some(b => b.id === prev)) gasBiomeSelectEl.value = prev;
+      applyGasBiome();
+    }
+    if (gasBiomeSelectEl) {
+      gasBiomeSelectEl.onchange = applyGasBiome;
+      // Seed with gas_giant palette so gasPaintColor / selectedGasBiomeId have
+      // sensible defaults before any focus change has fired.
+      refreshGasBiomeOptions('gas_giant');
+    }
 
-    // Bands vs. Stamp mode toggle. Bands = drag-paint latitudinal LUT; Stamp =
-    // click to drop a vortex. refreshActiveTool resolves the actual tool name
-    // from this state + the focused body, so we just toggle the .active class
-    // and re-resolve here.
+    // Bands vs. Whirlpool mode toggle. Bands = drag-paint band LUT;
+    // Whirlpool = press-and-hold to wrap surrounding bands into a vortex.
+    // refreshActiveTool resolves the actual tool name from this state + the
+    // focused body. The Composition (biome) row only applies to Bands, so we
+    // hide it in Whirlpool mode.
     const gasModeBandsBtn = document.getElementById('gasModeBands');
     const gasModeStampBtn = document.getElementById('gasModeStamp');
+    const gasBiomeRowEl   = document.getElementById('gasBiomeRow');
     function setGasPaintMode(mode) {
       gasPaintMode = mode;
       if (gasModeBandsBtn) gasModeBandsBtn.classList.toggle('active', mode === 'gasband');
-      if (gasModeStampBtn) gasModeStampBtn.classList.toggle('active', mode === 'gasstamp');
+      if (gasModeStampBtn) gasModeStampBtn.classList.toggle('active', mode === 'gaswhirl');
+      if (gasBiomeRowEl)   gasBiomeRowEl.style.display = mode === 'gasband' ? '' : 'none';
       refreshActiveTool();
     }
     if (gasModeBandsBtn) gasModeBandsBtn.onclick = () => setGasPaintMode('gasband');
-    if (gasModeStampBtn) gasModeStampBtn.onclick = () => setGasPaintMode('gasstamp');
+    if (gasModeStampBtn) gasModeStampBtn.onclick = () => setGasPaintMode('gaswhirl');
 
-    const gasClearStampsBtn = document.getElementById('gasClearStamps');
-    if (gasClearStampsBtn) gasClearStampsBtn.onclick = () => {
-      if (focusedBody && focusedBody.matter && focusedBody.matter.gas === 'full') {
-        clearGasFeatures(focusedBody);
-      }
+    // Randomize: clear whirlpools + re-roll the band LUT with a fresh salt.
+    // Different result every click; the user can keep rerolling until a
+    // composition they like comes up.
+    const gasRandomizeBtn = document.getElementById('gasRandomize');
+    if (gasRandomizeBtn) gasRandomizeBtn.onclick = () => {
+      if (!focusedBody || !focusedBody.matter || focusedBody.matter.gas !== 'full') return;
+      clearGasFeatures(focusedBody);
+      const salt = Math.random().toString(36).slice(2, 8);
+      randomizeGasBands(focusedBody, (focusedBody.currentSeed || focusedBody.name || 'gas') + ':' + salt);
+      updateInfoPanel();
     };
 
     // ====== 26. Atmosphere sliders ======
@@ -2643,6 +3226,9 @@
     const atmoDensityValEl    = document.getElementById('atmoDensityVal');
     const atmoCoverageInput   = document.getElementById('atmoCoverage');
     const atmoCoverageValEl   = document.getElementById('atmoCoverageVal');
+    const atmoComplexWindsInput = document.getElementById('atmoComplexWinds');
+    const atmoCloudDriftInput   = document.getElementById('atmoCloudDrift');
+    const atmoCloudDriftValEl   = document.getElementById('atmoCloudDriftVal');
     const atmoHintEl          = document.getElementById('atmoHint');
 
     // Whoever is in focus when the slider moves is the body that gets edited.
@@ -2661,6 +3247,30 @@
     atmoThickInput.oninput    = applyAtmoSliderToFocus;
     atmoDensityInput.oninput  = applyAtmoSliderToFocus;
     atmoCoverageInput.oninput = applyAtmoSliderToFocus;
+
+    // Per-body realism toggles for the cloud layer.
+    //   atmoComplexWinds → flips the shader's uWindMode, swapping uniform
+    //     zonal drift for latitude-banded flow (Hadley/Ferrel/Polar).
+    //   atmoCloudDrift   → body.coverageVariance (0..1). The animation
+    //     loop modulates uCoverage around the slider's base value at this
+    //     amplitude, so total cloud cover slowly waxes and wanes.
+    atmoComplexWindsInput.onchange = () => {
+      const b = focusedBody;
+      if (!b || !b.gasMesh || !b.matter || !b.matter.gas) return;
+      b.windMode = !!atmoComplexWindsInput.checked;
+      b.gasMesh.material.uniforms.uWindMode.value = b.windMode ? 1.0 : 0.0;
+    };
+    atmoCloudDriftInput.oninput = () => {
+      const b = focusedBody;
+      const v = parseInt(atmoCloudDriftInput.value, 10) / 100; // 0..1
+      atmoCloudDriftValEl.textContent = v.toFixed(2);
+      if (!b || !b.gasMesh || !b.matter || !b.matter.gas) return;
+      b.coverageVariance = v;
+      // If drift just turned off, snap the uniform back to the base value
+      // so the cloud field stops mid-cycle instead of freezing wherever
+      // it happened to be in its sine wave.
+      if (v === 0) b.gasMesh.material.uniforms.uCoverage.value = b.gasCoverage ?? 0.35;
+    };
 
     // ====== 27. Ring controls ======
     const ringsEnabledInput   = document.getElementById('ringsEnabled');
@@ -2831,6 +3441,11 @@
       const gasPaintSectionEl = document.getElementById('gasPaintSection');
       if (biomeRowEl)        biomeRowEl.style.display        = isGasFull ? 'none' : '';
       if (gasPaintSectionEl) gasPaintSectionEl.style.display = isGasFull ? '' : 'none';
+      // The Composition dropdown is filtered to the focused planet's flavour
+      // (gas giant = brown→beige; ice giant = blue→white).
+      if (isGasFull && typeof refreshGasBiomeOptions === 'function') {
+        refreshGasBiomeOptions(focusedBody.archetype || 'gas_giant');
+      }
       // If the active tab got hidden by the new focus, switch to System
       // (always visible) or whichever visible tab comes first.
       if (!activeStillVisible && firstVisibleTab) {
@@ -2946,19 +3561,32 @@
       atmoThickInput.disabled    = !hasGas;
       atmoDensityInput.disabled  = !hasGas;
       atmoCoverageInput.disabled = !coverageApplies;
+      // Wind & drift only meaningful on atmosphere-mode bodies — gas-giant
+      // mode draws bands directly into the gas color, no separate cloud layer.
+      atmoComplexWindsInput.disabled = !coverageApplies;
+      atmoCloudDriftInput.disabled   = !coverageApplies;
+      const atmoComplexWindsRow = atmoComplexWindsInput.closest('label');
+      const atmoCloudDriftRow   = atmoCloudDriftInput.closest('label');
       if (atmoThickRow)    atmoThickRow.classList.toggle('is-disabled-section', !hasGas);
       if (atmoDensityRow)  atmoDensityRow.classList.toggle('is-disabled-section', !hasGas);
       if (atmoCoverageRow) atmoCoverageRow.classList.toggle('is-disabled-section', !coverageApplies);
+      if (atmoComplexWindsRow) atmoComplexWindsRow.classList.toggle('is-disabled-section', !coverageApplies);
+      if (atmoCloudDriftRow)   atmoCloudDriftRow.classList.toggle('is-disabled-section', !coverageApplies);
       if (hasGas) {
         const t = b.gasThickness ?? 1.10;
         const d = b.gasDensity ?? 0.20;
         const c = b.gasCoverage ?? 0.35;
+        const cw = !!b.windMode;
+        const cd = b.coverageVariance ?? 0;
         atmoThickInput.value      = Math.round(t * 100);
         atmoDensityInput.value    = Math.round(d * 100);
         atmoCoverageInput.value   = Math.round(c * 100);
+        atmoComplexWindsInput.checked = cw;
+        atmoCloudDriftInput.value     = Math.round(cd * 100);
         atmoThickValEl.textContent    = t.toFixed(2);
         atmoDensityValEl.textContent  = d.toFixed(2);
         atmoCoverageValEl.textContent = coverageApplies ? c.toFixed(2) : '—';
+        atmoCloudDriftValEl.textContent = coverageApplies ? cd.toFixed(2) : '—';
         atmoHintEl.textContent = b.matter.gas === 'full'
           ? `Gaseous body · adjust size and density`
           : `Atmosphere wrapping ${b.name}`;
@@ -2966,6 +3594,8 @@
         atmoThickValEl.textContent    = '—';
         atmoDensityValEl.textContent  = '—';
         atmoCoverageValEl.textContent = '—';
+        atmoCloudDriftValEl.textContent = '—';
+        atmoComplexWindsInput.checked = false;
         atmoHintEl.textContent = (b && b.kind === 'planet')
           ? `${b.name} has no atmosphere`
           : 'No atmosphere on this body';
@@ -3179,7 +3809,8 @@
 
     // Reset Camera: recenter on whatever is currently in focus, not always Earth.
     focusPlanetBtn.onclick = () => {
-      if (focusedCity) setCityFocus(focusedCity);
+      if (focusedProbe) setProbeFocus(focusedProbe);
+      else if (focusedCity) setCityFocus(focusedCity);
       else if (focusedBody) setFocus(focusedBody);
       else setSystemFocus();
     };
@@ -3304,11 +3935,13 @@
       probesListEl.innerHTML = own.map((p, i) => {
         const sizeSlider = Math.round(p.size * 10);
         const distSlider = Math.round(p.distance);
+        const focusedCls = focusedProbe === p ? ' focused' : '';
         return `
-          <div class="moon-card" data-local="${i}">
+          <div class="moon-card${focusedProbe === p ? ' is-focused' : ''}" data-local="${i}">
             <div class="moon-card-header">
               <span class="moon-card-title">${p.name}</span>
               <div class="moon-card-actions">
+                <button class="probe-focus focus-btn small-btn${focusedCls}" type="button">Focus</button>
                 <button class="probe-remove moon-remove small-btn" type="button" aria-label="Remove probe">×</button>
               </div>
             </div>
@@ -3332,6 +3965,7 @@
         const sizeValEl = row.querySelector('.probe-size-val');
         const distIn = row.querySelector('.probe-dist-input');
         const distValEl = row.querySelector('.probe-dist-val');
+        const focusBtn = row.querySelector('.probe-focus');
         const rmBtn = row.querySelector('.probe-remove');
         sizeIn.oninput = () => {
           sizeValEl.textContent = sizeIn.value;
@@ -3341,6 +3975,7 @@
           distValEl.textContent = distIn.value;
           setSatelliteDistance(globalIdx(), parseInt(distIn.value, 10));
         };
+        focusBtn.onclick = () => { if (probeRef) setProbeFocus(probeRef); };
         rmBtn.onclick = () => {
           removeSatelliteAt(globalIdx());
           renderProbesList();
@@ -3358,8 +3993,9 @@
     }
 
     // ====== 31. Hierarchy navigation ======
-    // Three levels: System (no body focused) → Body (planet or moon) → City.
-    // Arrows: ↑ zoom out, ↓ zoom in to first child, ←/→ cycle siblings.
+    // Levels: System (no body focused) → Planet → satellite ring (moons +
+    // probes, same level) / City. Arrows: ↑ zoom out, ↓ zoom in to first child,
+    // ←/→ cycle siblings (moons and probes share one ring under their planet).
     const navLevelEl = document.getElementById('navFocusLevel');
     const navNameEl  = document.getElementById('navFocusName');
     const navSubEl   = document.getElementById('navFocusSub');
@@ -3380,6 +4016,7 @@
     function setSystemFocus() {
       focusedBody = null;
       focusedCity = null;
+      focusedProbe = null;
       focusNameEl.textContent = 'System View';
       const maxOrbit = planets.reduce((acc, p) => Math.max(acc, p.orbit.distance), 40);
       const dist = Math.max(220, maxOrbit * 3.0 + 60);
@@ -3393,7 +4030,22 @@
       applyFocusToLeftPanel();
     }
 
+    // The satellite level of a planet holds both its moons and its probes, in
+    // that order. Returned as a uniform list of nav targets so the arrows can
+    // cycle through them as one ring and zoom into the first of either kind.
+    function satelliteRing(parent) {
+      const ring = [];
+      for (const m of moons) if (m.parent === parent) ring.push({ kind: 'moon', body: m.body });
+      for (const p of probes) if (p.parent === parent) ring.push({ kind: 'probe', probe: p });
+      return ring;
+    }
+    function focusSatellite(target) {
+      if (target.kind === 'probe') setProbeFocus(target.probe);
+      else setFocus(target.body);
+    }
+
     function navUp() {
+      if (focusedProbe) { setFocus(focusedProbe.parent); return; }
       if (focusedCity) { setFocus(focusedBody); return; }
       if (focusedBody?.kind === 'moon') {
         const m = moons.find(mn => mn.body === focusedBody);
@@ -3403,14 +4055,14 @@
     }
 
     function navDown() {
-      if (focusedCity) return;
+      if (focusedCity || focusedProbe) return; // leaf nodes — nothing below
       if (!focusedBody) {
         if (planets.length) setFocus(planets[0].body);
         return;
       }
       if (focusedBody.kind === 'planet') {
-        const myMoons = moons.filter(m => m.parent === focusedBody);
-        if (myMoons.length) { setFocus(myMoons[0].body); return; }
+        const ring = satelliteRing(focusedBody);
+        if (ring.length) { focusSatellite(ring[0]); return; }
         const myCities = cities.filter(c => c.body === focusedBody);
         if (myCities.length) setCityFocus(myCities[0]);
         return;
@@ -3422,7 +4074,8 @@
 
     // Cycle the focused entity to its next/previous sibling. Siblings are: other
     // cities on the same body (when a city is focused), other planets at the
-    // system level, or other moons of the same parent. Wraps both directions.
+    // system level, or the host planet's satellite ring — moons and probes
+    // together (when a moon or probe is focused). Wraps both directions.
     function navSibling(dir) {
       if (focusedCity) {
         const sibs = cities.filter(c => c.body === focusedCity.body);
@@ -3431,20 +4084,30 @@
         setCityFocus(sibs[(idx + dir + sibs.length) % sibs.length]);
         return;
       }
+      if (focusedProbe) {
+        const ring = satelliteRing(focusedProbe.parent);
+        if (ring.length < 2) return;
+        const idx = ring.findIndex(t => t.kind === 'probe' && t.probe === focusedProbe);
+        focusSatellite(ring[(idx + dir + ring.length) % ring.length]);
+        return;
+      }
       if (!focusedBody) {
         if (planets.length) setFocus(planets[0].body);
         return;
       }
-      let sibs;
       if (focusedBody.kind === 'planet') {
-        sibs = planets.map(p => p.body);
-      } else {
-        const m = moons.find(mn => mn.body === focusedBody);
-        sibs = moons.filter(mn => mn.parent === m?.parent).map(mn => mn.body);
+        const sibs = planets.map(p => p.body);
+        if (sibs.length < 2) return;
+        const idx = sibs.indexOf(focusedBody);
+        setFocus(sibs[(idx + dir + sibs.length) % sibs.length]);
+        return;
       }
-      if (sibs.length < 2) return;
-      const idx = sibs.indexOf(focusedBody);
-      setFocus(sibs[(idx + dir + sibs.length) % sibs.length]);
+      // moon — cycle within its parent's satellite ring (moons + probes)
+      const m = moons.find(mn => mn.body === focusedBody);
+      const ring = satelliteRing(m?.parent);
+      if (ring.length < 2) return;
+      const idx = ring.findIndex(t => t.kind === 'moon' && t.body === focusedBody);
+      focusSatellite(ring[(idx + dir + ring.length) % ring.length]);
     }
 
     // Refresh the bottom-nav focus card (level, name, sub) and the breadcrumb
@@ -3457,7 +4120,11 @@
       if (navBreadcrumbEl) navBreadcrumbEl.textContent = `Milky Way · ${systemName}`;
 
       // Focus card content
-      if (focusedCity) {
+      if (focusedProbe) {
+        navLevelEl.textContent = 'Probe';
+        setNavNameText(focusedProbe.name.toUpperCase());
+        navSubEl.textContent = focusedProbe.parent ? `Orbiting ${focusedProbe.parent.name}` : '';
+      } else if (focusedCity) {
         navLevelEl.textContent = 'Settlement';
         setNavNameText(focusedCity.name.toUpperCase());
         navSubEl.textContent = `On ${focusedCity.body.name}`;
@@ -3480,11 +4147,11 @@
       }
 
       // Arrow availability
-      navUpBtn.disabled = !focusedBody && !focusedCity;
+      navUpBtn.disabled = !focusedBody && !focusedCity && !focusedProbe;
 
-      if (focusedCity) navDownBtn.disabled = true;
+      if (focusedCity || focusedProbe) navDownBtn.disabled = true;
       else if (focusedBody?.kind === 'planet') {
-        navDownBtn.disabled = !moons.some(m => m.parent === focusedBody)
+        navDownBtn.disabled = satelliteRing(focusedBody).length === 0
           && !cities.some(c => c.body === focusedBody);
       } else if (focusedBody?.kind === 'moon') {
         navDownBtn.disabled = !cities.some(c => c.body === focusedBody);
@@ -3494,10 +4161,11 @@
 
       let sibCount = 0;
       if (focusedCity) sibCount = cities.filter(c => c.body === focusedCity.body).length;
+      else if (focusedProbe) sibCount = satelliteRing(focusedProbe.parent).length;
       else if (focusedBody?.kind === 'planet') sibCount = planets.length;
       else if (focusedBody?.kind === 'moon') {
         const m = moons.find(mn => mn.body === focusedBody);
-        sibCount = moons.filter(mn => mn.parent === m?.parent).length;
+        sibCount = satelliteRing(m?.parent).length;
       }
       navLeftBtn.disabled = navRightBtn.disabled = sibCount < 2;
 
@@ -3540,6 +4208,8 @@
       pitch: 0,
       fov: 60,
       eyeHeight: 0.04,                     // body-local units above surface
+      groundRadius: 0,                     // body-local radius of the standing surface
+      moveSpeed: 0,                        // body-local units per second when walking
       // Saved orbit state, restored on exit.
       savedFov: 45,
       savedNear: 0.1,
@@ -3561,7 +4231,7 @@
 
     function updateVisitButtonState() {
       if (!navVisitBtn) return;
-      const canVisit = !focusedCity && isBodyVisitable(focusedBody);
+      const canVisit = !focusedCity && !focusedProbe && isBodyVisitable(focusedBody);
       navVisitBtn.disabled = !canVisit;
       navVisitBtn.classList.toggle('active', viewMode === 'pick' || viewMode === 'surface');
       if (viewMode === 'surface') {
@@ -3629,9 +4299,15 @@
       surfaceState.eyeHeight = Math.max(0.012, body.baseRadius * 0.003);
       buildLocalFrame(localHit, surfaceState.localUp, surfaceState.localFwd, surfaceState.localRight);
       // Place the eye at (vertex height + eyeHeight) along the surface normal.
-      // The picked point's local radius approximates the local ground level.
-      const groundRadius = localHit.length();
-      surfaceState.localEye.copy(surfaceState.localUp).multiplyScalar(groundRadius + surfaceState.eyeHeight);
+      // The picked point's local radius is the initial ground level; while
+      // walking, stepSurfaceWalk resamples the terrain under each step so the
+      // eye rises over mountains and dips into valleys.
+      surfaceState.groundRadius = localHit.length();
+      // Walk pace scales with body size so small moons don't feel like a
+      // marathon and giants don't fly past. Tuned so a full circumnav of an
+      // Earth-sized body at sprint takes a couple of minutes.
+      surfaceState.moveSpeed = body.baseRadius * 0.12;
+      surfaceState.localEye.copy(surfaceState.localUp).multiplyScalar(surfaceState.groundRadius + surfaceState.eyeHeight);
       surfaceState.yaw = 0;
       surfaceState.pitch = 0;
       surfaceState.fov = 60;
@@ -3652,25 +4328,28 @@
         const mat = body.gasMesh.material;
         surfaceState.gasMeshAdjusted = body.gasMesh;
         surfaceState.savedGas = {
-          side:        mat.side,
-          transparent: mat.transparent,
-          depthWrite:  mat.depthWrite,
-          opaqueSky:   mat.uniforms.uOpaqueSky.value,
+          side:            mat.side,
+          transparent:     mat.transparent,
+          depthWrite:      mat.depthWrite,
+          alphaToCoverage: mat.alphaToCoverage,
+          opaqueSky:       mat.uniforms.uOpaqueSky.value,
         };
         mat.side = THREE.DoubleSide;
 
         // Opaque-shell promotion: any atmosphere thick enough to paint a
         // visible sky (Earth 0.45 included) needs depthWrite-backed
-        // occlusion or the far gas planets keep bleeding through. The
-        // hard "blue band" we saw last time was caused by the discard
-        // threshold (was 0.5); it's now 0.05 in the shader, and pathFactor
-        // is gated by dayMix, so the night transition fades uniformly
-        // instead of clipping. ice_planet (0.30) stays transparent so
-        // Mars-like atmospheres still show stars at noon.
+        // occlusion or the far gas planets keep bleeding through.
+        // alphaToCoverage dithers the shell's smooth alpha across MSAA
+        // samples, so the day→night transition fades through partial
+        // sample coverage instead of snapping at a discard threshold —
+        // sunset/sunrise gradients actually read as gradients. ice_planet
+        // (0.30) stays transparent so Mars-like atmospheres still show
+        // stars at noon.
         const density = mat.uniforms.uDensity.value;
         if (density > 0.40) {
-          mat.transparent = false;
-          mat.depthWrite  = true;
+          mat.transparent     = false;
+          mat.depthWrite      = true;
+          mat.alphaToCoverage = true;
           mat.uniforms.uOpaqueSky.value = 1.0;
         }
         mat.needsUpdate = true;
@@ -3709,9 +4388,10 @@
       if (surfaceState.gasMeshAdjusted && surfaceState.savedGas) {
         const mat = surfaceState.gasMeshAdjusted.material;
         const s = surfaceState.savedGas;
-        mat.side        = s.side;
-        mat.transparent = s.transparent;
-        mat.depthWrite  = s.depthWrite;
+        mat.side            = s.side;
+        mat.transparent     = s.transparent;
+        mat.depthWrite      = s.depthWrite;
+        mat.alphaToCoverage = s.alphaToCoverage;
         mat.uniforms.uOpaqueSky.value = s.opaqueSky;
         mat.needsUpdate = true;
         surfaceState.gasMeshAdjusted = null;
@@ -3722,6 +4402,7 @@
       document.body.classList.remove('surface-mode');
       surfaceOverlay.setAttribute('aria-hidden', 'true');
       viewMode = 'orbit';
+      clearSurfaceKeys();
       updateVisitButtonState();
     }
 
@@ -3754,6 +4435,105 @@
       camera.position.copy(_worldEye);
       camera.up.copy(_worldUp);
       camera.lookAt(_worldLook);
+    }
+
+    // WASD walking. Movement happens in body-local space along the tangent
+    // plane at the current standing point, then the position is renormalized
+    // to the standing sphere (groundRadius + eyeHeight). The local frame is
+    // parallel-transported across the surface so yaw stays meaningful — the
+    // direction the user faces relative to "north" remains consistent step
+    // to step.
+    const surfaceKeys = { w: false, a: false, s: false, d: false, shift: false };
+    const SURFACE_SPRINT_MULT = 3.0;
+    const _walkHeading = new THREE.Vector3();
+    const _walkStrafe  = new THREE.Vector3();
+    const _walkDelta   = new THREE.Vector3();
+    const _walkNewUp   = new THREE.Vector3();
+    const _walkAxis    = new THREE.Vector3();
+
+    function clearSurfaceKeys() {
+      surfaceKeys.w = surfaceKeys.a = surfaceKeys.s = surfaceKeys.d = surfaceKeys.shift = false;
+    }
+
+    // Dedicated raycaster for terrain-following so we don't disturb the shared
+    // `raycaster`'s state that pick mode relies on.
+    const groundRaycaster = new THREE.Raycaster();
+    const _groundOrigin   = new THREE.Vector3();
+    const _groundDir      = new THREE.Vector3();
+    const _groundHitLocal = new THREE.Vector3();
+
+    // Sample the body's actual surface radius beneath a body-local up
+    // direction by casting a ray straight down at the terrain. Returns the
+    // local radius of the ground (per-vertex displacement included), or null
+    // if the ray misses (shouldn't happen aiming at the body's center).
+    function sampleGroundRadius(body, localUpDir) {
+      body.mesh.updateMatrixWorld();
+      // Start above the tallest possible peak so we never begin below ground.
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      _groundOrigin.copy(localUpDir).multiplyScalar(high).applyMatrix4(body.mesh.matrixWorld);
+      _groundDir.copy(localUpDir).multiplyScalar(-1).transformDirection(body.mesh.matrixWorld).normalize();
+      groundRaycaster.set(_groundOrigin, _groundDir);
+      const hits = groundRaycaster.intersectObject(body.mesh, false);
+      if (hits.length === 0) return null;
+      _groundHitLocal.copy(hits[0].point);
+      body.mesh.worldToLocal(_groundHitLocal);
+      let ground = _groundHitLocal.length();
+      // On bodies with oceans, never descend below sea level — walk on the
+      // waterline instead of sinking to the seabed.
+      if (body.matter && body.matter.liquid) ground = Math.max(ground, body.baseRadius);
+      return ground;
+    }
+
+    function stepSurfaceWalk(dt) {
+      if (viewMode !== 'surface' || !surfaceState.body) return;
+      const fwdInput    = (surfaceKeys.w ? 1 : 0) + (surfaceKeys.s ? -1 : 0);
+      const strafeInput = (surfaceKeys.d ? 1 : 0) + (surfaceKeys.a ? -1 : 0);
+      if (fwdInput === 0 && strafeInput === 0) return;
+
+      // Heading and strafe in local space: take the basis vectors and rotate
+      // them by the current yaw about local up, so "forward" is whichever way
+      // the user is currently facing.
+      _walkHeading.copy(surfaceState.localFwd)
+        .applyAxisAngle(surfaceState.localUp, surfaceState.yaw);
+      _walkStrafe.copy(surfaceState.localRight)
+        .applyAxisAngle(surfaceState.localUp, surfaceState.yaw);
+
+      const speed = surfaceState.moveSpeed * (surfaceKeys.shift ? SURFACE_SPRINT_MULT : 1);
+      const step  = speed * dt;
+      _walkDelta.set(0, 0, 0)
+        .addScaledVector(_walkHeading, fwdInput * step)
+        .addScaledVector(_walkStrafe,  strafeInput * step);
+
+      surfaceState.localEye.add(_walkDelta);
+
+      // new up = normalized eye position after the tangent step.
+      _walkNewUp.copy(surfaceState.localEye).normalize();
+
+      // Terrain-follow: sample the real ground height under the new spot so we
+      // rise over mountains and dip into valleys instead of clipping through
+      // them. Smooth toward it so the faceted icosphere doesn't jolt the eye.
+      const sampled = sampleGroundRadius(surfaceState.body, _walkNewUp);
+      if (sampled != null) surfaceState.groundRadius = sampled;
+      const targetRadius = surfaceState.groundRadius + surfaceState.eyeHeight;
+      const curRadius = surfaceState.localEye.length();
+      const lerp = Math.min(1, dt * 10);
+      surfaceState.localEye.copy(_walkNewUp)
+        .multiplyScalar(curRadius + (targetRadius - curRadius) * lerp);
+
+      // Parallel-transport the local frame from oldUp → newUp by rotating
+      // about their common perpendicular. Tiny moves leave the frame nearly
+      // unchanged; large moves rotate it the correct amount so localFwd
+      // stays tangent to the sphere instead of drifting off-surface.
+      _walkAxis.crossVectors(surfaceState.localUp, _walkNewUp);
+      const sinA = _walkAxis.length();
+      if (sinA > 1e-6) {
+        _walkAxis.divideScalar(sinA);
+        const cosA  = surfaceState.localUp.dot(_walkNewUp);
+        const angle = Math.atan2(sinA, cosA);
+        surfaceState.localFwd.applyAxisAngle(_walkAxis, angle).normalize();
+        surfaceState.localRight.applyAxisAngle(_walkAxis, angle).normalize();
+      }
+      surfaceState.localUp.copy(_walkNewUp);
     }
 
     // ====== 33. Surface input ======
@@ -3837,10 +4617,45 @@
     // ESC cancels pick mode or exits surface mode. Keeps a clean way out
     // when the user gets stuck without reaching the on-screen button.
     document.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape') return;
-      if (viewMode === 'pick') exitPickMode();
-      else if (viewMode === 'surface') exitSurfaceMode();
+      if (e.key === 'Escape') {
+        if (viewMode === 'pick') exitPickMode();
+        else if (viewMode === 'surface') exitSurfaceMode();
+        return;
+      }
+
+      // Don't hijack keys while the user is editing a name field.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+      const k = e.key.toLowerCase();
+
+      // Navigation (orbit/pick modes)
+      if (viewMode !== 'surface') {
+        if (k === 'arrowup' || k === 'w') { navUp(); e.preventDefault(); }
+        else if (k === 'arrowdown' || k === 's') { navDown(); e.preventDefault(); }
+        else if (k === 'arrowleft' || k === 'a') { navSibling(-1); e.preventDefault(); }
+        else if (k === 'arrowright' || k === 'd') { navSibling(1); e.preventDefault(); }
+        return;
+      }
+
+      // Movement (surface mode)
+      if (k === 'w' || k === 'arrowup')    { surfaceKeys.w = true; e.preventDefault(); }
+      else if (k === 's' || k === 'arrowdown')  { surfaceKeys.s = true; e.preventDefault(); }
+      else if (k === 'a' || k === 'arrowleft')  { surfaceKeys.a = true; e.preventDefault(); }
+      else if (k === 'd' || k === 'arrowright') { surfaceKeys.d = true; e.preventDefault(); }
+      else if (k === 'shift') surfaceKeys.shift = true;
     });
+    document.addEventListener('keyup', (e) => {
+      const k = e.key.toLowerCase();
+      if (k === 'w' || k === 'arrowup')    surfaceKeys.w = false;
+      else if (k === 's' || k === 'arrowdown')  surfaceKeys.s = false;
+      else if (k === 'a' || k === 'arrowleft')  surfaceKeys.a = false;
+      else if (k === 'd' || k === 'arrowright') surfaceKeys.d = false;
+      else if (k === 'shift') surfaceKeys.shift = false;
+    });
+    // If the window loses focus mid-walk, drop all held keys so the camera
+    // doesn't keep drifting on its own when the user returns.
+    window.addEventListener('blur', clearSurfaceKeys);
 
     if (navVisitBtn) {
       navVisitBtn.onclick = () => {
@@ -3901,7 +4716,14 @@
     function commitFocusName(newName) {
       const cleaned = newName.replace(/\s+/g, ' ').trim();
       if (!cleaned) { renderNavBodies(); return; }
-      if (focusedCity) {
+      if (focusedProbe) {
+        focusedProbe.name = cleaned;
+        if (focusedProbe.mesh) focusedProbe.mesh.name = cleaned;
+        focusNameEl.textContent = cleaned;
+        renderNavBodies();
+        renderProbesList();
+        updateInfoPanel();
+      } else if (focusedCity) {
         focusedCity.name = cleaned;
         focusNameEl.textContent = `${cleaned} · ${focusedCity.body.name}`;
         renderNavBodies();
@@ -3932,7 +4754,14 @@
     });
 
     navRandomBtn.addEventListener('click', () => {
-      if (focusedCity) {
+      if (focusedProbe) {
+        focusedProbe.name = generateName('moon');
+        if (focusedProbe.mesh) focusedProbe.mesh.name = focusedProbe.name;
+        focusNameEl.textContent = focusedProbe.name;
+        renderNavBodies();
+        renderProbesList();
+        updateInfoPanel();
+      } else if (focusedCity) {
         focusedCity.name = generateName('moon');
         focusNameEl.textContent = `${focusedCity.name} · ${focusedCity.body.name}`;
         renderNavBodies();
@@ -3979,15 +4808,44 @@
     // Cloud-drift clock. Advances only when unpaused so wind freezes when the
     // sim is paused, matching how orbital motion behaves.
     let gasTime = 0;
+    // Plasma clock. Unlike gasTime this advances every frame, paused or not — a
+    // star's surface keeps churning even when the orbital sim is frozen.
+    let plasmaTime = 0;
     (function loop() {
       requestAnimationFrame(loop);
       const dt = clock.getDelta();
+      // Drive the Sun's photosphere + corona and every star body's plasma.
+      plasmaTime += dt;
+      for (const u of plasmaTickUniforms) u.uTime.value = plasmaTime;
+      for (const b of bodies) {
+        if (b.plasmaMesh && b.plasmaMesh.visible) {
+          b.plasmaMesh.material.uniforms.uTime.value = plasmaTime;
+        }
+      }
       if (!paused) {
         updatePlanetOrbits(dt);
         updatePlanetRotation(dt);
         gasTime += dt;
         for (const b of bodies) {
-          if (b.gasMesh) b.gasMesh.material.uniforms.uTime.value = gasTime;
+          if (!b.gasMesh) continue;
+          const u = b.gasMesh.material.uniforms;
+          u.uTime.value = gasTime;
+          // Time-varying coverage: when coverageVariance > 0, slowly modulate
+          // the cloud-pattern threshold so coverage drifts between sparser
+          // and denser overcast. Atmosphere mode only (full-gas has no
+          // cloud layer). Slider sets the BASE coverage; this oscillates
+          // around it with amplitude scaled by variance.
+          if (b.matter && b.matter.gas === 'atmosphere') {
+            const variance = b.coverageVariance ?? 0;
+            if (variance > 0) {
+              const base   = b.gasCoverage ?? 0.35;
+              const phase  = b.coveragePhase ?? 0;
+              const drift  = Math.sin(gasTime * 0.08 + phase) * 0.35 * variance;
+              u.uCoverage.value = Math.max(0, Math.min(1, base + drift));
+            } else {
+              u.uCoverage.value = b.gasCoverage ?? 0.35;
+            }
+          }
         }
       }
       updateMoons(dt);
@@ -3999,7 +4857,10 @@
       // In surface mode the camera rides the focused body — recompute its
       // transform from the body's current world matrix every frame so spin
       // and orbit naturally wheel the sky overhead. Cheap no-op otherwise.
-      if (viewMode === 'surface') updateSurfaceCamera();
+      if (viewMode === 'surface') {
+        stepSurfaceWalk(dt);
+        updateSurfaceCamera();
+      }
       if (isPainting && lastHitLocal && activeBrushBody) {
         applyBrushToBody(activeBrushBody, lastHitLocal, dt);
       }
