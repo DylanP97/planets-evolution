@@ -29,7 +29,7 @@
      *  15. Pointer handling                  — canvas pointerdown/move/up wiring
      *  16. Moons                             — moons[], slot allocator, addMoon
      *  17. Probes (satellites)               — GLB loader, probes[], addSatellite
-     *  18. Cities                            — cities[], addCity, day-side fade
+     *  18. Cities                            — lunar_base.glb, cities[], addCity
      *  19. Starfield                         — 2000 background points
      *  20. Planet rotation                   — updatePlanetRotation
      *  21. Sun light for focus               — refresh per-body uSunDir
@@ -63,6 +63,40 @@
     const ROCK_TOP   = 2.4;
     // Above ROCK_TOP we fade into snow over SNOW_FADE units.
     const SNOW_FADE  = 0.4;
+
+    // Climate biomes: on diverse worlds the *vegetated land* band (between the
+    // shore and the peaks) isn't one color — it shifts with latitude, because the
+    // planet's climate (section 22b) gives each vertex a surface temperature
+    // (poles cold, equator warm; elevation cools it further via a lapse rate).
+    // So a terrestrial world reads ice at the caps → tundra → grass → jungle at
+    // the equator. Each archetype that varies declares its own ordered zones
+    // (warmest first); archetypes NOT listed here keep their plain palette bands
+    // unchanged (e.g. a desert world stays desert end to end). The existing band
+    // colors (ocean/sand/grass/rock/snow) are untouched — these zones only repaint
+    // the mid-elevation land, and only on the listed archetypes.
+    const KELVIN_ZERO_C   = 273.15;
+    const CLIMATE_LAPSE_C = 14;   // °C shed per height-unit of elevation (mountains run colder)
+
+    // Zone fields: minTempC (this zone covers everything at/above it, scanned
+    // warmest→coldest), color, label (composition panel), and optional flags —
+    // `beach` lets a sandy shoreline show at the waterline, `relief` lets high
+    // ground grade toward rock. Grass reuses the palette green so temperate land
+    // is unchanged; ice/tundra/jungle are the new climate biomes.
+    const CLIMATE_LAND_ZONES = {
+      terrestrial: [
+        { key: 'jungle', label: 'Jungle', color: 0x15702a, minTempC:  22, beach: true, relief: true },
+        { key: 'grass',  label: 'Grass',  color: 0x4FAE4F, minTempC:   7, beach: true, relief: true },
+        { key: 'tundra', label: 'Tundra', color: 0x8f9e76, minTempC:  -8 },
+        // Bright crystalline ice-blue (not industrial gray). Because ice sits at
+        // the poles — where the sun only ever grazes — its base color alone reads
+        // grey; ICE_GLOW (below) adds a faint self-emission so it stays luminous.
+        { key: 'ice',    label: 'Ice',    color: 0xdaf2ff, minTempC: -Infinity, glow: 0.55 },
+      ],
+    };
+    // Tint of the self-emission added to glowing biomes (ice). The per-vertex
+    // aGlow value (zone.glow, 0..1) scales it, so the polar caps read as bright
+    // crystal even where diffuse sunlight is near zero.
+    const ICE_GLOW_COLOR = new THREE.Color(0xcdeeff);
 
     const COL = {
       water:     0x3FA1DC,
@@ -179,6 +213,12 @@
     const MIN_LAND_HEIGHT = -2.5;
 
     const bodies = [];
+
+    // Flipped true once the module is fully initialized (after the climate model
+    // in section 22b exists). Guards regenerateBody from computing climate during
+    // the bootstrap paint — at that point the climate consts are still in their
+    // temporal dead zone. The post-init pass sets it and repaints with frost.
+    let climateReady = false;
 
     function smoothstep(a, b, x) {
       const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -458,7 +498,18 @@
                    + cross(fc, warped) * sn
                    + fc * dot(fc, warped) * (1.0 - cs);
           }
-          float n     = fbm(warped * 3.5);
+          // Animated convection: a slowly-scrolling turbulent domain warp so
+          // the bands churn and curl over time (the same flowing-noise trick
+          // the plasma star uses), instead of sitting as static stripes. The
+          // warp is kept small so the latitudinal banding still reads clearly.
+          float gt = uTime * (uWindSpeed + 0.02) * 1.5;
+          vec3  flowQ = vec3(
+            fbm(warped * 1.8 + vec3(0.0, gt * 0.5, 0.0)),
+            fbm(warped * 1.8 + vec3(3.1, 1.7, gt * 0.4)),
+            fbm(warped * 1.8 + vec3(gt * 0.6, 9.2, 5.7))
+          );
+          warped = normalize(warped + 0.13 * (flowQ - 0.5));
+          float n     = fbm(warped * 3.5 + vec3(0.0, 0.0, gt * 0.25));
           float lat   = warped.y * 0.5 + 0.5;
           float latW  = clamp(lat + (n - 0.5) * 0.04, 0.0, 1.0);
           vec3  bandCol = texture2D(uBandTex, vec2(latW, 0.5)).rgb;
@@ -606,9 +657,13 @@
       varying vec3 vLocalDir;
       varying vec3 vWorldNormal;
       varying vec3 vViewDir;
+      varying vec3 vWorldPos;
+      varying vec3 vCenter;
       void main() {
         vLocalDir = normalize(position);
         vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vViewDir = normalize(cameraPosition - wp.xyz);
         gl_Position = projectionMatrix * viewMatrix * wp;
@@ -619,13 +674,25 @@
       varying vec3 vLocalDir;
       varying vec3 vWorldNormal;
       varying vec3 vViewDir;
+      varying vec3 vWorldPos;
+      varying vec3 vCenter;
       uniform float uTime;
       uniform float uScale;     // base convection-cell frequency
       uniform float uSpeed;     // overall flow-rate multiplier
+      uniform float uBright;    // overall emissive multiplier
+      uniform float uFlares;    // strength of the random lava-burst flares
+      uniform float uWhiten;    // 0 = off; >0 = blow out to white as camera recedes
+      uniform float uWhitenNear;// distance at which whitening starts
+      uniform float uWhitenFar; // distance at which whitening saturates
       uniform vec3  uColorDeep; // coldest troughs / sunspot lanes (deep orange)
       uniform vec3  uColorLow;  // orange granulation
       uniform vec3  uColorMid;  // bright yellow photosphere
       uniform vec3  uColorHot;  // white-hot faculae
+
+      #define NFLARES 6
+
+      // Scalar hash for flare seeding.
+      float hash1(float n) { return fract(sin(n) * 43758.5453123); }
 
       // Value-noise FBM (same construction as the gas shader).
       float hash3(vec3 p) {
@@ -676,6 +743,41 @@
         return flow * 0.68 + bubble * 0.32;
       }
 
+      // Random lava flares: bubbles that swell at a random spot, then burst
+      // into an expanding shock ring and fade. Each of NFLARES slots runs on
+      // its own period and re-rolls a fresh location every cycle, so flares
+      // pop here and there across the surface rather than in a fixed pattern.
+      float flares(vec3 dir, float t) {
+        float total = 0.0;
+        for (int i = 0; i < NFLARES; i++) {
+          float fi = float(i);
+          float period = 3.5 + hash1(fi * 1.31) * 4.0;
+          float tt   = t / period + hash1(fi * 2.17);
+          float cyc  = floor(tt);
+          float life = fract(tt);
+          // Fresh random center (uniform on the sphere) for this cycle.
+          float h1 = hash1(fi * 3.7 + cyc * 7.13);
+          float h2 = hash1(fi * 5.3 + cyc * 3.91);
+          float z  = h1 * 2.0 - 1.0;
+          float aa = h2 * 6.2831853;
+          float rr = sqrt(max(0.0, 1.0 - z * z));
+          vec3  fdir = vec3(rr * cos(aa), z, rr * sin(aa));
+          float ang  = acos(clamp(dot(dir, fdir), -1.0, 1.0));
+          // Envelope: swell in, then burst (~0.5) and fade out.
+          float swell  = smoothstep(0.0, 0.40, life);
+          float fade   = 1.0 - smoothstep(0.62, 1.0, life);
+          float pop    = smoothstep(0.50, 0.66, life);
+          float bright = swell * fade;
+          float sigma  = mix(0.05, 0.10, swell) + pop * 0.06;
+          float core   = exp(-(ang * ang) / (2.0 * sigma * sigma)) * bright;
+          // Expanding shock ring during the burst.
+          float ringR  = pop * 0.20;
+          float ring   = exp(-pow((ang - ringR) / 0.035, 2.0)) * pop * fade;
+          total += core + ring * 0.7;
+        }
+        return total;
+      }
+
       void main() {
         vec3  dir = normalize(vLocalDir);
         float t   = uTime * uSpeed;
@@ -695,15 +797,29 @@
         float lane = smoothstep(0.14, 0.0, f);
         col = mix(col, uColorDeep * 0.35, lane * 0.7);
 
-        // Emissive lift + corona-bright limb (fresnel). Values can exceed 1 so
-        // the rim and faculae read as glowing energy rather than flat paint.
-        col *= 1.28;
+        // Random lava bursts: blow the hit spots out to white-hot.
+        float fl = flares(dir, t) * uFlares;
+        col = mix(col, uColorHot, clamp(fl, 0.0, 1.0));
+        col += uColorHot * fl * 0.4;
+
+        // Emissive lift. A faint fresnel keeps the limb warm without making the
+        // surface read like a shiny glass bubble (the corona supplies the glow).
+        col *= uBright;
         float NdotV = clamp(abs(dot(normalize(vWorldNormal), normalize(vViewDir))), 0.0, 1.0);
-        float rim = pow(1.0 - NdotV, 2.6);
-        col += uColorHot * rim * 0.85;
+        float rim = pow(1.0 - NdotV, 3.2);
+        col += uColorHot * rim * 0.25;
 
         // Slow global flicker so the whole star feels alive and unstable.
         col *= 0.94 + 0.06 * sin(t * 0.9);
+
+        // Distance whitening: from far away a star bleaches toward white-hot
+        // (atmospheric/eye response — detail washes out, the disc reads white).
+        // Up close the orange convection structure stays visible.
+        if (uWhiten > 0.0) {
+          float camDist = distance(cameraPosition, vCenter);
+          float w = uWhiten * smoothstep(uWhitenNear, uWhitenFar, camDist);
+          col = mix(col, vec3(1.0, 0.98, 0.94) * max(1.0, uBright), w * 0.75);
+        }
 
         gl_FragColor = vec4(col, 1.0);
       }
@@ -717,6 +833,11 @@
           uTime:      { value: 0.0 },
           uScale:     { value: 3.6 },
           uSpeed:     { value: 1.0 },
+          uBright:    { value: 1.28 },
+          uFlares:    { value: 0.9 },
+          uWhiten:    { value: 0.0 },
+          uWhitenNear:{ value: 100.0 },
+          uWhitenFar: { value: 600.0 },
           uColorDeep: { value: new THREE.Color(0x5a0e00) }, // deep orange
           uColorLow:  { value: new THREE.Color(0xc73a00) }, // orange
           uColorMid:  { value: new THREE.Color(0xff9b1e) }, // yellow
@@ -731,30 +852,51 @@
       });
     }
 
-    // Additive corona halo: a slightly larger back-faced shell whose alpha
-    // falls off toward the limb, faking the bloom/glow of a stellar corona
-    // without a postprocessing pass. Used only for the Sun.
+    // Soft corona / atmosphere dome: an additive back-faced shell. Instead of a
+    // fresnel rim (which reads as a hard "bubble" outline) the alpha is driven
+    // by the view ray's impact parameter b — its perpendicular distance from
+    // the star's center. Brightest just outside the photosphere (b≈Rsun) and
+    // fading smoothly to nothing by the shell's outer radius (b≈Rc), so it
+    // looks like a diffuse glow dome rather than a glassy sphere. Used for the
+    // Sun. (b<Rsun lands over the disc, where the opaque star occludes it.)
     const CORONA_FRAG = /* glsl */ `
       precision highp float;
-      varying vec3 vWorldNormal;
-      varying vec3 vViewDir;
+      varying vec3 vWorldPos;
       uniform float uTime;
       uniform vec3  uColor;
+      uniform vec3  uCenter;
+      uniform float uRsun;
+      uniform float uRc;
       void main() {
-        float NdotV = clamp(abs(dot(normalize(vWorldNormal), normalize(vViewDir))), 0.0, 1.0);
-        // Brightest at the limb (grazing angle), fading inward and outward.
-        float glow = pow(1.0 - NdotV, 2.2);
-        float flicker = 0.9 + 0.1 * sin(uTime * 0.7);
-        gl_FragColor = vec4(uColor, glow * 0.6 * flicker);
+        vec3  OC   = uCenter - cameraPosition;
+        vec3  rayD = normalize(vWorldPos - cameraPosition);
+        float tca  = dot(OC, rayD);
+        float b    = sqrt(max(0.0, dot(OC, OC) - tca * tca));
+        float halo = clamp((uRc - b) / max(1e-3, uRc - uRsun), 0.0, 1.0);
+        halo = pow(halo, 2.4);
+        // Restless, uneven glow: a per-direction phase makes the halo writhe and
+        // pulse around its edge rather than breathing as one steady ring. Layered
+        // sines of different rates keep it irregular (never a clean loop).
+        vec3  nd = normalize(vWorldPos - uCenter);
+        float ph = nd.x * 2.3 + nd.y * 1.7 + nd.z * 1.9;
+        float flicker = 0.55
+                      + 0.30 * sin(uTime * 1.8 + ph * 3.0)
+                      + 0.18 * sin(uTime * 3.3 + ph * 5.7)
+                      + 0.12 * sin(uTime * 0.7 - ph * 2.1);
+        flicker = clamp(flicker, 0.1, 1.4);
+        gl_FragColor = vec4(uColor, halo * 0.85 * flicker);
       }
     `;
-    function makeCoronaMaterial(colorHex) {
+    function makeCoronaMaterial(colorHex, rSun, rC) {
       return new THREE.ShaderMaterial({
-        vertexShader: PLASMA_VERT, // reuses vWorldNormal / vViewDir varyings
+        vertexShader: PLASMA_VERT, // reuses vWorldPos varying
         fragmentShader: CORONA_FRAG,
         uniforms: {
-          uTime:  { value: 0.0 },
-          uColor: { value: new THREE.Color(colorHex) },
+          uTime:   { value: 0.0 },
+          uColor:  { value: new THREE.Color(colorHex) },
+          uCenter: { value: new THREE.Vector3(0, 0, 0) },
+          uRsun:   { value: rSun },
+          uRc:     { value: rC },
         },
         side: THREE.BackSide,
         transparent: true,
@@ -765,17 +907,31 @@
     }
 
     // Light the Sun with the plasma shader (its MeshBasicMaterial placeholder is
-    // replaced here, after the factory exists). Tuned a touch larger-scale and
-    // slower than the default so the Sun reads as a vast, calm photosphere.
+    // replaced here, after the factory exists). Larger-scale + slower than the
+    // default so it reads as a vast photosphere; colors are pushed toward
+    // yellow-white (less red) and brightness up, since the Sun is a hot star.
     sunMesh.material.dispose();
     sunMesh.material = makePlasmaMaterial();
-    sunMesh.material.uniforms.uScale.value = 3.0;
-    sunMesh.material.uniforms.uSpeed.value = 0.8;
+    {
+      const su = sunMesh.material.uniforms;
+      su.uScale.value = 3.0;
+      su.uSpeed.value = 0.8;
+      su.uBright.value = 1.55;
+      su.uColorDeep.value.setHex(0xa83a08); // bright deep orange (no dark red)
+      su.uColorLow.value.setHex(0xff8a2a);  // orange
+      su.uColorMid.value.setHex(0xffd27a);  // warm yellow
+      su.uColorHot.value.setHex(0xffffff);  // pure white
+      // Bleach toward white as the camera pulls away to system view.
+      su.uWhiten.value = 1.0;
+      su.uWhitenNear.value = SUN_RADIUS * 4.0;
+      su.uWhitenFar.value  = SUN_RADIUS * 30.0;
+    }
 
-    // Corona halo around the Sun (additive bloom fake).
+    // Restless red-orange glow dome around the Sun.
+    const CORONA_OUTER = SUN_RADIUS * 1.6;
     const coronaMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(SUN_RADIUS * 1.18, 48, 24),
-      makeCoronaMaterial(0xffb347)
+      new THREE.SphereGeometry(CORONA_OUTER, 64, 32),
+      makeCoronaMaterial(0xff4d12, SUN_RADIUS, CORONA_OUTER)
     );
     coronaMesh.position.copy(sunMesh.position);
     scene.add(coronaMesh);
@@ -1159,12 +1315,31 @@
       const colorArr = new Float32Array(N * 3);
       geo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
 
+      // Per-vertex self-glow (0..1), written by colorBodyVertex. Used so ice caps
+      // read as luminous crystal even at the poles, where the sun grazes and pure
+      // diffuse shading would otherwise crush any color to grey. Injected into the
+      // standard material as an extra emissive term (see onBeforeCompile below).
+      const glowArr = new Float32Array(N);
+      geo.setAttribute('aGlow', new THREE.BufferAttribute(glowArr, 1));
+
       const mat = new THREE.MeshStandardMaterial({
         vertexColors: true,
         roughness: 0.92,
         metalness: 0.0,
         flatShading: false,
       });
+      // Add `aGlow * ICE_GLOW_COLOR` to the emissive output. Keeps the night side
+      // of ordinary terrain black (aGlow = 0 there) while letting ice self-light.
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uGlowColor = { value: ICE_GLOW_COLOR };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', '#include <common>\nuniform vec3 uGlowColor;\nvarying float vGlow;')
+          .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += uGlowColor * vGlow;');
+      };
+      mat.customProgramCacheKey = () => 'bodyGlow';
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -1234,7 +1409,7 @@
       const body = {
         kind, name, baseRadius, detail,
         palette: palette || (kind === 'planet' ? PLANET_PALETTE : MOON_PALETTE),
-        group, mesh, geo, posAttr, N, unitDirs, heights, biomes, colorArr,
+        group, mesh, geo, posAttr, N, unitDirs, heights, biomes, colorArr, glowArr,
         oceanMesh, gasMesh, plasmaMesh, ringMesh,
         // Matter state. Moons keep matter.gas/plasma false; planets inherit from
         // ARCHETYPE_MATTER on regenerate. plasma is the fourth type (stars).
@@ -1264,11 +1439,34 @@
       body.posAttr.array[3 * i + 2] = body.unitDirs[3 * i + 2] * r;
     }
 
+    // Surface temperature (°C) at vertex i: the body's climate gives a pole→
+    // equator gradient (cos(lat)^1.6, latitude = asin(unitDir.y)), then elevation
+    // cools it via the lapse rate so peaks run colder than lowlands at the same
+    // latitude. Assumes body.climate is set (callers gate on it).
+    function vertexTempC(body, i) {
+      const clim = body.climate;
+      const uy = body.unitDirs[3 * i + 1];
+      const cosLat = Math.sqrt(Math.max(0, 1 - uy * uy));   // 1 at equator → 0 at pole
+      const warmth = Math.pow(cosLat, 1.6);
+      const tK = clim.poleK + (clim.equatorK - clim.poleK) * warmth;
+      return (tK - KELVIN_ZERO_C) - Math.max(0, body.heights[i]) * CLIMATE_LAPSE_C;
+    }
+
+    // Pick the land biome zone for a temperature. Zones are ordered warmest-first
+    // with a `minTempC` floor; the first whose floor we clear wins (coldest is the
+    // catch-all). Used by both colorBodyVertex and the composition rollup so the
+    // surface and the panel always name the same biome.
+    function pickLandZone(zones, tempC) {
+      for (const z of zones) if (tempC >= z.minTempC) return z;
+      return zones[zones.length - 1];
+    }
+
     function colorBodyVertex(body, i) {
       const h = body.heights[i];
       const b = body.biomes[i];
       const p = body.palette;
       let c;
+      if (body.glowArr) body.glowArr[i] = 0;  // cleared each repaint; ice sets it below
 
       if (b === BIOME.FOREST) {
         c = new THREE.Color(COL.forest);
@@ -1338,10 +1536,35 @@
         c = new THREE.Color(0xd8e8f0);
         if ((i * 5) % 10 > 7) c = new THREE.Color(0xffffff);
       } else if (body.kind === 'planet') {
+        // Does this archetype's land vary with latitude? Only once climate is
+        // known (post-bootstrap) and the world has a real equator-to-pole spread.
+        const zones = (body.climate && body.climate.spread > 0.5)
+          ? CLIMATE_LAND_ZONES[body.archetype] : null;
         if (h < -0.4) c = new THREE.Color(p.deep);
         else if (h < SEA_LEVEL) {
           const t = (h + 0.4) / (SEA_LEVEL + 0.4);
           c = new THREE.Color(p.deep).lerp(new THREE.Color(p.shore), t);
+        } else if (zones) {
+          // Latitude-zoned land: pick the biome by this vertex's temperature,
+          // then layer the usual elevation cues on top (sandy shore, rocky
+          // relief, snow-capped peaks) so the terrain still reads in 3D.
+          const z = pickLandZone(zones, vertexTempC(body, i));
+          if (h >= ROCK_TOP) {
+            const t = smoothstep(ROCK_TOP, ROCK_TOP + SNOW_FADE, h);
+            c = new THREE.Color(p.rock).lerp(new THREE.Color(p.snow), t);
+          } else if (z.beach && h < SAND_TOP) {
+            const t = smoothstep(SEA_LEVEL, SAND_TOP, h);
+            c = new THREE.Color(p.sand).lerp(new THREE.Color(z.color), t);
+          } else {
+            c = new THREE.Color(z.color);
+            if (z.relief && h >= GRASS_TOP) {
+              const t = smoothstep(GRASS_TOP, ROCK_TOP, h);
+              c.lerp(new THREE.Color(p.rock), t * 0.6);
+            }
+            // Ice (and any zone with `glow`) self-emits so it stays bright at the
+            // poles where the sun grazes — written into the aGlow attribute.
+            if (z.glow && body.glowArr) body.glowArr[i] = z.glow;
+          }
         } else if (h < SAND_TOP) c = new THREE.Color(p.sand);
         else if (h < GRASS_TOP) {
           const t = smoothstep(SAND_TOP, SAND_TOP + 0.15, h);
@@ -1378,6 +1601,7 @@
     function commitBodyChanges(body) {
       body.posAttr.needsUpdate = true;
       body.geo.attributes.color.needsUpdate = true;
+      if (body.geo.attributes.aGlow) body.geo.attributes.aGlow.needsUpdate = true;
       body.geo.computeVertexNormals();
     }
 
@@ -1661,6 +1885,11 @@
         applyMatterToBody(body, matterCfg, arch.oceanCol);
       }
 
+      // Refresh climate first so the per-vertex frost in colorBodyVertex is
+      // current (archetype/atmosphere may have just changed). Skipped during the
+      // bootstrap paint — see climateReady.
+      if (climateReady) computeClimate(body);
+
       const basis = buildTerrainBasis(hashSeed(seedStr), TERRAIN_OCTAVES);
       const samples = new Float32Array(body.N);
       for (let i = 0; i < body.N; i++) {
@@ -1687,6 +1916,23 @@
       if (body.kind === 'planet' && body.matter && body.matter.gas === 'full') {
         randomizeGasBands(body, seedStr);
       }
+    }
+
+    // Repaint every vertex without touching terrain. Used when something the
+    // coloring depends on changed but heights didn't — e.g. climate shifting
+    // (planet moved, atmosphere thickened) which grows or shrinks the polar ice.
+    function recolorBody(body) {
+      for (let i = 0; i < body.N; i++) colorBodyVertex(body, i);
+      commitBodyChanges(body);
+    }
+
+    // Recompute a body's climate and, if it's a solid planet, repaint so its
+    // ice caps track the new climate. Called from the distance / atmosphere
+    // slider handlers (which don't otherwise re-run terrain).
+    function refreshClimateColoring(body) {
+      if (!body) return;
+      computeClimate(body);
+      if (body.kind === 'planet' && body.matter && body.matter.solid) recolorBody(body);
     }
 
     // ====== 11. Planets (orbiting the sun) ======
@@ -1782,6 +2028,104 @@
       entry.orbitLine = null;
     }
 
+    // Satellite (moon / probe) paths around their parent planet — the group is
+    // repositioned each frame to follow the host as it orbits the sun.
+    const satelliteOrbitLinesGroup = new THREE.Group();
+    scene.add(satelliteOrbitLinesGroup);
+    let showSatelliteOrbits = true;
+
+    const ORBIT_DEG = Math.PI / 180;
+    // Legacy preset ids (solar spec / saved data) → plane parameters.
+    const LEGACY_ORBIT_PATHS = {
+      equatorial_west_east: { inclination: 0, node: 0, speedSign: 1 },
+      equatorial_east_west: { inclination: 0, node: 0, speedSign: -1 },
+      polar_north_south:    { inclination: Math.PI / 2, node: 0, speedSign: 1 },
+      polar_south_north:    { inclination: Math.PI / 2, node: 0, speedSign: -1 },
+      inclined:             { inclination: 0.42, node: 0.55, speedSign: 1 },
+    };
+
+    function applySatelliteOrbitPlane(sat, inclination, node, speedSign) {
+      sat.inclination = inclination;
+      sat.node = node;
+      sat.speedSign = speedSign < 0 ? -1 : 1;
+      refreshSatelliteOrbitLine(sat);
+    }
+
+    function applySatelliteOrbitOpts(sat, opts, planeDefaults) {
+      if (opts.orbitPath && LEGACY_ORBIT_PATHS[opts.orbitPath]) {
+        const p = LEGACY_ORBIT_PATHS[opts.orbitPath];
+        applySatelliteOrbitPlane(sat, p.inclination, p.node, p.speedSign);
+        return;
+      }
+      applySatelliteOrbitPlane(
+        sat,
+        opts.inclination ?? planeDefaults.inclination,
+        opts.node ?? planeDefaults.node,
+        opts.speedSign ?? 1,
+      );
+    }
+
+    function buildSatelliteOrbitLineGeometry(distance, inclination, node) {
+      const pts = new Float32Array(ORBIT_LINE_SEGMENTS * 3);
+      const ci = Math.cos(inclination || 0);
+      const si = Math.sin(inclination || 0);
+      const cn = Math.cos(node || 0);
+      const sn = Math.sin(node || 0);
+      for (let i = 0; i < ORBIT_LINE_SEGMENTS; i++) {
+        const t = (i / ORBIT_LINE_SEGMENTS) * Math.PI * 2;
+        const x0 = Math.cos(t) * distance;
+        const z0 = Math.sin(t) * distance;
+        const y1 = -z0 * si;
+        const z1 = z0 * ci;
+        pts[3 * i]     = x0 * cn - z1 * sn;
+        pts[3 * i + 1] = y1;
+        pts[3 * i + 2] = x0 * sn + z1 * cn;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+      return geo;
+    }
+
+    function refreshSatelliteOrbitLine(sat) {
+      const { distance, inclination, node } = sat;
+      if (!sat.orbitLine) {
+        const geo = buildSatelliteOrbitLineGeometry(distance, inclination, node);
+        const mat = new THREE.LineBasicMaterial({
+          color: sat.body ? 0xaaccff : 0xffaa44,
+          transparent: true,
+          opacity: 0.28,
+          depthWrite: false,
+        });
+        sat.orbitLine = new THREE.LineLoop(geo, mat);
+        satelliteOrbitLinesGroup.add(sat.orbitLine);
+      } else {
+        sat.orbitLine.geometry.dispose();
+        sat.orbitLine.geometry = buildSatelliteOrbitLineGeometry(distance, inclination, node);
+      }
+      syncSatelliteOrbitLinePosition(sat);
+      sat.orbitLine.visible = showSatelliteOrbits;
+    }
+
+    function syncSatelliteOrbitLinePosition(sat) {
+      if (!sat.orbitLine || !sat.parent) return;
+      const pp = sat.parent.group.position;
+      sat.orbitLine.position.set(pp.x, pp.y, pp.z);
+    }
+
+    function disposeSatelliteOrbitLine(sat) {
+      if (!sat.orbitLine) return;
+      satelliteOrbitLinesGroup.remove(sat.orbitLine);
+      sat.orbitLine.geometry.dispose();
+      sat.orbitLine.material.dispose();
+      sat.orbitLine = null;
+    }
+
+    function setSatelliteOrbitLinesVisible(visible) {
+      showSatelliteOrbits = visible;
+      for (const m of moons) if (m.orbitLine) m.orbitLine.visible = visible;
+      for (const p of probes) if (p.orbitLine) p.orbitLine.visible = visible;
+    }
+
     // ====== 13. Solar system bootstrap ======
     // Sizes/distances/speeds are visually scaled — not astronomically accurate.
     // Order is preserved (inner planets close + fast, gas giants huge + slow)
@@ -1792,7 +2136,11 @@
       { name: 'Mercury', archetype: 'moon_like',   size: 0.15, distance:  120, speed: 0.0175,  inclination:  0.06, angle: 0.20, seed: 'mercury', moons: [] },
       { name: 'Venus',   archetype: 'venusian',    size: 0.24, distance:  190, speed: 0.0125,  inclination: -0.05, angle: 1.10, seed: 'venus',   moons: [] },
       { name: 'Earth',   archetype: 'terrestrial', size: 0.27, distance:  270, speed: 0.0090,  inclination:  0.03, angle: 2.10, seed: 'earth',
-        moons: [ { name: 'Moon', size: 0.30, distance: 10, seed: 'luna' } ] },
+        moons: [ { name: 'Moon', size: 0.30, distance: 10, seed: 'luna' } ],
+        probes: [
+          { name: 'ISS', size: 0.14, distance: 5, speed: 0.015, seed: 'iss', inclination: 0, node: 0, speedSign: 1 },
+          { name: 'Tiangong', size: 0.13, distance: 6, speed: 0.012, seed: 'tiangong', inclination: Math.PI / 2, node: 0, speedSign: 1 },
+        ] },
       { name: 'Mars',    archetype: 'desert',      size: 0.19, distance:  360, speed: 0.0065,  inclination: -0.08, angle: 3.20, seed: 'mars',    moons: [] },
       { name: 'Jupiter', archetype: 'gas_giant',   size: 0.72, distance:  520, speed: 0.0035,  inclination:  0.02, angle: 4.30, seed: 'jupiter',
         moons: [
@@ -1853,7 +2201,11 @@
     let brushRaise    = true; // false = lower
     let paintMode     = true; // when true, right-drag paints; when false, right-drag pans
     let paused        = false;
-    let currentTool   = 'land'; // 'land' | 'biome' | 'city' | 'gasband' | 'gaswhirl' | 'none'
+    let currentTool   = 'none'; // 'land' | 'biome' | 'city' | 'gasband' | 'gaswhirl' | 'none'
+
+    function isBrushTool(tool = currentTool) {
+      return tool === 'land' || tool === 'biome' || tool === 'gasband' || tool === 'gaswhirl';
+    }
     let selectedBiome = BIOME.AUTO;
     // Selected biome (drives gasPaintColor + bandBiomes tagging on stroke).
     let selectedGasBiomeId = null;
@@ -1950,6 +2302,8 @@
         const name = cityNameInput.value || 'New City';
         const localPos = worldToBodyLocal(hb.body, hb.hit.point);
         addCity(hb.body, name, localPos);
+      } else if (!isBrushTool()) {
+        return;
       } else if (currentTool === 'gaswhirl'
                  && hb.body.matter && hb.body.matter.gas === 'full') {
         // Drop a fresh whirlpool at strength 0 and capture the pointer.
@@ -1970,9 +2324,8 @@
 
     renderer.domElement.addEventListener('pointermove', (e) => {
       setPointerFromEvent(e);
-      // City tool drops a single marker on click — no brush footprint to preview.
-      // Same for surface walk modes — no brush is active there.
-      if (!paintMode || currentTool === 'city' || viewMode !== 'orbit') {
+      // Brush ring only on Sculpt / Environment (and gas sub-modes).
+      if (!paintMode || !isBrushTool() || viewMode !== 'orbit') {
         brushRing.visible = false;
         return;
       }
@@ -2054,20 +2407,25 @@
       if (used) used.delete(slot);
     }
 
-    function updateMoonPosition(m) {
-      const x0 = Math.cos(m.angle) * m.distance;
-      const z0 = Math.sin(m.angle) * m.distance;
-      const ci = Math.cos(m.inclination), si = Math.sin(m.inclination);
+    function satelliteWorldOffset(sat) {
+      const x0 = Math.cos(sat.angle) * sat.distance;
+      const z0 = Math.sin(sat.angle) * sat.distance;
+      const ci = Math.cos(sat.inclination), si = Math.sin(sat.inclination);
       const y1 = -z0 * si;
       const z1 = z0 * ci;
-      const cn = Math.cos(m.node), sn = Math.sin(m.node);
-      const xf = x0 * cn - z1 * sn;
-      const zf = x0 * sn + z1 * cn;
-      // Position is parent-relative — moons follow their planet through its
-      // solar orbit without being parented as scene-graph children (which would
-      // also pick up the planet's day rotation, which we don't want).
+      const cn = Math.cos(sat.node), sn = Math.sin(sat.node);
+      return {
+        x: x0 * cn - z1 * sn,
+        y: y1,
+        z: x0 * sn + z1 * cn,
+      };
+    }
+
+    function updateMoonPosition(m) {
+      const off = satelliteWorldOffset(m);
       const pp = m.parent ? m.parent.group.position : { x: 0, y: 0, z: 0 };
-      m.body.group.position.set(xf + pp.x, y1 + pp.y, zf + pp.z);
+      m.body.group.position.set(off.x + pp.x, off.y + pp.y, off.z + pp.z);
+      syncSatelliteOrbitLinePosition(m);
     }
 
     function addMoon(parent, size, distance, opts = {}) {
@@ -2097,12 +2455,15 @@
         angle: plane.phase,
         inclination: plane.inclination,
         node: plane.node,
+        speedSign: 1,
         size,
         distance,
         speed: DEFAULT_MOON_SPEED,
         slot,
       };
+      applySatelliteOrbitOpts(moon, opts, plane);
       moons.push(moon);
+      refreshSatelliteOrbitLine(moon);
       updateMoonPosition(moon);
       return moon;
     }
@@ -2117,6 +2478,7 @@
       moon.body.geo.dispose();
       moon.body.mesh.material.dispose();
       freeMoonSlot(moon.parent, moon.slot);
+      disposeSatelliteOrbitLine(moon);
       moons.splice(index, 1);
       updateInfoPanel();
     }
@@ -2132,13 +2494,15 @@
       const m = moons[index];
       if (!m) return;
       m.distance = distance;
+      refreshSatelliteOrbitLine(m);
       updateMoonPosition(m);
     }
 
     function updateMoons(dt) {
       for (const m of moons) {
         const speed = m.speed ?? DEFAULT_MOON_SPEED;
-        const omega = speed * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
+        const sign = m.speedSign ?? 1;
+        const omega = sign * speed * Math.pow(MOON_REF_DISTANCE / m.distance, 1.5);
         m.angle += omega * dt;
         updateMoonPosition(m);
       }
@@ -2216,17 +2580,20 @@
       if (used) used.delete(slot);
     }
 
+    const _probeLookTarget = new THREE.Vector3();
+
+    function orientProbeToPlanet(p) {
+      if (!p.parent || !p.mesh) return;
+      p.parent.group.getWorldPosition(_probeLookTarget);
+      p.mesh.lookAt(_probeLookTarget);
+    }
+
     function updateProbePosition(p) {
-      const x0 = Math.cos(p.angle) * p.distance;
-      const z0 = Math.sin(p.angle) * p.distance;
-      const ci = Math.cos(p.inclination), si = Math.sin(p.inclination);
-      const y1 = -z0 * si;
-      const z1 = z0 * ci;
-      const cn = Math.cos(p.node), sn = Math.sin(p.node);
-      const xf = x0 * cn - z1 * sn;
-      const zf = x0 * sn + z1 * cn;
+      const off = satelliteWorldOffset(p);
       const pp = p.parent ? p.parent.group.position : { x: 0, y: 0, z: 0 };
-      p.mesh.position.set(xf + pp.x, y1 + pp.y, zf + pp.z);
+      p.mesh.position.set(off.x + pp.x, off.y + pp.y, off.z + pp.z);
+      syncSatelliteOrbitLinePosition(p);
+      orientProbeToPlanet(p);
     }
 
     function addSatellite(parent, size, distance, opts = {}) {
@@ -2253,14 +2620,15 @@
         angle: plane.phase,
         inclination: plane.inclination,
         node: plane.node,
+        speedSign: 1,
         size,
         distance,
-        speed: DEFAULT_PROBE_SPEED,
+        speed: opts.speed ?? DEFAULT_PROBE_SPEED,
         slot,
-        // Small per-frame self-rotation so the satellite looks alive in orbit.
-        spin: 0.5 + Math.random() * 0.3,
       };
+      applySatelliteOrbitOpts(probe, opts, plane);
       probes.push(probe);
+      refreshSatelliteOrbitLine(probe);
       updateProbePosition(probe);
 
       loadSatelliteTemplate().then((template) => {
@@ -2300,6 +2668,7 @@
         }
       });
       freeProbeSlot(probe.parent, probe.slot);
+      disposeSatelliteOrbitLine(probe);
       probes.splice(index, 1);
     }
 
@@ -2314,23 +2683,105 @@
       const p = probes[index];
       if (!p) return;
       p.distance = distance;
+      refreshSatelliteOrbitLine(p);
       updateProbePosition(p);
     }
 
     function updateSatellites(dt) {
       for (const p of probes) {
-        const omega = p.speed * Math.pow(PROBE_REF_DISTANCE / p.distance, 1.5);
+        const sign = p.speedSign ?? 1;
+        const omega = sign * p.speed * Math.pow(PROBE_REF_DISTANCE / p.distance, 1.5);
         p.angle += omega * dt;
-        p.mesh.rotation.y += p.spin * dt;
         updateProbePosition(p);
       }
     }
 
     // ====== 18. Cities ======
-    // Cities are pinned to a body by a unit-direction `localPos`. The marker mesh
-    // is a small glowing box parented to body.group, so it rides spin and orbit
-    // automatically. Day/night visibility comes from updateCityMarkers().
+    // Cities are pinned to a body by a unit-direction `localPos`. Each settlement
+    // is a cloned `lunar_base.glb` parented to body.group (Y-up sits on the
+    // surface along localPos). Day/night dimming is applied in updateCityMarkers().
+    const CITY_BASE_SIZE = 0.5;   // longest axis at scale 1 (readable on r≈12 bodies)
+    const CITY_SURFACE_LIFT = 0.08;
     const cities = [];
+    const _cityUp = new THREE.Vector3(0, 1, 0);
+
+    let cityTemplate = null;
+    let cityTemplateLoading = null;
+
+    function loadCityTemplate() {
+      if (cityTemplate) return Promise.resolve(cityTemplate);
+      if (cityTemplateLoading) return cityTemplateLoading;
+      const loader = new GLTFLoader();
+      cityTemplateLoading = new Promise((resolve, reject) => {
+        loader.load(
+          'lunar_base.glb',
+          (gltf) => {
+            const root = gltf.scene;
+            const bbox = new THREE.Box3().setFromObject(root);
+            const size = bbox.getSize(new THREE.Vector3());
+            const longest = Math.max(size.x, size.y, size.z) || 1;
+            root.scale.multiplyScalar(CITY_BASE_SIZE / longest);
+            // Re-seat so the model's bottom rests on y=0 (local "ground").
+            const grounded = new THREE.Box3().setFromObject(root);
+            const center = grounded.getCenter(new THREE.Vector3());
+            root.position.x -= center.x;
+            root.position.z -= center.z;
+            root.position.y -= grounded.min.y;
+            cityTemplate = root;
+            resolve(root);
+          },
+          undefined,
+          (err) => {
+            console.error('[city] failed to load lunar_base.glb', err);
+            reject(err);
+          }
+        );
+      });
+      return cityTemplateLoading;
+    }
+
+    function disposeCityMesh(mesh) {
+      mesh.traverse((obj) => {
+        if (obj.isMesh) {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            mats.forEach(m => m.dispose());
+          }
+        }
+      });
+    }
+
+    function setCityMeshOpacity(mesh, opacity) {
+      mesh.traverse((obj) => {
+        if (!obj.isMesh || !obj.material) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => {
+          m.transparent = true;
+          m.opacity = opacity;
+        });
+      });
+    }
+
+    function orientCityMesh(city) {
+      const n = city.localPos;
+      if (n.lengthSq() < 1e-8) return;
+      city.mesh.quaternion.setFromUnitVectors(_cityUp, n);
+    }
+
+    function createCityMarker() {
+      const group = new THREE.Group();
+      const geo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+      const mat = new THREE.MeshBasicMaterial({ color: COL.cityLights });
+      group.add(new THREE.Mesh(geo, mat));
+      return group;
+    }
+
+    function mountCityModel(group) {
+      while (group.children.length) group.remove(group.children[0]);
+      const clone = cityTemplate.clone(true);
+      group.add(clone);
+    }
 
     function addCity(body, name, localPos) {
       const city = {
@@ -2343,13 +2794,15 @@
       cities.push(city);
       updateCityMarkers();
       renderCityList();
-    }
 
-    function createCityMarker() {
-      // Small glowing cube or pyramid
-      const geo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
-      const mat = new THREE.MeshBasicMaterial({ color: COL.cityLights });
-      return new THREE.Mesh(geo, mat);
+      loadCityTemplate().then(() => {
+        if (!cities.includes(city)) return;
+        mountCityModel(city.mesh);
+        updateCityMarkers();
+      }).catch(() => {
+        if (!cities.includes(city)) return;
+        // Placeholder cube from createCityMarker() already visible.
+      });
     }
 
     function updateCityMarkers() {
@@ -2359,9 +2812,9 @@
       const cityWorld = new THREE.Vector3();
       cities.forEach(city => {
         const body = city.body;
-        const r = body.baseRadius + 0.1;
+        const r = body.baseRadius + CITY_SURFACE_LIFT;
         city.mesh.position.copy(city.localPos).multiplyScalar(r);
-        city.mesh.lookAt(new THREE.Vector3(0, 0, 0));
+        orientCityMesh(city);
 
         // Day/night relative to *this* planet's sun direction (matters now that
         // planets orbit — direction from planet center to sun varies).
@@ -2370,8 +2823,7 @@
         const toSun = sunWorld.clone().sub(planetCenter).normalize();
         const surfaceNormal = cityWorld.clone().sub(planetCenter).normalize();
         const dot = surfaceNormal.dot(toSun);
-        city.mesh.material.opacity = dot < 0.1 ? 1.0 : 0.2;
-        city.mesh.material.transparent = true;
+        setCityMeshOpacity(city.mesh, dot < 0.1 ? 1.0 : 0.35);
       });
     }
 
@@ -2404,11 +2856,14 @@
         focusNameEl.textContent = focusedBody ? focusedBody.name : '';
       }
       city.body.group.remove(city.mesh);
+      disposeCityMesh(city.mesh);
       cities.splice(index, 1);
       renderCityList();
     }
     // Kept for backwards-compat with any inline onclick already in the DOM.
     window.removeCity = removeCityAt;
+
+    loadCityTemplate();
 
     // ====== 19. Starfield ======
     const starCount = 2000;
@@ -2436,6 +2891,196 @@
     });
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
+
+    // ====== 19b. Eruptions (lava bursts off bodies) ======
+    // A burst of glowing molten DROPLETS ejected from a surface point: each
+    // particle launches outward along the local normal (with a spread cone),
+    // arcs back under a fake gravity, shrinks, and cools white-hot → deep red.
+    // Implemented as one THREE.Points per eruption with a custom shader, so the
+    // CPU only bumps a `uTime` uniform — the ballistic motion runs on the GPU.
+    // The Points object is parented to the body's group, so it rides the body's
+    // spin and orbit. A short, bright vent flash sprite sells the initial blast.
+    const eruptions = [];
+    const MAX_ERUPTIONS = 14;
+    const ERUPT_PARTICLES = 26;
+    let eruptionTimer = 0.6;
+
+    // Radial flame gradient for the vent flash: white core → orange → clear.
+    const flameTex = (() => {
+      const s = 64;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = s;
+      const ctx = cv.getContext('2d');
+      const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+      g.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+      g.addColorStop(0.25, 'rgba(255,225,140,0.95)');
+      g.addColorStop(0.55, 'rgba(255,120,30,0.55)');
+      g.addColorStop(1.0, 'rgba(200,40,0,0.0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, s, s);
+      return new THREE.CanvasTexture(cv);
+    })();
+
+    // Ballistic particle shader. position = launch point; aVel = initial
+    // velocity (body-local units/s); the vertex integrates p = p0 + v t − ½g t²
+    // along the local up so droplets arc. Point size attenuates with depth and
+    // shrinks with age; the frag draws a soft round droplet, hot→cool by life.
+    const ERUPT_VERT = /* glsl */ `
+      attribute vec3  aVel;
+      attribute float aSize;
+      uniform float uTime;
+      uniform float uLife;
+      uniform vec3  uUp;
+      uniform float uGravity;
+      uniform float uSizePx;
+      varying float vLife;
+      void main() {
+        float t = uTime;
+        vec3 p = position + aVel * t - uUp * (0.5 * uGravity * t * t);
+        vLife = clamp(t / uLife, 0.0, 1.0);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        float sz = uSizePx * aSize * (1.0 - vLife * 0.65);
+        gl_PointSize = clamp(sz * (1.0 / max(0.001, -mv.z)), 1.0, 180.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const ERUPT_FRAG = /* glsl */ `
+      precision highp float;
+      uniform vec3 uHot;
+      uniform vec3 uCool;
+      varying float vLife;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r = length(d);
+        if (r > 0.5) discard;
+        float soft = smoothstep(0.5, 0.1, r);   // bright core, soft edge
+        vec3  col = mix(uHot, uCool, vLife);     // cool as it falls
+        float alpha = soft * (1.0 - vLife * vLife);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `;
+
+    function spawnEruption(body) {
+      if (eruptions.length >= MAX_ERUPTIONS) return;
+      const R = body.baseRadius;
+      // Random surface point + local frame (up = normal, t1/t2 = tangents).
+      const z = Math.random() * 2 - 1;
+      const aa = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.max(0, 1 - z * z));
+      const up = new THREE.Vector3(rr * Math.cos(aa), z, rr * Math.sin(aa));
+      const ref = Math.abs(up.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const t1 = new THREE.Vector3().crossVectors(ref, up).normalize();
+      const t2 = new THREE.Vector3().crossVectors(up, t1).normalize();
+      const base = up.clone().multiplyScalar(R * 1.005);
+
+      const life = 1.0 + Math.random() * 0.7;
+      const N = ERUPT_PARTICLES;
+      const pos  = new Float32Array(N * 3);
+      const vel  = new Float32Array(N * 3);
+      const size = new Float32Array(N);
+      // Launch speed sized so droplets rise ~0.4–1.0 R before gravity wins.
+      const speed = R * (1.6 + Math.random() * 1.2);
+      for (let i = 0; i < N; i++) {
+        // Tight upward cone: mostly along `up`, with a little lateral spread.
+        const spread = 0.18 + Math.random() * 0.32;
+        const sa = Math.random() * Math.PI * 2;
+        const dir = up.clone()
+          .addScaledVector(t1, Math.cos(sa) * spread)
+          .addScaledVector(t2, Math.sin(sa) * spread)
+          .normalize();
+        const sp = speed * (0.45 + Math.random() * 0.75);
+        // Tiny jitter around the vent so they don't all start at one point.
+        const j = R * 0.02;
+        pos[i * 3]     = base.x + (Math.random() - 0.5) * j;
+        pos[i * 3 + 1] = base.y + (Math.random() - 0.5) * j;
+        pos[i * 3 + 2] = base.z + (Math.random() - 0.5) * j;
+        vel[i * 3]     = dir.x * sp;
+        vel[i * 3 + 1] = dir.y * sp;
+        vel[i * 3 + 2] = dir.z * sp;
+        size[i] = 0.5 + Math.random() * 1.3;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('aVel', new THREE.BufferAttribute(vel, 3));
+      geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+      // Droplet pixel size must track the body's *world* size (group.scale can
+      // shrink/grow a body) and the drawing-buffer resolution (devicePixelRatio
+      // makes gl_PointSize physical pixels). Motion stays in LOCAL units so the
+      // arc scales naturally with the body inside its group.
+      const worldR = R * (body.group.scale.x || 1);
+      const dpr = renderer.getPixelRatio();
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: ERUPT_VERT,
+        fragmentShader: ERUPT_FRAG,
+        uniforms: {
+          uTime:    { value: 0 },
+          uLife:    { value: life },
+          uUp:      { value: up.clone() },
+          uGravity: { value: R * 4.5 },
+          uSizePx:  { value: worldR * 130.0 * dpr },
+          uHot:     { value: new THREE.Color(0xfff0c0) },
+          uCool:    { value: new THREE.Color(0xb81800) },
+        },
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false,
+      });
+      const points = new THREE.Points(geo, mat);
+      points.frustumCulled = false; // particles travel outside the geo bounds
+      points.renderOrder = 3;
+      body.group.add(points);
+
+      // Bright vent flash at the blast point.
+      const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: flameTex, color: 0xffffff, transparent: true,
+        depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+      }));
+      flash.position.copy(base);
+      flash.scale.setScalar(R * 0.4);
+      flash.renderOrder = 3;
+      body.group.add(flash);
+
+      eruptions.push({ body, points, mat, flash, age: 0, life });
+    }
+
+    function updateEruptions(dt) {
+      // Throttled random spawning. Only the Sun erupts (solar prominences);
+      // planets and moons do not.
+      eruptionTimer -= dt;
+      if (eruptionTimer <= 0) {
+        eruptionTimer = 0.35 + Math.random() * 1.1;
+        // Solar prominences only — the Sun erupts, planets/moons do not. The
+        // Sun isn't in `bodies` (it's a standalone mesh), so wrap it in a
+        // pseudo-body that satisfies spawnEruption (needs baseRadius + group).
+        const sunBody = { baseRadius: SUN_RADIUS, group: sunMesh, matter: { plasma: true } };
+        spawnEruption(sunBody);
+      }
+      for (let i = eruptions.length - 1; i >= 0; i--) {
+        const e = eruptions[i];
+        e.age += dt;
+        if (e.age >= e.life) {
+          e.body.group.remove(e.points);
+          e.body.group.remove(e.flash);
+          e.points.geometry.dispose();
+          e.mat.dispose();
+          e.flash.material.dispose();
+          eruptions.splice(i, 1);
+          continue;
+        }
+        e.mat.uniforms.uTime.value = e.age;
+        // Flash: blooms hard in the first ~120ms, then snaps out.
+        const ft = e.age / 0.18;
+        if (ft < 1) {
+          const R = e.body.baseRadius;
+          e.flash.scale.setScalar(R * (0.3 + ft * 0.7));
+          e.flash.material.opacity = 1 - ft;
+          e.flash.visible = true;
+        } else {
+          e.flash.visible = false;
+        }
+      }
+    }
 
     // ====== 20. Planet rotation ======
     // Each planet carries its own spin rate (rad/s) so the System tab's Spin
@@ -2599,6 +3244,165 @@
       }
     }
 
+    // ====== 22b. Temperature / climate model ======
+    // A body's surface temperature is driven by three things the user changes:
+    // how far it orbits the star, what archetype it is, and the atmosphere it
+    // wears. Incident starlight falls off as 1/d², and an *airless* body
+    // re-radiates as a blackbody (T ∝ flux^¼), so its equilibrium temperature
+    // scales as d^-0.5. We anchor that bare-rock curve at Earth's orbit (≈ −18°C,
+    // Earth's temperature *without* its greenhouse).
+    //
+    // An atmosphere then does two things, both scaled by how thick/dense it
+    // actually is (so the Atmosphere sliders change the climate live):
+    //   1. Greenhouse warming — traps heat, lifting the mean temperature. How
+    //      potent depends on the archetype's gas (Venus's CO₂ runs away; a thin
+    //      terrestrial mix warms gently).
+    //   2. Heat redistribution — winds and oceans carry warmth from equator to
+    //      pole, *shrinking* the latitude spread. An airless world (the Moon,
+    //      Mercury) keeps its full, brutal equator-to-pole gap; a thick envelope
+    //      nearly erases it.
+    // So Earth (atmosphere) and its Moon (none) at the same orbital distance end
+    // up with very different means *and* very different ranges — which is the
+    // whole point. temperatureAtLatitude() is the per-vertex hook future biome
+    // painting calls to decide snow caps vs. tropics.
+    const TEMP_REF_DISTANCE   = 270;    // Earth's orbital distance, scene units
+    const TEMP_REF_KELVIN     = 255;    // airless equilibrium there (~ −18°C)
+    // KELVIN_ZERO_C lives in section 1 (the frost coloring needs it early).
+    const HEAT_REDISTRIBUTION = 0.82;   // fraction of the spread a full atmosphere erases
+
+    // Per-archetype climate shaping (temperatures in kelvin):
+    //   base       — fixed offset always applied (albedo, intrinsic warmth). A
+    //                reflective ice world is negative; most worlds are 0.
+    //   greenhouse — extra warming a *full-strength* atmosphere of this type adds.
+    //                Multiplied by the body's live atmosphere factor (0 = none).
+    //   airSpread  — equator-to-pole span the body would have with NO atmosphere.
+    //                Atmosphere shrinks it toward zero.
+    //   override   — fixed mean temp for bodies whose heat isn't the star's:
+    //                stars (photosphere), lava worlds (molten), rogues (sunless).
+    const ARCHETYPE_CLIMATE = {
+      terrestrial: { base:   0, greenhouse:  60, airSpread: 120 },
+      ocean:       { base:   4, greenhouse:  55, airSpread:  90 },
+      gas_giant:   { base:  20, greenhouse:  40, airSpread:  60 },
+      ice_giant:   { base:  -5, greenhouse:  30, airSpread:  55 },
+      desert:      { base:   8, greenhouse:  20, airSpread: 130 },
+      lava:        { override: 1100, airSpread: 60 },
+      ice_planet:  { base: -30, greenhouse:  20, airSpread: 120 },
+      jungle:      { base:   0, greenhouse:  50, airSpread:  60 },
+      swamp:       { base:   0, greenhouse:  45, airSpread:  70 },
+      toxic:       { base:   5, greenhouse:  90, airSpread:  90 },
+      venusian:    { base:   0, greenhouse: 430, airSpread:  60 },
+      metal:       { base:   0, greenhouse:   0, airSpread: 150 },
+      carbon:      { base:  10, greenhouse:  30, airSpread: 110 },
+      moon_like:   { base:   0, greenhouse:   0, airSpread: 150 },
+      storm:       { base:   5, greenhouse:  40, airSpread:  90 },
+      living:      { base:   5, greenhouse:  35, airSpread:  75 },
+      rogue:       { override:   35, airSpread:  10 },  // 35 K ≈ −238°C, no star
+      star:        { override: 5800, airSpread:   0 },
+    };
+    const DEFAULT_CLIMATE = { base: 0, greenhouse: 0, airSpread: 130 };
+
+    // Effective distance from the star for any body. Planets read their own
+    // orbit; moons inherit their parent planet's orbital distance (a moon's
+    // small local orbit barely changes how much starlight reaches it).
+    function sunDistanceOf(body) {
+      const p = planets.find(pl => pl.body === body);
+      if (p) return p.orbit.distance;
+      const m = moons.find(mn => mn.body === body);
+      if (m) {
+        const pp = planets.find(pl => pl.body === m.parent);
+        if (pp) return pp.orbit.distance;
+      }
+      return TEMP_REF_DISTANCE;
+    }
+
+    // How much atmosphere a body actually wears, 0 (airless) → 1 (thick & dense).
+    // Reads the body's *live* gas state so the Atmosphere sliders move the
+    // climate. A full-gas giant is all atmosphere (1); a thin shell is graded by
+    // its density plus the extra reach of its thickness above the surface.
+    function atmosphereFactor(body) {
+      const m = body.matter;
+      if (!m || !m.gas) return 0;
+      if (m.gas === 'full') return 1;
+      const density   = Math.max(0, Math.min(1, body.gasDensity ?? 0.3));
+      const thickness = Math.max(0, (body.gasThickness ?? 1.1) - 1.0);  // 0 .. ~0.2
+      return Math.max(0, Math.min(1, density * 0.8 + thickness * 2.0));
+    }
+
+    // Compute (and cache on body.climate) a body's climate. One source of truth
+    // shared by the info panel and future biome code. Recompute after anything
+    // that moves the body, changes its archetype, or edits its atmosphere
+    // (orbit-distance slider, regen, atmosphere sliders).
+    function computeClimate(body) {
+      const arch = body.archetype || (body.kind === 'moon' ? 'moon_like' : 'terrestrial');
+      const cfg = ARCHETYPE_CLIMATE[arch] || DEFAULT_CLIMATE;
+      const dist = Math.max(1, sunDistanceOf(body));
+      const equilibrium = TEMP_REF_KELVIN * Math.sqrt(TEMP_REF_DISTANCE / dist);
+      const atmo = atmosphereFactor(body);
+      const meanK = cfg.override != null
+        ? cfg.override
+        : equilibrium + (cfg.base || 0) + (cfg.greenhouse || 0) * atmo;
+      // Atmosphere carries heat poleward, collapsing the equator-to-pole span.
+      const spread = (cfg.airSpread || 0) * (1 - HEAT_REDISTRIBUTION * atmo);
+      // The mean sits between equator and pole, area-weighted toward the larger,
+      // warmer equatorial belt: equator a little above the mean, poles well below.
+      const climate = {
+        distance: dist,
+        equilibriumK: equilibrium,
+        atmosphere: atmo,
+        meanK,
+        equatorK: meanK + spread * 0.35,
+        poleK:    meanK - spread * 0.65,
+        spread,
+      };
+      body.climate = climate;
+      return climate;
+    }
+
+    // Temperature (kelvin) at a latitude in radians (0 = equator, ±π/2 = pole).
+    // cos(lat) is 1 at the equator and 0 at the poles; raising it to a power
+    // keeps the tropics broad and warm while the cold collapses toward the caps
+    // — the curve future biome painting reads to drop snow/ice onto the poles.
+    function temperatureAtLatitude(body, latRad) {
+      const c = body.climate || computeClimate(body);
+      const warmth = Math.max(0, Math.cos(latRad)) ** 1.6;  // 1 equator → 0 pole
+      return c.poleK + (c.equatorK - c.poleK) * warmth;
+    }
+
+    function fmtTemp(k) {
+      const c = k - KELVIN_ZERO_C;
+      if (Math.abs(c) >= 1000) return (c / 1000).toFixed(1) + 'k°C';
+      return Math.round(c) + '°C';
+    }
+
+    // Map a temperature to a HUD color: frozen blue → temperate green → amber →
+    // scorching red → white-hot. Drives the climate swatch so the panel reads at
+    // a glance. Stops are in °C.
+    const TEMP_COLOR_STOPS = [
+      [-150, [120, 170, 255]],
+      [ -30, [ 90, 200, 230]],
+      [  12, [ 80, 210, 120]],
+      [  45, [240, 200,  70]],
+      [ 150, [240,  90,  50]],
+      [ 600, [255, 240, 220]],
+    ];
+    function tempColor(k) {
+      const c = k - KELVIN_ZERO_C;
+      const s = TEMP_COLOR_STOPS;
+      if (c <= s[0][0]) return `rgb(${s[0][1].join(',')})`;
+      if (c >= s[s.length - 1][0]) return `rgb(${s[s.length - 1][1].join(',')})`;
+      for (let i = 0; i < s.length - 1; i++) {
+        const [t0, c0] = s[i], [t1, c1] = s[i + 1];
+        if (c >= t0 && c <= t1) {
+          const f = (c - t0) / (t1 - t0);
+          const r = Math.round(c0[0] + (c1[0] - c0[0]) * f);
+          const g = Math.round(c0[1] + (c1[1] - c0[1]) * f);
+          const b = Math.round(c0[2] + (c1[2] - c0[2]) * f);
+          return `rgb(${r},${g},${b})`;
+        }
+      }
+      return `rgb(${s[0][1].join(',')})`;
+    }
+
     // ====== 23. Info panel ======
     let planetCurrentSeed = 'planet';
 
@@ -2613,7 +3417,11 @@
       forest:    { label: 'Forest',      color: '#1a4d1a' },
       desert:    { label: 'Desert',      color: '#d2b48c' },
       city:      { label: 'Settlements', color: '#808080' },
-      tundra:    { label: 'Tundra',      color: '#dde4ec' },
+      // Climate land biomes (terrestrial latitude zones). Colors mirror
+      // CLIMATE_LAND_ZONES so the swatch matches the painted surface.
+      ice:       { label: 'Ice',         color: '#daf2ff' },
+      tundra:    { label: 'Tundra',      color: '#8f9e76' },
+      jungle:    { label: 'Jungle',      color: '#15702a' },
       crater:    { label: 'Crater',      color: '#322e29' },
       dust:      { label: 'Dust',        color: '#6f6357' },
       highlight: { label: 'Highlights',  color: '#e2dccf' },
@@ -2621,7 +3429,7 @@
       regolith:  { label: 'Regolith',    color: '#c4b8a0' },
       frost:     { label: 'Frost',       color: '#d8e8f0' },
     };
-    const PLANET_COMP_ORDER = ['water', 'sand', 'grass', 'forest', 'desert', 'rock', 'snow', 'tundra', 'city'];
+    const PLANET_COMP_ORDER = ['water', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'rock', 'snow', 'city'];
     const MOON_COMP_ORDER   = ['crater', 'dust', 'rock', 'highlight', 'mare', 'regolith', 'frost', 'city'];
 
     // Per-archetype labels for the auto-painted height bands. Without these, a
@@ -2678,6 +3486,11 @@
       let peak = -Infinity;
       const counts = {};
       const hasBiomes = body.biomes != null;
+      // Mirror colorBodyVertex: on climate-zoned worlds the auto land band is
+      // named by latitude (ice/tundra/grass/jungle) rather than elevation, so the
+      // composition rollup matches what's actually painted on the surface.
+      const zones = (body.kind === 'planet' && body.climate && body.climate.spread > 0.5)
+        ? CLIMATE_LAND_ZONES[body.archetype] : null;
       for (let i = 0; i < body.N; i++) {
         const h = body.heights[i];
         if (h > peak) peak = h;
@@ -2692,10 +3505,15 @@
         else if (b === BIOME.FROST) key = 'frost';
         else if (body.kind === 'planet') {
           if (h < SEA_LEVEL) key = 'water';
+          else if (h >= ROCK_TOP) key = 'snow';
+          else if (zones) {
+            const z = pickLandZone(zones, vertexTempC(body, i));
+            // Warm zones show a sandy shore at the waterline (matches coloring).
+            key = (z.beach && h < SAND_TOP) ? 'sand' : z.key;
+          }
           else if (h < SAND_TOP) key = 'sand';
           else if (h < GRASS_TOP) key = 'grass';
-          else if (h < ROCK_TOP) key = 'rock';
-          else key = 'snow';
+          else key = 'rock';
         } else {
           if (h < 0) key = 'crater';
           else if (h < GRASS_TOP) key = 'dust';
@@ -2729,6 +3547,11 @@
       name:         document.getElementById('infoBodyName'),
       subtitle:     document.getElementById('infoSubtitle'),
       composition:  document.getElementById('infoComposition'),
+      climateSection: document.getElementById('infoClimateSection'),
+      tempMean:     document.getElementById('infoTempMean'),
+      tempRangeRow: document.getElementById('infoTempRangeRow'),
+      tempRange:    document.getElementById('infoTempRange'),
+      tempBar:      document.getElementById('infoTempBar'),
       peak:         document.getElementById('infoPeak'),
       verts:        document.getElementById('infoVerts'),
       moonsRow:     document.getElementById('infoMoonsRow'),
@@ -2769,6 +3592,29 @@
       return rows;
     }
 
+    // Fill the Climate section from a fresh climate computation. Stars and gas
+    // giants get a mean reading; the equator/poles row is hidden when a body has
+    // no meaningful latitude spread (e.g. a star). The bar tints from pole color
+    // (left) to equator color (right) for an at-a-glance hot/cold read.
+    function renderClimateSection(body) {
+      if (!infoEls.climateSection) return;
+      const c = computeClimate(body);
+      infoEls.climateSection.style.display = '';
+      infoEls.tempMean.textContent = fmtTemp(c.meanK);
+      infoEls.tempMean.style.color = tempColor(c.meanK);
+      if (c.spread > 1) {
+        infoEls.tempRangeRow.style.display = '';
+        infoEls.tempRange.textContent = `${fmtTemp(c.equatorK)} / ${fmtTemp(c.poleK)}`;
+        infoEls.tempBar.style.background =
+          `linear-gradient(90deg, ${tempColor(c.poleK)}, ${tempColor(c.meanK)}, ${tempColor(c.equatorK)})`;
+        infoEls.tempBar.style.display = '';
+      } else {
+        infoEls.tempRangeRow.style.display = 'none';
+        infoEls.tempBar.style.background = tempColor(c.meanK);
+        infoEls.tempBar.style.display = '';
+      }
+    }
+
     function updateInfoPanel() {
       if (!infoEls.name) return; // info panel removed from HTML — nothing to update
       if (focusedProbe) {
@@ -2783,6 +3629,7 @@
         infoEls.peak.textContent = '—';
         infoEls.verts.textContent = '—';
         infoEls.moonsRow.style.display = 'none';
+        if (infoEls.climateSection) infoEls.climateSection.style.display = 'none';
         infoEls.timeSection.style.display = 'none';
         infoEls.orbitSection.style.display = 'none';
         return;
@@ -2796,6 +3643,7 @@
         infoEls.verts.textContent = '—';
         infoEls.moonsRow.style.display = '';
         infoEls.moons.textContent = moons.length;
+        if (infoEls.climateSection) infoEls.climateSection.style.display = 'none';
         infoEls.timeSection.style.display = 'none';
         infoEls.orbitSection.style.display = 'none';
         return;
@@ -2870,6 +3718,8 @@
         infoEls.peak.textContent = `${worldPeak.toFixed(2)} u (${pctOfRadius.toFixed(1)}%)`;
         infoEls.verts.textContent = stats.N.toLocaleString();
       }
+
+      renderClimateSection(body);
 
       const isPlanet = body.kind === 'planet';
       infoEls.moonsRow.style.display = isPlanet ? '' : 'none';
@@ -2963,6 +3813,15 @@
       else if (tab === 'colonies') currentTool = 'city';
       else if (tab === 'satellites') currentTool = 'none';
       else currentTool = 'none';
+      if (!isBrushTool()) {
+        brushRing.visible = false;
+        if (isPainting) {
+          isPainting = false;
+          lastHitLocal = null;
+          activeBrushBody = null;
+          activeVortex = null;
+        }
+      }
     }
 
     tabBtns.forEach(btn => {
@@ -3150,7 +4009,6 @@
     showOrbitsInput.onchange = () => {
       orbitLinesGroup.visible = showOrbitsInput.checked;
     };
-
     biomeSelect.onchange = () => {
       selectedBiome = parseInt(biomeSelect.value, 10);
     };
@@ -3243,10 +4101,18 @@
       atmoThickValEl.textContent    = b.gasThickness.toFixed(2);
       atmoDensityValEl.textContent  = b.gasDensity.toFixed(2);
       atmoCoverageValEl.textContent = b.gasCoverage.toFixed(2);
+      // A denser/thicker atmosphere warms the surface and evens out the poles —
+      // reflect that in the climate readout as the sliders move.
+      renderClimateSection(b);
     }
     atmoThickInput.oninput    = applyAtmoSliderToFocus;
     atmoDensityInput.oninput  = applyAtmoSliderToFocus;
     atmoCoverageInput.oninput = applyAtmoSliderToFocus;
+    // Size/density change the greenhouse warming and pole-to-equator evening, so
+    // repaint the ice on release. (Coverage is cloud cover only — no climate
+    // effect — but recoloring on its release too is harmless and keeps it simple.)
+    atmoThickInput.onchange   = () => refreshClimateColoring(focusedBody);
+    atmoDensityInput.onchange = () => refreshClimateColoring(focusedBody);
 
     // Per-body realism toggles for the cloud layer.
     //   atmoComplexWinds → flips the shader's uWindMode, swapping uniform
@@ -3364,6 +4230,14 @@
     const bodyMoonSpeedVal   = document.getElementById('bodyMoonSpeedVal');
     const bodySizeInput      = document.getElementById('bodySizeInput');
     const bodySizeVal        = document.getElementById('bodySizeVal');
+    const satelliteOrbitPlaneSection = document.getElementById('satelliteOrbitPlaneSection');
+    const bodyInclInput      = document.getElementById('bodyInclInput');
+    const bodyInclVal        = document.getElementById('bodyInclVal');
+    const bodyNodeInput      = document.getElementById('bodyNodeInput');
+    const bodyNodeVal        = document.getElementById('bodyNodeVal');
+    const bodyRetrogradeInput= document.getElementById('bodyRetrogradeInput');
+    const showSatelliteOrbitsInput = document.getElementById('showSatelliteOrbits');
+    const showSatelliteOrbitsRow   = document.getElementById('showSatelliteOrbitsRow');
     const satellitesSectionEl= document.getElementById('satellitesSection');
     const atmoSectionEl      = document.getElementById('atmoSection');
     const ringsSectionEl     = document.getElementById('ringsSection');
@@ -3389,22 +4263,58 @@
       input.min = String(min); input.max = String(max);
     }
 
+    function normDeg(rad) {
+      return ((rad * 180 / Math.PI) % 360 + 360) % 360;
+    }
+
+    function getFocusedSatellite() {
+      if (focusedProbe) return focusedProbe;
+      if (focusedBody?.kind === 'moon') {
+        return moons.find(mn => mn.body === focusedBody) || null;
+      }
+      return null;
+    }
+
+    function syncSatelliteOrbitPlaneUI(sat) {
+      if (!sat || !bodyInclInput) return;
+      bodyInclInput.value = String(Math.round(Math.abs(sat.inclination) / ORBIT_DEG));
+      bodyInclVal.textContent = `${bodyInclInput.value}°`;
+      bodyNodeInput.value = String(Math.round(normDeg(sat.node)));
+      bodyNodeVal.textContent = `${bodyNodeInput.value}°`;
+      if (bodyRetrogradeInput) bodyRetrogradeInput.checked = (sat.speedSign ?? 1) < 0;
+    }
+
+    function applyFocusedSatelliteOrbitPlane() {
+      const sat = getFocusedSatellite();
+      if (!sat || !bodyInclInput) return;
+      applySatelliteOrbitPlane(
+        sat,
+        parseInt(bodyInclInput.value, 10) * ORBIT_DEG,
+        parseInt(bodyNodeInput.value, 10) * ORBIT_DEG,
+        bodyRetrogradeInput?.checked ? -1 : 1,
+      );
+      if (sat.body) updateMoonPosition(sat);
+      else updateProbePosition(sat);
+    }
+
     // Show/hide tabs and sections in the left panel for the current focus.
     // Driven by each tab button's `data-focus` attribute in index.html: a tab
     // is visible only if its data-focus list includes the current kind
     // ('planet' | 'moon' | 'system'). The big function below this one is the
     // heart of context-aware UI — every focus change runs it.
     function applyFocusToLeftPanel() {
-      const isPlanet = focusedBody && focusedBody.kind === 'planet';
-      const isMoon   = focusedBody && focusedBody.kind === 'moon';
-      const isSystem = !focusedBody && !focusedCity;
+      const isProbe  = !!focusedProbe;
+      const isPlanet = !isProbe && focusedBody && focusedBody.kind === 'planet';
+      const isMoon   = !isProbe && focusedBody && focusedBody.kind === 'moon';
+      const isSystem = !focusedBody && !focusedCity && !focusedProbe;
       // Full-gas planets have no solid surface, so the Sculpt tab and the
       // biome dropdown both disappear; the Envir tab swaps to atmospheric
       // band painting.
       const isGasFull = !!(isPlanet && focusedBody.matter && focusedBody.matter.gas === 'full');
       // Cities anchor their controls to the host body — re-use the planet/moon
       // layout for the body they belong to.
-      const focusKind = isPlanet ? 'planet'
+      const focusKind = isProbe  ? 'probe'
+                      : isPlanet ? 'planet'
                       : isMoon   ? 'moon'
                       : focusedCity ? (focusedCity.body.kind === 'moon' ? 'moon' : 'planet')
                       : 'system';
@@ -3470,6 +4380,8 @@
       // --- Satellites tab ---
       if (isPlanet) {
         satellitesContext.textContent = `Editing: ${focusedBody.name}`;
+      } else if (isProbe && focusedProbe.parent) {
+        satellitesContext.textContent = `Editing: ${focusedProbe.parent.name}`;
       }
 
       // --- System tab ---
@@ -3478,7 +4390,13 @@
       //   bodyOrbit     ↔ planet | moon focus
       //   bodyMoonSpeed ↔ moon focus
       rosterSectionEl.classList.toggle('is-hidden-section', !isSystem);
-      bodyOrbitSectionEl.classList.toggle('is-hidden-section', !(isPlanet || isMoon));
+      bodyOrbitSectionEl.classList.toggle('is-hidden-section', !(isPlanet || isMoon || isProbe));
+      if (satelliteOrbitPlaneSection) {
+        satelliteOrbitPlaneSection.style.display = (isMoon || isProbe) ? '' : 'none';
+      }
+      if (showSatelliteOrbitsRow) {
+        showSatelliteOrbitsRow.style.display = (isPlanet || isMoon || isProbe) ? '' : 'none';
+      }
 
       if (isSystem) {
         systemContextEl.textContent = `Editing: ${systemName} System`;
@@ -3507,6 +4425,23 @@
         bodySizeInput.value = Math.round(focusedBody.group.scale.x * PLANET_SIZE.div);
         bodySizeVal.textContent = focusedBody.group.scale.x.toFixed(2);
         bodyOrbitSectionEl.classList.remove('is-disabled-section');
+      } else if (isProbe) {
+        systemContextEl.textContent = `Editing: ${focusedProbe.name}`;
+        bodyOrbitHeaderEl.textContent = `Orbit (around ${focusedProbe.parent?.name || 'parent'})`;
+        setRange(bodyDistInput, MOON_DIST.sliderMin, MOON_DIST.sliderMax);
+        setRange(bodySizeInput, MOON_SIZE.sliderMin, MOON_SIZE.sliderMax);
+        bodySpeedRow.style.display = 'none';
+        bodySpinRow.style.display = 'none';
+        bodyMoonSpeedRow.style.display = '';
+        bodyDistInput.value = Math.round(focusedProbe.distance);
+        bodyDistVal.textContent = focusedProbe.distance.toFixed(0);
+        bodySizeInput.value = Math.round(focusedProbe.size * MOON_SIZE.div);
+        bodySizeVal.textContent = focusedProbe.size.toFixed(2);
+        const pSlider = moonSpeedToSlider(focusedProbe.speed ?? DEFAULT_PROBE_SPEED);
+        bodyMoonSpeedInput.value = Math.max(1, Math.min(100, pSlider));
+        bodyMoonSpeedVal.textContent = String(bodyMoonSpeedInput.value);
+        syncSatelliteOrbitPlaneUI(focusedProbe);
+        bodyOrbitSectionEl.classList.remove('is-disabled-section');
       } else if (isMoon) {
         systemContextEl.textContent = `Editing: ${focusedBody.name}`;
         const m = moons.find(mn => mn.body === focusedBody);
@@ -3524,6 +4459,7 @@
           const slider = moonSpeedToSlider(m.speed ?? DEFAULT_MOON_SPEED);
           bodyMoonSpeedInput.value = Math.max(1, Math.min(100, slider));
           bodyMoonSpeedVal.textContent = String(bodyMoonSpeedInput.value);
+          syncSatelliteOrbitPlaneUI(m);
         }
         bodyOrbitSectionEl.classList.remove('is-disabled-section');
       } else {
@@ -3633,7 +4569,10 @@
     // ====== 29. Body orbit slider handlers ======
     bodyDistInput.oninput = () => {
       const v = parseInt(bodyDistInput.value, 10);
-      if (focusedBody?.kind === 'planet') {
+      if (focusedProbe) {
+        const idx = probes.indexOf(focusedProbe);
+        if (idx >= 0) setSatelliteDistance(idx, v);
+      } else if (focusedBody?.kind === 'planet') {
         const entry = planets.find(p => p.body === focusedBody);
         if (entry) {
           entry.orbit.distance = v;
@@ -3645,11 +4584,20 @@
         if (idx >= 0) setMoonDistance(idx, v);
       }
       bodyDistVal.textContent = v.toFixed(0);
+      // A planet's distance from the star sets its climate — refresh the readout
+      // live as the slider drags (cheap; no full panel re-render needed).
+      if (focusedBody && !focusedProbe) renderClimateSection(focusedBody);
+    };
+    // On release, repaint the surface so the ice caps grow/shrink with the new
+    // orbital distance. Done on 'change' (not every drag tick) since a full
+    // recolor is heavier than the live readout above.
+    bodyDistInput.onchange = () => {
+      if (focusedBody?.kind === 'planet' && !focusedProbe) refreshClimateColoring(focusedBody);
     };
 
     bodySpeedInput.oninput = () => {
       const v = parseInt(bodySpeedInput.value, 10) / PLANET_SPEED.div;
-      if (focusedBody?.kind === 'planet') {
+      if (focusedBody?.kind === 'planet' && !focusedProbe) {
         const entry = planets.find(p => p.body === focusedBody);
         if (entry) entry.orbit.speed = v;
         bodySpeedVal.textContent = v.toFixed(2);
@@ -3657,7 +4605,7 @@
     };
 
     bodySpinInput.oninput = () => {
-      if (focusedBody?.kind !== 'planet') return;
+      if (focusedBody?.kind !== 'planet' || focusedProbe) return;
       const w = spinSliderToRad(parseInt(bodySpinInput.value, 10));
       focusedBody.rotationSpeed = w;
       bodySpinVal.textContent = w.toFixed(2);
@@ -3666,7 +4614,12 @@
 
     bodySizeInput.oninput = () => {
       const raw = parseInt(bodySizeInput.value, 10);
-      if (focusedBody?.kind === 'planet') {
+      if (focusedProbe) {
+        const scale = raw / MOON_SIZE.div;
+        const idx = probes.indexOf(focusedProbe);
+        if (idx >= 0) setSatelliteSize(idx, scale);
+        bodySizeVal.textContent = scale.toFixed(2);
+      } else if (focusedBody?.kind === 'planet') {
         const scale = raw / PLANET_SIZE.div;
         focusedBody.group.scale.setScalar(scale);
         bodySizeVal.textContent = scale.toFixed(2);
@@ -3678,15 +4631,45 @@
       }
     };
 
-    // Per-moon orbital speed. Slider only acts when a moon is focused.
+    // Per-moon / per-probe orbital speed around the host planet.
     bodyMoonSpeedInput.oninput = () => {
-      if (focusedBody?.kind !== 'moon') return;
       const v = parseInt(bodyMoonSpeedInput.value, 10);
-      const m = moons.find(mn => mn.body === focusedBody);
-      if (m) m.speed = moonSliderToSpeed(v);
+      if (focusedProbe) {
+        focusedProbe.speed = moonSliderToSpeed(v);
+      } else if (focusedBody?.kind === 'moon') {
+        const m = moons.find(mn => mn.body === focusedBody);
+        if (m) m.speed = moonSliderToSpeed(v);
+      } else return;
       bodyMoonSpeedVal.textContent = String(v);
       updateLiveInfo();
     };
+
+    function onSatelliteOrbitPlaneControl() {
+      applyFocusedSatelliteOrbitPlane();
+      updateLiveInfo();
+    }
+    if (bodyInclInput) {
+      bodyInclInput.oninput = () => {
+        bodyInclVal.textContent = `${bodyInclInput.value}°`;
+        onSatelliteOrbitPlaneControl();
+      };
+    }
+    if (bodyNodeInput) {
+      bodyNodeInput.oninput = () => {
+        bodyNodeVal.textContent = `${bodyNodeInput.value}°`;
+        onSatelliteOrbitPlaneControl();
+      };
+    }
+    if (bodyRetrogradeInput) {
+      bodyRetrogradeInput.onchange = onSatelliteOrbitPlaneControl;
+    }
+
+    if (showSatelliteOrbitsInput) {
+      showSatelliteOrbitsInput.checked = showSatelliteOrbits;
+      showSatelliteOrbitsInput.onchange = () => {
+        setSatelliteOrbitLinesVisible(showSatelliteOrbitsInput.checked);
+      };
+    }
 
     // ====== 30. Add / Remove planet ======
     const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'];
@@ -3738,6 +4721,10 @@
         speed: 0.06 / (1 + idx * 0.35),
         inclination: (Math.random() - 0.5) * 0.3,
       });
+      // regenerateBody ran before the planet was registered, so its climate was
+      // computed at the default distance. Now that the real orbit is set, refresh
+      // climate + ice for the planet's actual (far, cold) distance.
+      refreshClimateColoring(body);
       return body;
     }
 
@@ -3759,6 +4746,7 @@
           moons[i].body.geo.dispose();
           moons[i].body.mesh.material.dispose();
           freeMoonSlot(moons[i].parent, moons[i].slot);
+          disposeSatelliteOrbitLine(moons[i]);
           moons.splice(i, 1);
         }
       }
@@ -3771,6 +4759,7 @@
         if (cities[i].body === target) {
           if (focusedCity === cities[i]) focusedCity = null;
           target.group.remove(cities[i].mesh);
+          disposeCityMesh(cities[i].mesh);
           cities.splice(i, 1);
         }
       }
@@ -3917,7 +4906,8 @@
     }
 
     function renderProbesList() {
-      const parent = (focusedBody && focusedBody.kind === 'planet') ? focusedBody : null;
+      const parent = focusedProbe?.parent
+        || ((focusedBody && focusedBody.kind === 'planet') ? focusedBody : null);
       const own = parent ? probes.filter(p => p.parent === parent) : [];
 
       if (!parent) {
@@ -4778,19 +5768,47 @@
     // Jupiter gets its Galilean crew, etc. Names/seeds are pinned per moon.
     SOLAR_SYSTEM_SPEC.forEach((spec, i) => {
       const parent = solarBodies[i];
-      spec.moons.forEach(moonSpec => {
+      (spec.moons || []).forEach(moonSpec => {
         addMoon(parent, moonSpec.size, moonSpec.distance, {
           name: moonSpec.name,
           seed: moonSpec.seed,
+          inclination: moonSpec.inclination,
+          node: moonSpec.node,
+          speedSign: moonSpec.speedSign,
+          orbitPath: moonSpec.orbitPath,
+        });
+      });
+      (spec.probes || []).forEach(probeSpec => {
+        addSatellite(parent, probeSpec.size, probeSpec.distance, {
+          name: probeSpec.name,
+          seed: probeSpec.seed,
+          inclination: probeSpec.inclination,
+          node: probeSpec.node,
+          speedSign: probeSpec.speedSign,
+          orbitPath: probeSpec.orbitPath,
+          speed: probeSpec.speed,
         });
       });
     });
+
+    // The world is now fully built and the climate model (section 22b) exists,
+    // so switch frost on and repaint every solid body — polar ice and altitude
+    // frost show from the first frame. Gas giants and stars skip the repaint
+    // (no visible solid surface) but still get a cached climate for the panel.
+    climateReady = true;
+    for (const b of bodies) {
+      computeClimate(b);
+      // Only planets render latitude frost; moons keep their fixed palette.
+      if (b.kind === 'planet' && b.matter && b.matter.solid) recolorBody(b);
+    }
+
     renderMoonsList();
     renderProbesList();
     updateBiomeTools();
     // Default to the system-wide view so the user sees the whole replica at
     // load — the eight planets at a glance.
     setSystemFocus();
+    refreshActiveTool();
     updateInfoPanel();
 
     // ====== 35. Init + Resize ======
@@ -4850,6 +5868,7 @@
       }
       updateMoons(dt);
       updateSatellites(dt);
+      updateEruptions(dt);
       updateCityMarkers();
       updateSunLightForFocus();
       updateFocusTracking();
@@ -4861,7 +5880,7 @@
         stepSurfaceWalk(dt);
         updateSurfaceCamera();
       }
-      if (isPainting && lastHitLocal && activeBrushBody) {
+      if (isPainting && isBrushTool() && lastHitLocal && activeBrushBody) {
         applyBrushToBody(activeBrushBody, lastHitLocal, dt);
       }
       liveInfoAccum += dt;

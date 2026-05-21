@@ -43,12 +43,14 @@ Each row maps a banner in `script.js` to its line range. After editing, re-grep 
 | 15  | Pointer handling              | 1227–1319   | Pointerdown/move/up wiring on the canvas. Raycast → `applyBrushToBody`.                                 |
 | 16  | Moons                         | 1320–1448   | `MOON_*` constants, `moons[]`, slot allocator, `addMoon`, `updateMoons`.                                |
 | 17  | Probes (satellites)           | 1449–1625   | `MAX_PROBES`, `probes[]`, `loadSatelliteTemplate` (GLB), `addSatellite`, `updateSatellites`.            |
-| 18  | Cities                        | 1626–1709   | `cities[]`, `addCity`, `createCityMarker`, `updateCityMarkers` (day-side fade).                         |
+| 18  | Cities                        | —           | `lunar_base.glb`, `cities[]`, `addCity`, `loadCityTemplate`, `updateCityMarkers`.                      |
 | 19  | Starfield                     | 1710–1736   | 2000 background points at r ≈ 2200.                                                                     |
+| 19b | Eruptions                     | —           | Solar prominences (Sun only — planets/moons don't erupt). `eruptions[]`, `spawnEruption`, `updateEruptions`. Each is a GPU particle burst (`THREE.Points` + `ERUPT_VERT`/`ERUPT_FRAG`: ballistic droplets integrated on the GPU from a `uTime` uniform, cooling hot→cool) plus a `flameTex` vent-flash sprite, parented to the sun pseudo-body's group (`sunMesh`). |
 | 20  | Planet rotation               | 1737–1748   | `updatePlanetRotation` — spins each planet by its `rotationSpeed`.                                      |
 | 21  | Sun light for focus           | 1749–1799   | `updateSunLightForFocus` refreshes per-body `uSunDir` uniforms (atmosphere + rings).                    |
 | 22  | Focus                         | 1800–1867   | `focusedBody`, `focusedCity`, `setFocus`, `setCityFocus`, `updateFocusTracking` (chase target).         |
-| 23  | Info panel                    | 1868–2092   | Telemetry pane on the right: composition rollup, peak, day period, orbit period.                       |
+| 22b | Temperature / climate         | —           | `ARCHETYPE_CLIMATE`, `sunDistanceOf`, `computeClimate`, `temperatureAtLatitude`, `tempColor`. Distance + archetype → surface temp; latitude hook for future biomes. |
+| 23  | Info panel                    | 1868–2092   | Telemetry pane on the right: composition rollup, peak, **climate (mean + equator/pole)**, day period, orbit period. |
 | 24  | Random names                  | 2093–2131   | `COSMIC_WORDS`, `generateCosmic`, `generateName('planet' \| 'moon' \| 'system')`.                       |
 | 25  | UI (tabs + sliders)           | 2132–2331   | DOM lookups; tab switching; slider → value conversions.                                                 |
 | 26  | Atmosphere sliders            | 2332–2357   | `applyAtmoSliderToFocus` (thickness, density, coverage).                                                |
@@ -104,6 +106,7 @@ Created by `createBody({ kind, name, baseRadius, detail, palette, hasOcean })`. 
   rings:  { enabled, intensity },
   archetype,    // 'terrestrial' | 'gas_giant' | … (planets only)
   rotationSpeed,
+  climate,      // { meanK, equatorK, poleK, equilibriumK, spread, distance } — cached by computeClimate(); see Temperature model
 }
 ```
 
@@ -142,7 +145,7 @@ Moons are built at `MOON_BASE_RADIUS = 1` and scaled via `group.scale` so the si
 ### City entry
 
 ```
-{ body, name, localPos, mesh }   // localPos is unit-normalized; world position is body.group * (localPos * (baseRadius + 0.1))
+{ body, name, localPos, mesh }   // mesh is a Group; lunar_base.glb clone, Y-up along localPos at baseRadius + CITY_SURFACE_LIFT
 ```
 
 ---
@@ -186,9 +189,29 @@ Pausing freezes orbits, spin, and cloud drift; moons + probes + brush keep going
 ### Shaders — plasma (the fourth matter type)
 
 - `makePlasmaMaterial()` builds the emissive, self-lit star surface used by the Sun (`sunMesh.material` is swapped to it after the factory exists) and by any body with `matter.plasma` (the `star` archetype). It's opaque, casts/receives no shadows, and ignores `uSunDir` — a star lights itself.
-- The frag shader is a domain-warped value-noise FBM sampled on the local unit direction (so the pattern is radius-independent): a slow swirling convection layer plus a faster bubbling layer, a time-shifting threshold that lifts and pulses bright white-hot cells, dark sunspot lanes in the troughs, and a fresnel limb term. Colors ramp deep-orange → orange → yellow → white-hot.
-- The Sun also gets `makeCoronaMaterial()` — an additive back-faced halo shell (`coronaMesh`) that fakes bloom without a postprocessing pass.
+- The frag shader is a domain-warped value-noise FBM sampled on the local unit direction (so the pattern is radius-independent): a slow swirling convection layer plus a faster bubbling layer, a time-shifting threshold that lifts and pulses bright white-hot cells, dark sunspot lanes in the troughs, random **lava-burst flares** (`flares()` — `NFLARES` slots that swell at a random spot then pop into an expanding shock ring), and a faint fresnel limb term. Colors ramp deep-orange → orange → yellow → white-hot; `uBright` and `uFlares` scale emission and flare strength. The Sun overrides the colors toward yellow-white and bumps `uBright`.
+- **Distance whitening** (`uWhiten`/`uWhitenNear`/`uWhitenFar`, on for the Sun only): the surface bleaches toward white as the camera recedes (`distance(cameraPosition, vCenter)`), so from system view the disc reads as a bright white star and the orange convection detail only shows up close.
+- The Sun also gets `makeCoronaMaterial()` — an additive back-faced shell (`coronaMesh`) whose alpha is driven by the view ray's **impact parameter** (perpendicular distance from the star center), so it's a soft glow *dome* fading outward, not a hard fresnel "bubble". It's a **restless red-orange** glow: a per-direction phase + layered sines make it writhe/pulse unevenly around the limb rather than breathing as one steady ring. Fakes bloom without a postprocessing pass.
+- The gas-giant (`uMode=1`) path reuses the same flowing-noise trick: a small time-scrolling turbulent domain warp churns the bands so gas planets animate too (kept subtle so the latitudinal banding still reads).
 - `uTime` for the Sun, corona, and every visible plasma body is advanced by `plasmaTime` in the animate loop **every frame, paused or not** — a star never freezes (unlike `gasTime`, which stops on pause). The Sun + corona uniforms are collected in `plasmaTickUniforms`.
+
+### Temperature / climate model
+
+A body's surface temperature is derived, not stored as input — recompute it whenever distance, archetype, **or atmosphere** changes (orbit-distance slider, regen, atmosphere sliders). Three inputs drive it: orbital distance, archetype, and the live atmosphere.
+
+- `sunDistanceOf(body)` resolves the body's effective distance from the star: a planet uses its own `orbit.distance`; a moon inherits its parent planet's orbital distance (its small local orbit is ignored).
+- `atmosphereFactor(body)` reads the body's *live* gas state → `0` (airless) … `1` (thick/dense). A full-gas giant is `1`; an `'atmosphere'` shell grades by `gasDensity` plus the reach of `gasThickness` above the surface. This is what makes the Atmosphere sliders move the climate.
+- `computeClimate(body)` starts from the **airless** equilibrium `TEMP_REF_KELVIN * sqrt(TEMP_REF_DISTANCE / d)` (anchored at Earth's orbit ≈ −18°C — Earth *without* its greenhouse; flux ∝ 1/d², blackbody re-radiates at T ∝ flux^¼). Each archetype in `ARCHETYPE_CLIMATE` then adds a fixed `base` (albedo/intrinsic) plus `greenhouse × atmosphereFactor` warming, or an internal-heat `override` (stars, lava, sunless rogues). The equator-to-pole `airSpread` is *shrunk* by the atmosphere (`× (1 − HEAT_REDISTRIBUTION·atmo)`) — so airless worlds keep a brutal gap and thick envelopes nearly erase it. **This is why Earth (atmosphere) and its Moon (none) at the same distance differ in both mean and range.** Cached on `body.climate` as `{ meanK, equatorK, poleK, atmosphere, … }`. Moons with no archetype default to `moon_like`.
+- `temperatureAtLatitude(body, latRad)` returns temperature at a latitude: `cos(lat)^1.6` blends pole → equator so the tropics stay broad and the cold collapses onto the caps. Latitude on the icosphere is `asin(unitDir.y)`.
+- `tempColor(k)` / `fmtTemp(k)` drive the Info panel's Climate section (mean readout + equator/pole row + a pole→equator gradient bar). `renderClimateSection` is hidden for probes and the system view; the distance and atmosphere slider handlers call it directly for a live update without a full panel re-render.
+
+**Latitude biomes (climate coloring).** On diverse archetypes the *vegetated land* band isn't one color — it shifts with latitude. `CLIMATE_LAND_ZONES` (section 1) lists, per archetype, ordered land zones (warmest first) with a `minTempC` floor, a color, a composition label, and `beach`/`relief` flags. Only archetypes listed there vary; everything else (desert, lava, …) keeps its plain palette bands **unchanged**. Today only `terrestrial` is populated: jungle → grass → tundra → ice. `grass` reuses the palette green so temperate land is identical to before; ice/tundra/jungle are the new biomes.
+
+  `colorBodyVertex` (and `computeBodyStats`, so the composition panel always agrees) computes a per-vertex surface temperature via `vertexTempC(body, i)` — `cos(lat)^1.6` between `body.climate.poleK`/`equatorK`, minus `CLIMATE_LAPSE_C` × elevation so peaks run colder — then `pickLandZone` selects the zone. The usual elevation cues still layer on top: a sandy shore at the waterline (`beach`), rock relief on high ground (`relief`), and a snow cap above `ROCK_TOP`. The result is a believable Earth zonation (~jungle 0–30°, grass 30–50°, tundra 50–65°, ice poleward) and altitude zonation on equatorial mountains. Untouched: ocean color, hand-painted biomes (those take their own `colorBodyVertex` branch), and non-listed archetypes.
+
+  **Ice self-glow.** Ice sits at the poles, where the sun only ever grazes, so pure diffuse shading crushes any ice color to grey. To fix that, the body's `MeshStandardMaterial` is patched in `onBeforeCompile` to add a per-vertex emissive term `uGlowColor * aGlow`. `aGlow` is a geometry attribute (`body.glowArr`) written by `colorBodyVertex` (= `zone.glow` for ice, 0 elsewhere, cleared each repaint and flagged dirty in `commitBodyChanges`); `uGlowColor` is `ICE_GLOW_COLOR` (section 1). Ordinary terrain keeps `aGlow = 0`, so the night side stays black — only ice self-lights, reading as bright crystal even unlit.
+
+  Ordering matters: `colorBodyVertex` only *reads* `body.climate` (a plain object) and the section-1 `CLIMATE_LAND_ZONES` — it never calls the climate *functions* in section 22b, which would be in their temporal dead zone during the bootstrap paint. So the bootstrap paints plain bands (climate still null), then a module-scope `climateReady` flag is flipped by the post-init pass (end of init), which computes every body's climate and repaints the solid planets with their zones. After that, `regenerateBody` refreshes climate before its color loop; `refreshClimateColoring(body)` (= recompute + `recolorBody`) runs from the distance/atmosphere slider `onchange` and after `deployNewPlanet` registers a planet's real orbit.
 
 ### Surface walk — the three modes
 
@@ -212,6 +235,8 @@ Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the 
 
 The satellite GLB at `3d_objects/satellite.glb` is loaded *lazily, once*. `loadSatelliteTemplate()` caches a normalized template (scaled so its longest dimension = `PROBE_BASE_SIZE`). Each new probe `.clone(true)`s the template. Before the GLB resolves, probes get a fallback box mesh.
 
+`lunar_base.glb` (project root) follows the same pattern for cities: `loadCityTemplate()` grounds the model (bottom at local y=0), scales to `CITY_BASE_SIZE`, and each colony `.clone(true)`s into its group. A small gold cube shows until load completes.
+
 ---
 
 ## DOM element index (`index.html`)
@@ -228,7 +253,7 @@ Anything referenced from JS by id, grouped by panel:
 | Satellites         | `moonsList`, `addMoon`, `probesList`, `addProbe`                                                                                |
 | System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`      |
 | Dynamics           | `showOrbits`, `pauseRot`                                                                                                        |
-| Info panel (right) | `infoBodyName`, `infoSubtitle`, `infoComposition`, `infoPeak`, `infoVerts`, `infoMoons`, `infoDayPeriod`, `infoDayTime`, `infoOrbit*` |
+| Info panel (right) | `infoBodyName`, `infoSubtitle`, `infoComposition`, `infoClimateSection`, `infoTempMean`, `infoTempRangeRow`, `infoTempRange`, `infoTempBar`, `infoPeak`, `infoVerts`, `infoMoons`, `infoDayPeriod`, `infoDayTime`, `infoOrbit*` |
 | Bottom nav         | `navBreadcrumb`, `navFocusLevel`, `navFocusName`, `navFocusSub`, `navUp/Down/Left/Right`, `navRandomBtn`, `navVisit`            |
 | Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`                                    |
 | Misc               | `c` (the WebGL canvas), `pickHint`, `pickToast`, `scanOverlay`                                                                  |
@@ -246,7 +271,9 @@ Grouped by section. Line numbers will drift — re-grep `^\s+function\s+\w+` aft
 | `makeRingMaterial`       | 533   | Builds a per-body `ShaderMaterial` for planetary rings.                               |
 | `createBody`             | 561   | The factory. Returns a Body (see Data model). Caller adds `group` to scene.           |
 | `writeBodyVertex`        | 664   | Writes vertex `i`'s position from `unitDirs[i] * (baseRadius * (1 + heights[i]*…))`.  |
-| `colorBodyVertex`        | 671   | Writes vertex `i`'s color from height + biome + palette.                              |
+| `colorBodyVertex`        | 671   | Writes vertex `i`'s color from height + biome + palette + climate land zone.          |
+| `vertexTempC`            | —     | Surface temp (°C) at a vertex: climate latitude gradient − elevation lapse.            |
+| `pickLandZone`           | —     | Choose the `CLIMATE_LAND_ZONES` biome for a temperature (shared by color + stats).     |
 | `commitBodyChanges`      | 782   | Marks `position` and `color` attributes dirty + recomputes bounds/normals.            |
 | `applyBrushToBody`       | 790   | Single brush stroke (one frame). Spherical-cap falloff, height-clamped.               |
 | `hashSeed`               | 834   | FNV-ish string → uint32 hash. Deterministic across runs.                              |
@@ -256,7 +283,9 @@ Grouped by section. Line numbers will drift — re-grep `^\s+function\s+\w+` aft
 | `applyMatterToBody`      | 942   | Switches solid/liquid/gas meshes for a body per archetype matter spec.                |
 | `applyGasShell`          | 976   | Pushes `body.gas*` fields into the gas mesh's uniforms + thickness scale.             |
 | `applyRingsToBody`       | 987   | Pushes `body.rings.{enabled,intensity}` into the ring mesh.                           |
-| `regenerateBody`         | 998   | Reseed terrain. Resamples noise → biases → writes vertices + colors.                  |
+| `regenerateBody`         | 998   | Reseed terrain. Resamples noise → biases → writes vertices + colors (frost-aware).    |
+| `recolorBody`            | —     | Repaint all vertices without touching terrain (used when climate shifts the ice).     |
+| `refreshClimateColoring` | —     | Recompute a body's climate and repaint it (distance/atmosphere change, new planet).   |
 | `updatePlanetOrbitPosition` | 1041 | Position one planet on its orbit from `angle/distance/inclination`.                  |
 | `updatePlanetOrbits`     | 1050  | Per-frame advance of every planet's `angle` and reposition.                           |
 | `registerPlanet`         | 1057  | Push a planet entry + draw its orbit line.                                            |
@@ -286,7 +315,8 @@ Grouped by section. Line numbers will drift — re-grep `^\s+function\s+\w+` aft
 | `setSatelliteSize` / `…Distance` | 1603 |                                                                                |
 | `updateSatellites`       | 1617  | Per-frame orbit + self-spin.                                                          |
 | `addCity`                | 1632  | Pin a city to a body at a unit-local direction.                                       |
-| `createCityMarker`       | 1645  | Small glowing box mesh.                                                               |
+| `loadCityTemplate`       | —     | Lazy-load `lunar_base.glb` once; bottom-grounded, scaled to `CITY_BASE_SIZE`.         |
+| `createCityMarker`       | —     | Placeholder group until the GLB resolves.                                             |
 | `updateCityMarkers`      | 1652  | Visibility per day-side (dot of surface normal with toSun).                           |
 | `renderCityList`         | 1675  | DOM render for the Colony tab.                                                        |
 | `removeCityAt`           | 1696  | Detach + dispose.                                                                     |
@@ -295,6 +325,11 @@ Grouped by section. Line numbers will drift — re-grep `^\s+function\s+\w+` aft
 | `setFocus`               | 1810  | Change focused body. Retargets controls and resets dolly distance.                    |
 | `setCityFocus`           | 1829  | Focus a city (subtler dolly, oriented by city's surface normal).                      |
 | `updateFocusTracking`    | 1855  | Each frame, slide `controls.target` to follow the focused body's worldpos.            |
+| `sunDistanceOf`          | —     | Effective distance from the star (planet's orbit, or its parent's for a moon).        |
+| `computeClimate`         | —     | Distance + archetype → cached `body.climate` (mean / equator / pole temps).           |
+| `temperatureAtLatitude`  | —     | Temp (K) at a latitude — per-vertex hook for future biome painting.                   |
+| `tempColor` / `fmtTemp`  | —     | Temperature → HUD color / display string for the Climate section.                     |
+| `renderClimateSection`   | —     | Fill the Info panel's Climate section from `computeClimate`.                           |
 | `hexFromNumber`          | 1917  | `0xff00aa` → `"#ff00aa"`. Used by the composition swatches.                           |
 | `bandMeta`               | 1923  | Resolve `(body, key)` → display label + swatch color for the info panel.              |
 | `computeBodyStats`       | 1943  | Aggregate per-vertex bands and find peak. Source of the composition rollup.           |

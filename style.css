@@ -6,10 +6,19 @@ body {
     background: #02030a;
     font-family: 'Share Tech Mono', monospace;
     color: #00f2ff;
+    cursor: none;
+}
+
+/* Restore the OS cursor only over panels with controls/options */
+#ui,
+#bottomNav,
+#surfaceTopBar {
+  cursor: default;
 }
 
 canvas {
     display: block;
+    cursor: none;
 }
 
 #ui {
@@ -698,6 +707,15 @@ body::after {
   text-shadow: 0 0 5px rgba(0, 242, 255, 0.4);
 }
 
+/* Climate temperature bar: pole → mean → equator gradient strip */
+.temp-bar {
+  height: 6px;
+  margin-top: 2px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 6px rgba(0, 242, 255, 0.35), inset 0 0 3px rgba(0, 0, 0, 0.4);
+}
+
 /* Scrollbar styling inside info panel */
 #infoPanel::-webkit-scrollbar { width: 5px; }
 #infoPanel::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); }
@@ -925,9 +943,8 @@ body::after {
   line-height: 1;
 }
 
-/* Pick mode — cursor crosshair over the canvas while waiting for the user
-   to click a landing spot. */
-body.pick-mode canvas { cursor: crosshair; }
+/* Pick mode — crosshair over the canvas while choosing a landing spot. */
+body.pick-mode canvas { cursor: crosshair !important; }
 
 #pickHint {
   position: absolute;

@@ -16,8 +16,8 @@
       <button class="tab-btn is-hidden" data-tab="sculpt" data-focus="planet moon" title="Terrain Shaping">Sculpt</button>
       <button class="tab-btn is-hidden" data-tab="environment" data-focus="planet moon" title="Biomes & Painting">Envir</button>
       <button class="tab-btn is-hidden" data-tab="colonies" data-focus="planet moon" title="Settlements">Colony</button>
-      <button class="tab-btn is-hidden" data-tab="satellites" data-focus="planet" title="Satellites & Probes">Sats</button>
-      <button class="tab-btn active" data-tab="system" data-focus="system planet moon" title="Orbit & Moons">System</button>
+      <button class="tab-btn is-hidden" data-tab="satellites" data-focus="planet probe" title="Satellites & Probes">Sats</button>
+      <button class="tab-btn active" data-tab="system" data-focus="system planet moon probe" title="Orbit & Moons">System</button>
     </div>
 
     <div id="tab-classify" class="tab-content">
@@ -155,11 +155,18 @@
         <label id="bodyMoonSpeedRow">Speed <input id="bodyMoonSpeedInput" type="range" min="1" max="100" value="40"><span class="val" id="bodyMoonSpeedVal">40</span></label>
         <label id="bodySpinRow">Spin <input id="bodySpinInput" type="range" min="0" max="100" value="30"><span class="val" id="bodySpinVal">0.06</span></label>
         <label id="bodySizeRow">Size <input id="bodySizeInput" type="range" min="3" max="30" value="10"><span class="val" id="bodySizeVal">1.0</span></label>
+        <div id="satelliteOrbitPlaneSection">
+          <p class="hint" id="satOrbitPlaneHint">Tilt the orbital plane and rotate it around the planet; retrograde reverses travel direction.</p>
+          <label id="bodyInclRow">Plane tilt <input id="bodyInclInput" type="range" min="0" max="90" value="0"><span class="val" id="bodyInclVal">0°</span></label>
+          <label id="bodyNodeRow">Plane bearing <input id="bodyNodeInput" type="range" min="0" max="359" value="0"><span class="val" id="bodyNodeVal">0°</span></label>
+          <label id="bodyRetrogradeRow">Retrograde <input id="bodyRetrogradeInput" type="checkbox"></label>
+        </div>
       </div>
 
       <div id="dynamicsSection">
         <div class="section-header" style="margin-top:10px">Dynamics</div>
         <label>Show Orbits <input id="showOrbits" type="checkbox" checked></label>
+        <label id="showSatelliteOrbitsRow">Show Satellite Orbits <input id="showSatelliteOrbits" type="checkbox" checked></label>
         <label>Pause <input id="pauseRot" type="checkbox"></label>
       </div>
     </div>
@@ -183,6 +190,13 @@
     <div class="info-section">
       <div class="info-section-title">Composition</div>
       <div id="infoComposition" class="comp-list"></div>
+    </div>
+
+    <div class="info-section" id="infoClimateSection">
+      <div class="info-section-title">Climate</div>
+      <div class="info-row"><span class="info-label">Mean Temp</span><span class="info-val" id="infoTempMean">—</span></div>
+      <div class="info-row" id="infoTempRangeRow"><span class="info-label">Equator / Poles</span><span class="info-val" id="infoTempRange">—</span></div>
+      <div class="temp-bar" id="infoTempBar"></div>
     </div>
 
     <div class="info-section">
