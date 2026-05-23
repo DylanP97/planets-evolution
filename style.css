@@ -1103,3 +1103,308 @@ body.surface-mode #bottomNav {
   border: 1px solid rgba(0, 242, 255, 0.18);
   border-radius: 2px;
 }
+
+/* ====== Star-map overlays (constellation / galaxy) ====== */
+#mapOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(20, 50, 80, 0.35) 0%, rgba(2, 6, 14, 0.92) 70%),
+    #02060e;
+  overflow: hidden;
+}
+body.map-mode #mapOverlay { opacity: 1; pointer-events: auto; }
+/* The left editing panel and info panel are irrelevant on the maps, but the
+   bottom transport panel stays — it drives up/down through the hierarchy. */
+body.map-mode #ui,
+body.map-mode #infoPanel { display: none; }
+/* The 3D scene hides the cursor (for the brush ring); the maps need it back. */
+#mapOverlay, #systemTransition { cursor: default; }
+.map-point { cursor: pointer; }
+/* Keep the bottom nav above the map overlay so it stays clickable. */
+body.map-mode #bottomNav { z-index: 31; }
+
+/* Drifting starfield: two layered dotted gradients panning slowly. */
+#mapStarfield {
+  position: absolute;
+  inset: -50%;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.7) 0, transparent 2px),
+    radial-gradient(1px 1px at 75% 60%, rgba(255,255,255,0.5) 0, transparent 2px),
+    radial-gradient(1.5px 1.5px at 45% 80%, rgba(160,220,255,0.6) 0, transparent 2px),
+    radial-gradient(1px 1px at 90% 15%, rgba(255,255,255,0.45) 0, transparent 2px),
+    radial-gradient(1px 1px at 10% 70%, rgba(200,230,255,0.5) 0, transparent 2px);
+  background-size: 320px 320px, 260px 260px, 400px 400px, 300px 300px, 220px 220px;
+  animation: mapDrift 90s linear infinite;
+  opacity: 0.7;
+}
+@keyframes mapDrift {
+  from { transform: translate(0, 0); }
+  to   { transform: translate(60px, 40px); }
+}
+
+#mapTopBar {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: rgba(10, 25, 40, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 242, 255, 0.35);
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(0, 242, 255, 0.18);
+  z-index: 2;
+}
+.map-info { display: flex; flex-direction: column; align-items: flex-start; }
+.map-eyebrow {
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.55);
+}
+.map-title {
+  font-size: 16px;
+  letter-spacing: 3px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 12px rgba(0, 242, 255, 0.7);
+}
+/* The field that holds the clickable points. Bottom inset clears the
+   transport panel, which now stays visible at the bottom of the map. */
+#mapField {
+  position: absolute;
+  top: 96px; bottom: 150px; left: 60px; right: 60px;
+  z-index: 1;
+}
+
+/* A single star system: a glowing dot with a label that brightens on hover. */
+.map-point {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  outline: none;                 /* no rectangular focus ring */
+  cursor: pointer;
+  font-family: inherit;
+  color: #cfe9ff;
+  padding: 6px;
+  -webkit-tap-highlight-color: transparent;
+}
+.map-point:focus,
+.map-point:focus-visible { outline: none; }
+.map-point-dot {
+  position: relative;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0%, #00f2ff 55%, rgba(0,242,255,0) 100%);
+  box-shadow: 0 0 10px rgba(0, 242, 255, 0.8), 0 0 22px rgba(0, 242, 255, 0.4);
+  transition: transform 0.18s, box-shadow 0.18s;
+  animation: pointPulse 3.2s ease-in-out infinite;
+}
+/* Hover "zone": a soft circular glow that blooms behind the dot — replaces the
+   old button-box look so hovering lights up an area rather than a rectangle. */
+.map-point-dot::after {
+  content: '';
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 70px; height: 70px;
+  transform: translate(-50%, -50%) scale(0.5);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0,242,255,0.30) 0%, rgba(0,242,255,0) 70%);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+.map-point:hover .map-point-dot::after { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.map-point.is-preset .map-point-dot::after { background: radial-gradient(circle, rgba(255,200,90,0.32) 0%, rgba(255,200,90,0) 70%); }
+.map-point.is-constellation .map-point-dot::after {
+  width: 110px; height: 110px;
+  background: radial-gradient(circle, rgba(150,110,255,0.34) 0%, rgba(150,110,255,0) 70%);
+}
+@keyframes pointPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(0,242,255,0.8), 0 0 22px rgba(0,242,255,0.35); }
+  50%      { box-shadow: 0 0 14px rgba(0,242,255,1), 0 0 34px rgba(0,242,255,0.55); }
+}
+.map-point.is-preset .map-point-dot {
+  background: radial-gradient(circle, #fff 0%, #ffd24d 55%, rgba(255,210,77,0) 100%);
+  box-shadow: 0 0 12px rgba(255,210,77,0.9), 0 0 26px rgba(255,170,0,0.5);
+}
+.map-point.is-current .map-point-dot {
+  transform: scale(1.25);
+  animation: none;
+  /* A circular ring via box-shadow (follows border-radius, unlike outline). */
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.85), 0 0 14px rgba(0,242,255,1), 0 0 30px rgba(0,242,255,0.5);
+}
+.map-point:hover .map-point-dot { transform: scale(1.4); }
+.map-point-label {
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(0,0,0,0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.85;
+  transition: opacity 0.18s;
+}
+.map-point:hover .map-point-label { opacity: 1; color: #fff; }
+.map-point-sub {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 1px;
+  color: rgba(0, 242, 255, 0.65);
+  text-transform: uppercase;
+}
+.map-point-del {
+  position: absolute;
+  top: -6px; right: -6px;
+  width: 18px; height: 18px;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 50%;
+  background: rgba(40, 8, 12, 0.9);
+  border: 1px solid rgba(255, 90, 90, 0.6);
+  color: #ff8a8a;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.map-point:hover .map-point-del { opacity: 1; }
+.map-point-del:hover { background: rgba(120, 20, 24, 0.95); color: #fff; }
+
+#mapNewBtn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 10px 22px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.2) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#mapNewBtn:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.4) 0%, rgba(0, 242, 255, 0.12) 100%);
+  box-shadow: 0 0 20px rgba(0, 242, 255, 0.5);
+}
+.map-hint {
+  position: absolute;
+  top: 86px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.45);
+  z-index: 2;
+}
+
+/* Full-screen "Entering…" fade between systems. */
+#systemTransition {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #02060e;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s ease;
+}
+body.transitioning #systemTransition { opacity: 1; pointer-events: auto; }
+#systemTransitionText {
+  font-size: 18px;
+  letter-spacing: 4px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 16px rgba(0, 242, 255, 0.8);
+}
+
+/* Galaxy-level nodes: bigger, soft-violet "nebula" clusters vs. star points. */
+.map-point.is-constellation .map-point-dot {
+  width: 22px; height: 22px;
+  background: radial-gradient(circle, #fff 0%, #b48bff 45%, rgba(120,80,255,0) 100%);
+  box-shadow: 0 0 16px rgba(150, 110, 255, 0.8), 0 0 36px rgba(110, 80, 255, 0.45);
+  animation-duration: 4.5s;
+}
+.map-point.is-constellation .map-point-sub { color: rgba(180, 139, 255, 0.7); }
+.map-point.is-constellation.is-active .map-point-dot {
+  animation: none;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.7), 0 0 16px rgba(150,110,255,0.9), 0 0 36px rgba(110,80,255,0.5);
+}
+
+/* ====== Galaxy-level backdrop ======
+   On the galaxy map the plain starfield gives way to a spinning spiral galaxy
+   seen at an angle: a perspective-tilted disk whose colour runs warm at the
+   core (white → pink → magenta) out to cool arms (purple → blue), with lighter
+   spiral streaks layered on top. .is-galaxy is toggled on #mapOverlay by the
+   map controller. (A CSS approximation of a real spiral-galaxy photo.) */
+#mapGalaxyArt {
+  position: absolute;
+  left: 50%; top: 46%;
+  width: 130vmax; height: 130vmax;
+  transform: translate(-50%, -50%) perspective(1400px) rotateX(62deg);
+  transform-style: preserve-3d;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.7s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+#mapOverlay.is-galaxy #mapGalaxyArt { opacity: 1; }
+#mapOverlay.is-galaxy #mapStarfield { opacity: 0.45; }
+/* Spinning disk: spiral-arm streaks (top) over a radial colour gradient. */
+#mapGalaxyArt::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    conic-gradient(from 0deg at 50% 50%,
+      rgba(255,255,255,0)   0deg, rgba(255,210,235,0.20)  26deg, rgba(200,160,255,0.10) 64deg, rgba(255,255,255,0) 92deg,
+      rgba(255,255,255,0)  98deg, rgba(255,210,235,0.20) 124deg, rgba(200,160,255,0.10) 162deg, rgba(255,255,255,0) 190deg,
+      rgba(255,255,255,0) 196deg, rgba(255,210,235,0.20) 222deg, rgba(200,160,255,0.10) 260deg, rgba(255,255,255,0) 288deg,
+      rgba(255,255,255,0) 294deg, rgba(255,210,235,0.20) 320deg, rgba(200,160,255,0.10) 358deg, rgba(255,255,255,0) 360deg),
+    radial-gradient(circle at 50% 50%,
+      rgba(255,250,245,0.95)  0%,
+      rgba(255,196,214,0.72)  8%,
+      rgba(232,120,190,0.55) 18%,
+      rgba(168,96,224,0.45)  32%,
+      rgba(104,96,222,0.36)  50%,
+      rgba(64,82,186,0.22)   68%,
+      rgba(36,52,130,0.08)   82%,
+      rgba(20,30,90,0)       92%);
+  filter: blur(14px);
+  animation: galaxySpin 160s linear infinite;
+}
+/* Bright, slightly elongated core bulge (static, so the centre stays lit). */
+#mapGalaxyArt::after {
+  content: '';
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 26%; height: 20%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,252,248,0.98) 0%, rgba(255,205,222,0.78) 28%, rgba(236,130,196,0.3) 60%, rgba(236,130,196,0) 78%);
+  filter: blur(7px);
+}
+@keyframes galaxySpin { to { transform: rotate(360deg); } }

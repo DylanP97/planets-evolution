@@ -84,6 +84,10 @@
     // is unchanged; ice/tundra/jungle are the new climate biomes.
     const CLIMATE_LAND_ZONES = {
       terrestrial: [
+        // Scorching worlds: above ~40°C the vegetation burns off into desert.
+        // Because the equator is the warmest band, deserts appear there first
+        // and creep poleward as the planet heats further (a Sahara-like belt).
+        { key: 'desert', label: 'Desert', color: 0xd2b48c, minTempC:  40, beach: true, relief: true },
         { key: 'jungle', label: 'Jungle', color: 0x15702a, minTempC:  22, beach: true, relief: true },
         { key: 'grass',  label: 'Grass',  color: 0x4FAE4F, minTempC:   7, beach: true, relief: true },
         { key: 'tundra', label: 'Tundra', color: 0x8f9e76, minTempC:  -8 },
@@ -97,6 +101,28 @@
     // aGlow value (zone.glow, 0..1) scales it, so the polar caps read as bright
     // crystal even where diffuse sunlight is near zero.
     const ICE_GLOW_COLOR = new THREE.Color(0xcdeeff);
+
+    // Sea state: a plain-water ocean's surface tracks temperature too, painted
+    // per-vertex by latitude exactly like the land zones above. Below freezing
+    // the open water skins over into pale sea ice (the in-between of liquid water
+    // and solid land-ice); past boiling it steams and finally evaporates, leaving
+    // a dried salt-flat seabed exposed. The poles freeze first (coldest) and the
+    // equator boils first (hottest), so a world grows ice caps on its sea or a
+    // dry equatorial basin as it cools/heats. Colored liquids (lava/acid/etc.)
+    // are NOT water, so they keep their archetype color and never react.
+    // Sea ice forms well below land ice (land turns icy below −8°C; open water
+    // holds heat longer, so the sea only freezes in genuinely cold latitudes) and
+    // its edge is broken up by noise (SEA_ICE_NOISE_C) so it reads as ragged pack
+    // ice / floes rather than a clean latitude circle (a "skullcap" over the pole).
+    const SEA_ICE_C       = -24;    // °C at/below which open water has fully frozen to sea ice
+    const SEA_THAW_C      = -14;    // above this the sea is fully liquid (well below land ice's −8°C onset)
+    const SEA_ICE_NOISE_C = 6;      // ± wobble on the freeze line so the edge breaks into floes, not a clean ring
+    const SEA_BOIL_C    =  75;      // sea begins to steam / evaporate above this
+    const SEA_VAPOR_C   = 110;      // at/above this the ocean has boiled away (seabed exposed)
+    const SEA_ICE_GLOW  = 0.4;      // self-emission for sea ice at the (sun-grazed, dark) poles
+    const SEA_ICE_COLOR   = 0xcfe6f0; // pale frosted blue — between open water and land ice
+    const SEA_STEAM_COLOR = 0xb7c4c0; // murky steam-grey as the sea boils off
+    const SEABED_COLOR    = 0xcabfa3; // cracked pale mineral of a dried-out basin
 
     const COL = {
       water:     0x3FA1DC,
@@ -330,11 +356,21 @@
         float camDist  = length(cameraPosition - vBodyCenter);
         bool  inside   = camDist < shellRad;
         vec3  camDir   = normalize(cameraPosition - vBodyCenter);
-        float camLamb  = max(0.0, dot(camDir, normalize(uSunDir)));
+        // sunElev is signed: + above local horizon, − below. Surface twilight
+        // keys off this so the sky stays atmospheric while the disc is still
+        // up, then fades to stars only after it has set.
+        float sunElev  = dot(camDir, normalize(uSunDir));
+        float camLamb  = max(0.0, sunElev);
         float dayMix   = inside ? camLamb : shellLambert;
+        // Surface sky coverage: one wide curve so day→night fades gradually
+        // (no sharp cliff). Orbit keeps the older limb-driven curve.
+        float skyCover = inside
+          ? smoothstep(-0.42, 0.12, sunElev)
+          : smoothstep(-0.22, 0.05, sunElev);
 
         vec3  col = uColor;
         float alpha;
+        float cloud = 0.0;
 
         if (uMode < 0.5) {
           // ---- Atmosphere ----
@@ -364,7 +400,7 @@
           windDir.y += uWindMode * sin(uTime * uWindSpeed * 0.6 + lat * 4.0) * 0.08;
           float n      = fbm(windDir * 3.5);
           float thresh = 0.95 - uCoverage * 0.90;
-          float cloud  = smoothstep(thresh - 0.10, thresh + 0.28, n);
+          cloud = smoothstep(thresh - 0.10, thresh + 0.28, n);
 
           // Sky color = Rayleigh tint, bleached toward the sun for forward-scatter glow.
           // During twilight (low dayMix) we warp the forward-scatter color from
@@ -372,10 +408,19 @@
           // sun direction reads as a sunset glow rather than a daytime flare.
           vec3  viewDir = normalize(-vViewDir);
           float sunDot  = max(0.0, dot(normalize(uSunDir), viewDir));
-          float twilightWeight = smoothstep(0.30, 0.0, dayMix); // peaks at terminator
-          vec3  duskTint  = vec3(1.00, 0.55, 0.20);
+          float twilightWeight = inside
+            ? smoothstep(0.34, -0.04, sunElev) * smoothstep(-0.30, 0.04, sunElev)
+            : smoothstep(0.30, 0.0, dayMix);
+          vec3  duskTint  = vec3(1.00, 0.42, 0.08);
           vec3  bleachCol = mix(vec3(1.0), duskTint, twilightWeight);
-          vec3  skyCol    = mix(uSkyTint, bleachCol, pow(sunDot, 6.0) * 0.65);
+          vec3  skyCol    = mix(uSkyTint, bleachCol, pow(sunDot, 6.0) * 0.72);
+          if (inside) {
+            float horizonness = pow(1.0 - NdotV, 0.38);
+            vec3  horizonWarm = vec3(1.00, 0.34, 0.05);
+            float twilightSky = smoothstep(0.48, -0.14, sunElev)
+                              * (1.0 - smoothstep(-0.48, -0.14, sunElev));
+            skyCol = mix(skyCol, mix(uSkyTint, horizonWarm, horizonness), twilightSky);
+          }
 
           // Day/night gating uses dayMix so the inside-the-shell case picks
           // up the camera's planetary lambert (uniform sky brightness on the
@@ -392,7 +437,9 @@
           // gas-shell planets (Venus/Jupiter/Saturn/Neptune) bled through.
           float nightFloor = clamp((uDensity - 0.5) * 2.0, 0.0, 1.0);
           float daySat     = smoothstep(0.0, 0.25, dayMix);
-          float sunFactor  = mix(nightFloor, 1.00, daySat);
+          float sunFactor  = inside
+            ? max(mix(nightFloor, 1.00, daySat), skyCover * 0.95)
+            : mix(nightFloor, 1.00, daySat);
 
           float skyAlpha;
           float cloudAlpha;
@@ -404,7 +451,8 @@
             // even when sunFactor is ~0 — that's the razor-sharp blue band
             // visible at twilight.
             float fullPath   = 1.0 / max(NdotV, 0.20);
-            float pathFactor = mix(1.0, fullPath, dayMix);
+            float pathLift   = max(camLamb, skyCover * 0.72);
+            float pathFactor = mix(1.0, fullPath, pathLift);
             skyAlpha   = clamp(uDensity * 3.0 * sunFactor * pathFactor, 0.0, 1.0);
             cloudAlpha = cloud * sunFactor;
           } else {
@@ -451,23 +499,14 @@
             float horizonness = pow(1.0 - NdotV, 0.6);
             float sunSide     = pow(max(0.0, sunDot), 1.5);
             float sunsetBand  = horizonness * sunSide * twilightWeight;
-            alpha = max(alpha, sunsetBand * 0.85);
-            col   = mix(col, duskTint, sunsetBand * 0.65);
+            alpha = max(alpha, sunsetBand * 0.90);
+            col   = mix(col, duskTint, sunsetBand * 0.88);
+            float domeAlpha = skyCover * mix(0.82, 0.48, pow(NdotV, 0.58));
+            alpha = max(alpha, domeAlpha);
+            float nightBlend = (1.0 - skyCover) * pow(NdotV, 0.32);
+            col   = mix(col, vec3(0.04, 0.05, 0.12), nightBlend * 0.62);
           }
 
-          // Sun disc + halo seen through the atmosphere. Only contributes
-          // from inside the shell (we don't want to ghost a sun spot onto
-          // every planet's day side when viewed from orbit), is gated by
-          // dayMix so it fades to black through twilight, and respects
-          // cloud cover so an overcast sky hides the sun.
-          if (inside) {
-            float sunDisc = smoothstep(0.99985, 0.99998, sunDot);
-            float sunHalo = pow(sunDot, 90.0) * 0.35;
-            vec3  sunCol  = vec3(1.00, 0.96, 0.82);
-            float sunVis  = (sunDisc + sunHalo) * (1.0 - cloud) * dayMix;
-            col  += sunCol * sunVis;
-            alpha = max(alpha, sunDisc * dayMix);
-          }
         } else {
           // ---- Full gas (gas giants) ----
           // Whirlpools first: rotate the sampling direction around each
@@ -525,9 +564,27 @@
 
         // Day/night color dimming. dayMix flips between camera- and
         // shell-driven so the surface view doesn't darken near the horizon
-        // and the orbit view keeps its terminator.
-        float light = mix(0.30, 1.10, dayMix);
+        // and the orbit view keeps its terminator. skyCover keeps the
+        // surface sky from going pitch-black while the sun is still up.
+        float light = inside
+          ? mix(0.30, 1.10, max(camLamb, skyCover * 0.82))
+          : mix(0.30, 1.10, dayMix);
         col *= light;
+
+        // Sun disc — added after sky dimming so twilight doesn't fade it early.
+        // Stays until the whole disc is below the horizon (center + radius).
+        if (inside && uMode < 0.5) {
+          vec3  viewDir2 = normalize(-vViewDir);
+          float sunDot2  = max(0.0, dot(normalize(uSunDir), viewDir2));
+          float sunDisc  = smoothstep(0.99988, 0.99998, sunDot2);
+          float SUN_DISC_R = 0.032;
+          float sunAbove = smoothstep(-SUN_DISC_R - 0.018, -SUN_DISC_R, sunElev);
+          float sunWarm    = smoothstep(0.28, 0.0, camLamb);
+          vec3  sunCol     = mix(vec3(1.00, 0.96, 0.82), vec3(1.00, 0.90, 0.68), sunWarm);
+          float sunVis     = sunDisc * (1.0 - cloud) * sunAbove;
+          col   += sunCol * sunVis;
+          alpha  = max(alpha, sunDisc * sunAbove);
+        }
 
         float a = clamp(alpha, 0.0, 1.0);
         if (uOpaqueSky > 0.5) {
@@ -1349,16 +1406,35 @@
 
       // Liquid layer (ocean) — always created so toggling an archetype that adds
       // an ocean later actually shows water instead of bare deep-color terrain.
-      const oceanMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(baseRadius, 96, 64),
-        new THREE.MeshStandardMaterial({
-          color: COL.water,
-          roughness: 0.30,
-          metalness: 0.05,
-          transparent: true,
-          opacity: 0.92,
-        })
-      );
+      // Vertex-colored (not a flat material color) so a water ocean can carry a
+      // latitude gradient: sea ice at the cold poles, steam/evaporation at the hot
+      // equator. `aGlow` keeps polar sea ice luminous (same trick as land ice);
+      // `aEvap` discards fully boiled-off fragments so the dried seabed shows.
+      const oceanGeo = new THREE.SphereGeometry(baseRadius, 96, 64);
+      const oceanVerts = oceanGeo.attributes.position.count;
+      oceanGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(oceanVerts * 3).fill(1), 3));
+      oceanGeo.setAttribute('aGlow', new THREE.BufferAttribute(new Float32Array(oceanVerts), 1));
+      oceanGeo.setAttribute('aEvap', new THREE.BufferAttribute(new Float32Array(oceanVerts), 1));
+      const oceanMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,            // real tint comes from per-vertex colors below
+        vertexColors: true,
+        roughness: 0.30,
+        metalness: 0.05,
+        transparent: true,
+        opacity: 0.92,
+      });
+      oceanMat.onBeforeCompile = (shader) => {
+        shader.uniforms.uGlowColor = { value: ICE_GLOW_COLOR };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute float aEvap;\nvarying float vGlow;\nvarying float vEvap;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;\n  vEvap = aEvap;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', '#include <common>\nuniform vec3 uGlowColor;\nvarying float vGlow;\nvarying float vEvap;')
+          .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  if (vEvap > 0.5) discard;')   // ocean boiled away here
+          .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += uGlowColor * vGlow;');
+      };
+      oceanMat.customProgramCacheKey = () => 'oceanClimate';
+      const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
       oceanMesh.receiveShadow = true;
       oceanMesh.visible = !!hasOcean;
       group.add(oceanMesh);
@@ -1538,12 +1614,22 @@
       } else if (body.kind === 'planet') {
         // Does this archetype's land vary with latitude? Only once climate is
         // known (post-bootstrap) and the world has a real equator-to-pole spread.
-        const zones = (body.climate && body.climate.spread > 0.5)
-          ? CLIMATE_LAND_ZONES[body.archetype] : null;
-        if (h < -0.4) c = new THREE.Color(p.deep);
-        else if (h < SEA_LEVEL) {
-          const t = (h + 0.4) / (SEA_LEVEL + 0.4);
-          c = new THREE.Color(p.deep).lerp(new THREE.Color(p.shore), t);
+        const zoned = body.climate && body.climate.spread > 0.5;
+        const zones = zoned ? CLIMATE_LAND_ZONES[body.archetype] : null;
+        if (h < SEA_LEVEL) {
+          // Sea floor. Normally hidden under the water sphere (deep→shore blue),
+          // but on a water world hot enough to boil its sea off, the basin dries
+          // out — the submerged terrain bakes to a pale cracked salt flat as its
+          // temperature climbs from boiling toward full evaporation.
+          if (h < -0.4) c = new THREE.Color(p.deep);
+          else {
+            const t = (h + 0.4) / (SEA_LEVEL + 0.4);
+            c = new THREE.Color(p.deep).lerp(new THREE.Color(p.shore), t);
+          }
+          if (zoned && body.oceanIsWater) {
+            const dry = smoothstep(SEA_BOIL_C, SEA_VAPOR_C, vertexTempC(body, i));
+            if (dry > 0) c.lerp(new THREE.Color(SEABED_COLOR), dry);
+          }
         } else if (zones) {
           // Latitude-zoned land: pick the biome by this vertex's temperature,
           // then layer the usual elevation cues on top (sandy shore, rocky
@@ -1722,7 +1808,7 @@
       ocean: { name: 'Ocean World', palette: { deep: 0x001a33, shore: 0x004d99, sand: 0x0066cc, grass: 0x0080ff, rock: 0x3399ff, snow: 0x66b2ff }, hasOcean: true, amp: 1.5, sea: 0.9 },
       gas_giant: { name: 'Gas Giant', palette: { deep: 0x331a00, shore: 0x663300, sand: 0x996633, grass: 0xcc9966, rock: 0xffcc99, snow: 0xffffff }, hasOcean: false, amp: 0.8, sea: 0.0 },
       ice_giant: { name: 'Ice Giant', palette: { deep: 0x003366, shore: 0x006699, sand: 0x3399ff, grass: 0x66b2ff, rock: 0x99ccff, snow: 0xffffff }, hasOcean: false, amp: 1.2, sea: 0.0 },
-      desert: { name: 'Desert Planet', palette: { deep: 0x4d3319, shore: 0x805500, sand: 0xd2b48c, grass: 0xc2a679, rock: 0x8b4513, snow: 0xd2b48c }, hasOcean: false, amp: 2.5, sea: 0.0 },
+      desert: { name: 'Martian Planet', palette: { deep: 0x4a2412, shore: 0x7d3a1f, sand: 0xcf7d4d, grass: 0xb96138, rock: 0x8a4424, snow: 0xe2b48f }, hasOcean: false, amp: 2.5, sea: 0.0 },
       lava: { name: 'Lava Planet', palette: { deep: 0x330000, shore: 0x660000, sand: 0xff3300, grass: 0xff6600, rock: 0x331a00, snow: 0x663300 }, hasOcean: true, oceanCol: 0xff4500, amp: 3.0, sea: 0.4 },
       ice_planet: { name: 'Ice Planet', palette: { deep: 0x003366, shore: 0x006699, sand: 0x99ccff, grass: 0xccf2ff, rock: 0x6699cc, snow: 0xffffff }, hasOcean: false, amp: 1.8, sea: 0.0 },
       jungle: { name: 'Jungle Planet', palette: { deep: 0x002200, shore: 0x004400, sand: 0x1a3300, grass: 0x006400, rock: 0x2d5a27, snow: 0x4d994d }, hasOcean: true, oceanCol: 0x1a3300, amp: 2.5, sea: 0.4 },
@@ -1749,7 +1835,7 @@
       ocean:       { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xcce7ff, skyTint: 0x9ad0e6, gasThickness: 1.10, gasDensity: 0.50, gasCoverage: 0.40, windSpeed: 0.04 },
       gas_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0xc89060, gasThickness: 1.00, gasDensity: 0.95, gasCoverage: 0.50, windSpeed: 0.12 },
       ice_giant:   { solid: false, liquid: false, gas: 'full',       gasCol: 0x88bbee, gasThickness: 1.00, gasDensity: 0.92, gasCoverage: 0.50, windSpeed: 0.08 },
-      desert:      { solid: true,  liquid: false, gas: false },
+      desert:      { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xe8c4a0, skyTint: 0xd2a07a, gasThickness: 1.10, gasDensity: 0.42, gasCoverage: 0.20, windSpeed: 0.04 },
       lava:        { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xff8844, skyTint: 0xc4441a, gasThickness: 1.08, gasDensity: 0.55, gasCoverage: 0.40, windSpeed: 0.10 },
       ice_planet:  { solid: true,  liquid: false, gas: 'atmosphere', gasCol: 0xccddee, skyTint: 0xb8d8ec, gasThickness: 1.05, gasDensity: 0.30, gasCoverage: 0.25, windSpeed: 0.02 },
       jungle:      { solid: true,  liquid: true,  gas: 'atmosphere', gasCol: 0xe8f5e0, skyTint: 0xb6dba0, gasThickness: 1.12, gasDensity: 0.55, gasCoverage: 0.65, windSpeed: 0.04 },
@@ -1781,8 +1867,15 @@
       body.mesh.visible = !!matterCfg.solid;
 
       if (body.oceanMesh) {
-        body.oceanMesh.material.color.setHex(oceanCol || COL.water);
+        // The tint now lives in the ocean's vertex colors (so it can carry a
+        // sea-ice / evaporation gradient); the material stays neutral white.
+        // A colored liquid (lava/acid — any archetype with an explicit oceanCol)
+        // isn't water and never freezes or boils away.
+        body.oceanBaseColor = oceanCol || COL.water;
+        body.oceanIsWater   = !oceanCol;
+        body.oceanMesh.material.color.setHex(0xffffff);
         body.oceanMesh.visible = !!matterCfg.liquid;
+        colorOceanByClimate(body);
       }
 
       if (body.gasMesh) {
@@ -1909,6 +2002,7 @@
         colorBodyVertex(body, i);
       }
       commitBodyChanges(body);
+      colorOceanByClimate(body);  // sea ice / evaporation track the fresh climate
       // Full-gas planets don't render the solid surface, but Generate World
       // should still feel like "make this body fresh" — so re-roll the band
       // composition from the same seed. Whirlpools survive (they're a separate
@@ -1923,7 +2017,68 @@
     // (planet moved, atmosphere thickened) which grows or shrinks the polar ice.
     function recolorBody(body) {
       for (let i = 0; i < body.N; i++) colorBodyVertex(body, i);
+      colorOceanByClimate(body);  // keep sea ice / dry-basin in step with the land repaint
       commitBodyChanges(body);
+    }
+
+    // Paint the ocean sphere from the body's climate. A plain-water ocean carries
+    // a latitude gradient (poles freeze to sea ice, equator boils to steam and
+    // then evaporates); colored liquids or a climate-less body just take a flat
+    // surface color. Mirrors vertexTempC's cos(lat)^1.6 falloff, but the ocean is
+    // flat at sea level so there's no elevation lapse term. Cheap and only run on
+    // climate changes / regen, so per-call THREE.Color allocation is fine.
+    function colorOceanByClimate(body) {
+      const om = body.oceanMesh;
+      if (!om || !body.matter || !body.matter.liquid) return;
+      const geo = om.geometry;
+      const pos = geo.attributes.position;
+      const colA = geo.attributes.color, glowA = geo.attributes.aGlow, evapA = geo.attributes.aEvap;
+      const n = pos.count;
+      const base = new THREE.Color(body.oceanBaseColor || COL.water);
+      const clim = body.climate;
+      const zoned = body.oceanIsWater && clim && clim.spread > 0.5;
+      if (!zoned) {
+        // Flat liquid: lava/acid seas, or any ocean before the climate is known.
+        for (let i = 0; i < n; i++) {
+          colA.setXYZ(i, base.r, base.g, base.b);
+          glowA.setX(i, 0); evapA.setX(i, 0);
+        }
+      } else {
+        const ice = new THREE.Color(SEA_ICE_COLOR);
+        const steam = new THREE.Color(SEA_STEAM_COLOR);
+        for (let i = 0; i < n; i++) {
+          const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+          const inv = 1 / Math.hypot(x, y, z);
+          const ux = x * inv, uy = y * inv, uz = z * inv;     // unit direction (uy = sin latitude)
+          const warmth = Math.pow(Math.sqrt(Math.max(0, 1 - uy * uy)), 1.6);
+          const tC = (clim.poleK + (clim.equatorK - clim.poleK) * warmth) - KELVIN_ZERO_C;
+          let glow = 0, evap = 0, c;
+          if (tC >= SEA_VAPOR_C) {            // boiled away — fragment discarded
+            c = steam; evap = 1;
+          } else if (tC >= SEA_BOIL_C) {      // steaming/evaporating: water → murky steam
+            c = base.clone().lerp(steam, smoothstep(SEA_BOIL_C, SEA_VAPOR_C, tC));
+          } else {
+            // Freeze line wobble: cheap directional noise (~[-1,1]) nudges the
+            // local freeze temperature so the ice edge breaks into floes/leads
+            // instead of tracing a clean latitude circle over the pole.
+            const wob = 0.6 * Math.sin(ux * 7 + uy * 3) * Math.cos(uz * 5 - uy * 4)
+                      + 0.3 * Math.sin(uz * 11 + ux * 6) * Math.cos(uy * 9 + ux * 2)
+                      + 0.15 * Math.sin(ux * 17 - uz * 14);
+            const tIce = tC + wob * SEA_ICE_NOISE_C;
+            if (tIce <= SEA_ICE_C) {            // fully frozen sea ice
+              c = ice; glow = SEA_ICE_GLOW;
+            } else if (tIce < SEA_THAW_C) {     // skinning over: open water → sea ice
+              const t = (SEA_THAW_C - tIce) / (SEA_THAW_C - SEA_ICE_C);
+              c = base.clone().lerp(ice, t); glow = SEA_ICE_GLOW * t;
+            } else {
+              c = base;                         // open liquid water
+            }
+          }
+          colA.setXYZ(i, c.r, c.g, c.b);
+          glowA.setX(i, glow); evapA.setX(i, evap);
+        }
+      }
+      colA.needsUpdate = true; glowA.needsUpdate = true; evapA.needsUpdate = true;
     }
 
     // Recompute a body's climate and, if it's a solid planet, repaint so its
@@ -1940,6 +2095,10 @@
     // animate loop. The first entry is also exposed as `planet` for back-compat
     // with code that was written when there was only one.
     const planets = [];
+    // The conventional "home"/default body (Earth in Sol; planets[0] elsewhere).
+    // Re-pointed by each bootstrap*System(), so it must be a reassignable `let`
+    // — when a system is torn down and rebuilt the old body is disposed.
+    let planet = null;
 
     // Per-planet spin rate (rad/s). Declared here — not next to
     // updatePlanetRotation — so registerPlanet() can reference it at init time
@@ -2190,10 +2349,12 @@
       return body;
     }
 
-    const solarBodies = SOLAR_SYSTEM_SPEC.map(spawnSolarPlanet);
-    // Earth is the conventional "home" — keep the `planet` alias pointing at
-    // it so older code that grabs the canonical first planet still works.
-    const planet = solarBodies[2];
+    // NOTE: Sol's planets are no longer spawned eagerly here. Spawning + moon
+    // seeding now live in bootstrapSolSystem() (section 34), called once at the
+    // end of init and again whenever the user returns to Sol from the galaxy
+    // map. They had to merge into one function called late, because moon/probe
+    // seeding depends on consts (moons[], probes[], cities[], climate) declared
+    // further down — see the load/unload block near the animate loop.
 
     // ====== 14. Brush ======
     let brushRadius   = 0.25; // radians of arc on the unit sphere
@@ -3149,7 +3310,9 @@
     // Camera target each frame is either the focused body's center, or — if a city
     // is selected — that city marker's world position (still parented to its body,
     // so rotation/orbit naturally carries the target along).
-    let focusedBody = planet;
+    // Starts null: planets aren't spawned yet at eval time (see bootstrapSolSystem).
+    // The init tail calls setSystemFocus() anyway, which leaves focusedBody null.
+    let focusedBody = null;
     let focusedCity = null;
     // Probes are not editable bodies, so they get their own focus slot rather
     // than riding on focusedBody (which everywhere assumes a planet/moon with a
@@ -3422,6 +3585,10 @@
       ice:       { label: 'Ice',         color: '#daf2ff' },
       tundra:    { label: 'Tundra',      color: '#8f9e76' },
       jungle:    { label: 'Jungle',      color: '#15702a' },
+      // Sea-state categories (water oceans only): a frozen-over sea and a basin
+      // the heat has boiled dry. Colors mirror SEA_ICE_COLOR / SEABED_COLOR.
+      seaice:    { label: 'Sea Ice',     color: '#cfe6f0' },
+      seabed:    { label: 'Dry Seabed',  color: '#cabfa3' },
       crater:    { label: 'Crater',      color: '#322e29' },
       dust:      { label: 'Dust',        color: '#6f6357' },
       highlight: { label: 'Highlights',  color: '#e2dccf' },
@@ -3429,7 +3596,7 @@
       regolith:  { label: 'Regolith',    color: '#c4b8a0' },
       frost:     { label: 'Frost',       color: '#d8e8f0' },
     };
-    const PLANET_COMP_ORDER = ['water', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'rock', 'snow', 'city'];
+    const PLANET_COMP_ORDER = ['water', 'seaice', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'seabed', 'rock', 'snow', 'city'];
     const MOON_COMP_ORDER   = ['crater', 'dust', 'rock', 'highlight', 'mare', 'regolith', 'frost', 'city'];
 
     // Per-archetype labels for the auto-painted height bands. Without these, a
@@ -3468,7 +3635,9 @@
       const label = labels[key] || COMP_DISPLAY[key].label;
       let color;
       if (key === 'water' && body.oceanMesh && body.oceanMesh.visible) {
-        color = '#' + body.oceanMesh.material.color.getHexString();
+        // Ocean tint now lives in vertex colors (material.color is neutral white),
+        // so use the stored base color for the swatch.
+        color = hexFromNumber(body.oceanBaseColor || COL.water);
       } else {
         const palKey = BAND_KEY_TO_PALETTE[key];
         color = body.palette && body.palette[palKey] != null
@@ -3489,8 +3658,11 @@
       // Mirror colorBodyVertex: on climate-zoned worlds the auto land band is
       // named by latitude (ice/tundra/grass/jungle) rather than elevation, so the
       // composition rollup matches what's actually painted on the surface.
-      const zones = (body.kind === 'planet' && body.climate && body.climate.spread > 0.5)
-        ? CLIMATE_LAND_ZONES[body.archetype] : null;
+      const climateZoned = body.kind === 'planet' && body.climate && body.climate.spread > 0.5;
+      const zones = climateZoned ? CLIMATE_LAND_ZONES[body.archetype] : null;
+      // Water seas report their frozen / boiled-dry state so the rollup matches
+      // what the ocean sphere shows (see colorOceanByClimate).
+      const seaWater = climateZoned && body.matter && body.matter.liquid && body.oceanIsWater;
       for (let i = 0; i < body.N; i++) {
         const h = body.heights[i];
         if (h > peak) peak = h;
@@ -3504,7 +3676,12 @@
         else if (b === BIOME.REGOLITH) key = 'regolith';
         else if (b === BIOME.FROST) key = 'frost';
         else if (body.kind === 'planet') {
-          if (h < SEA_LEVEL) key = 'water';
+          if (h < SEA_LEVEL) {
+            if (seaWater) {
+              const tC = vertexTempC(body, i);
+              key = tC >= SEA_VAPOR_C ? 'seabed' : (tC <= SEA_ICE_C ? 'seaice' : 'water');
+            } else key = 'water';
+          }
           else if (h >= ROCK_TOP) key = 'snow';
           else if (zones) {
             const z = pickLandZone(zones, vertexTempC(body, i));
@@ -4111,8 +4288,8 @@
     // Size/density change the greenhouse warming and pole-to-equator evening, so
     // repaint the ice on release. (Coverage is cloud cover only — no climate
     // effect — but recoloring on its release too is harmless and keeps it simple.)
-    atmoThickInput.onchange   = () => refreshClimateColoring(focusedBody);
-    atmoDensityInput.onchange = () => refreshClimateColoring(focusedBody);
+    atmoThickInput.onchange   = () => { refreshClimateColoring(focusedBody); updateInfoPanel(); };
+    atmoDensityInput.onchange = () => { refreshClimateColoring(focusedBody); updateInfoPanel(); };
 
     // Per-body realism toggles for the cloud layer.
     //   atmoComplexWinds → flips the shader's uWindMode, swapping uniform
@@ -4592,7 +4769,10 @@
     // orbital distance. Done on 'change' (not every drag tick) since a full
     // recolor is heavier than the live readout above.
     bodyDistInput.onchange = () => {
-      if (focusedBody?.kind === 'planet' && !focusedProbe) refreshClimateColoring(focusedBody);
+      if (focusedBody?.kind === 'planet' && !focusedProbe) {
+        refreshClimateColoring(focusedBody);
+        updateInfoPanel();  // climate shifted the biomes/sea state — re-roll the composition rollup
+      }
     };
 
     bodySpeedInput.oninput = () => {
@@ -4731,9 +4911,12 @@
     // Cascade-delete a planet: also tears down its moons, probes, cities, and
     // the visible orbit line. Refuses to delete the last remaining planet and
     // re-focuses on a neighbor if the deleted planet was focused.
-    function removePlanetBody(target) {
+    // opts.force — used by unloadStarSystem() to tear down every planet when
+    // swapping systems: skips the keep-≥1 guard and the per-planet refocus
+    // (the caller re-focuses once after the new system is built).
+    function removePlanetBody(target, opts = {}) {
       if (!target || target.kind !== 'planet') return;
-      if (planets.length <= 1) return;
+      if (!opts.force && planets.length <= 1) return;
       // Remove moons of this planet first.
       for (let i = moons.length - 1; i >= 0; i--) {
         if (moons[i].parent === target) {
@@ -4783,9 +4966,12 @@
         target.ringMesh.material.dispose();
       }
       // Bounce to system view: the focus may have been pointing at the planet
-      // itself, one of its moons, or a city on it — all destroyed above.
-      setSystemFocus();
-      renderCityList();
+      // itself, one of its moons, or a city on it — all destroyed above. Skipped
+      // during a bulk system swap (the caller re-focuses once at the end).
+      if (!opts.force) {
+        setSystemFocus();
+        renderCityList();
+      }
     }
 
     deployPlanetBtn.onclick = () => {
@@ -5035,16 +5221,26 @@
     }
 
     function navUp() {
+      // On the star maps, ▲ climbs the cosmic hierarchy.
+      if (viewLevel === 'constellation') { openGalaxyMap(); return; }
+      if (viewLevel === 'galaxy') return;                 // already at the top
+      // --- system level (the 3D scene) ---
       if (focusedProbe) { setFocus(focusedProbe.parent); return; }
       if (focusedCity) { setFocus(focusedBody); return; }
       if (focusedBody?.kind === 'moon') {
         const m = moons.find(mn => mn.body === focusedBody);
         if (m?.parent) { setFocus(m.parent); return; }
       }
-      setSystemFocus();
+      // Planet → system view; already at system → up into the constellation map.
+      if (focusedBody) { setSystemFocus(); return; }
+      openConstellationMap();
     }
 
     function navDown() {
+      // On the star maps, ▼ descends: galaxy → home constellation, constellation
+      // → into the loaded 3D system.
+      if (viewLevel === 'galaxy') { openConstellationMap(); return; }
+      if (viewLevel === 'constellation') { closeMap(); return; }
       if (focusedCity || focusedProbe) return; // leaf nodes — nothing below
       if (!focusedBody) {
         if (planets.length) setFocus(planets[0].body);
@@ -5106,8 +5302,44 @@
     function renderNavBodies() {
       if (!navLevelEl) return;
 
-      // Breadcrumb mirrors the (renameable) system name.
-      if (navBreadcrumbEl) navBreadcrumbEl.textContent = `Milky Way · ${systemName}`;
+      // Breadcrumb reflects the level being browsed. currentConstellation()
+      // reads the live catalog (section 34), defined by the time this runs.
+      if (navBreadcrumbEl) {
+        if (viewLevel === 'galaxy') {
+          navBreadcrumbEl.textContent = 'Milky Way Galaxy';
+        } else if (viewLevel === 'constellation') {
+          const con = findConstellation(viewedConstellationId) || currentConstellation();
+          navBreadcrumbEl.textContent = `Milky Way · ${con.name}`;
+        } else {
+          navBreadcrumbEl.textContent = `Milky Way · ${currentConstellation().name} · ${systemName}`;
+        }
+      }
+
+      // On the star maps the focus card shows the cosmic level rather than a
+      // body: rename and sibling cycling don't apply, and Visit is off. ▲/▼ are
+      // wired to climb/descend levels (see navUp/navDown).
+      if (viewLevel !== 'system') {
+        navNameEl.contentEditable = 'false';
+        if (viewLevel === 'galaxy') {
+          navLevelEl.textContent = 'Galaxy';
+          setNavNameText(galaxy.name.toUpperCase());
+          navSubEl.textContent = `${galaxy.constellations.length} constellations`;
+          navUpBtn.disabled = true;          // top of the hierarchy
+          navDownBtn.disabled = false;
+        } else {
+          const con = findConstellation(viewedConstellationId) || currentConstellation();
+          const n = con.starSystems.length;
+          navLevelEl.textContent = 'Constellation';
+          setNavNameText(con.name.toUpperCase());
+          navSubEl.textContent = `${n} system${n === 1 ? '' : 's'}`;
+          navUpBtn.disabled = false;
+          navDownBtn.disabled = false;
+        }
+        navLeftBtn.disabled = navRightBtn.disabled = true;
+        if (typeof updateVisitButtonState === 'function') updateVisitButtonState();
+        return;
+      }
+      navNameEl.contentEditable = 'true';
 
       // Focus card content
       if (focusedProbe) {
@@ -5136,8 +5368,9 @@
         navSubEl.textContent = `${planets.length} planets · ${moons.length} satellites`;
       }
 
-      // Arrow availability
-      navUpBtn.disabled = !focusedBody && !focusedCity && !focusedProbe;
+      // Arrow availability. ▲ is always live now: from a body it zooms out a
+      // level, and from the system it opens the constellation map.
+      navUpBtn.disabled = false;
 
       if (focusedCity || focusedProbe) navDownBtn.disabled = true;
       else if (focusedBody?.kind === 'planet') {
@@ -5211,6 +5444,8 @@
       // an opaque occluder so other bodies don't bleed through the sky.
       gasMeshAdjusted: null,               // the gasMesh whose material we touched
       savedGas: null,                      // snapshot of material state to restore on exit
+      savedSunVisible: null,               // sunMesh + corona visibility before surface visit
+      paintsSunDisc: false,                // true if the body's atmosphere shader draws its own sun disc
     };
 
     function isBodyVisitable(body) {
@@ -5309,6 +5544,18 @@
       surfaceState.savedCamPos.copy(camera.position);
       surfaceState.savedTarget.copy(controls.target);
 
+      // A body with a visible atmosphere shell paints its own warm sun disc in
+      // the gas shader (uMode 0), so we hide the system-scale Sun mesh to avoid
+      // a double sun. An airless body (Mercury, the Moon, bare-rock worlds)
+      // paints nothing — keep the real Sun mesh + corona visible so the star
+      // still hangs in its black sky. The planet body occludes it naturally
+      // once it's below the horizon, so no manual day/night gating is needed.
+      surfaceState.paintsSunDisc = !!(body.gasMesh && body.gasMesh.visible
+        && body.gasMesh.material.uniforms.uMode.value < 0.5);
+      surfaceState.savedSunVisible = { mesh: sunMesh.visible, corona: coronaMesh.visible };
+      sunMesh.visible    = !surfaceState.paintsSunDisc;
+      coronaMesh.visible = !surfaceState.paintsSunDisc;
+
       // Atmosphere from inside — flip the shell to DoubleSide so the inside
       // faces render, and if the atmosphere is dense enough to read as a
       // solid sky, promote it to the opaque queue with depthWrite on so it
@@ -5387,6 +5634,12 @@
         surfaceState.gasMeshAdjusted = null;
         surfaceState.savedGas = null;
       }
+      if (surfaceState.savedSunVisible) {
+        sunMesh.visible = surfaceState.savedSunVisible.mesh;
+        coronaMesh.visible = surfaceState.savedSunVisible.corona;
+        surfaceState.savedSunVisible = null;
+      }
+      starMat.opacity = SURFACE_STAR_OPACITY;
       surfaceState.body = null;
       controls.enabled = true;
       document.body.classList.remove('surface-mode');
@@ -5394,6 +5647,39 @@
       viewMode = 'orbit';
       clearSurfaceKeys();
       updateVisitButtonState();
+    }
+
+    // Gate starfield + keep Sun mesh hidden while on a body's surface.
+    const _surfBodyCenter = new THREE.Vector3();
+    const _surfCamDir     = new THREE.Vector3();
+    const SURFACE_STAR_OPACITY = 0.95;
+    function updateSurfaceSkyEffects() {
+      if (viewMode !== 'surface' || !surfaceState.body) {
+        starMat.opacity = SURFACE_STAR_OPACITY;
+        return;
+      }
+      // Atmosphere worlds: shader paints the sun, so keep the real mesh hidden.
+      // Airless worlds: show the real Sun (occluded by the body when it sets).
+      sunMesh.visible    = !surfaceState.paintsSunDisc;
+      coronaMesh.visible = !surfaceState.paintsSunDisc;
+      // Airless worlds have no atmosphere to scatter daylight, so the sky stays
+      // black and the stars never wash out — the Sun just hangs among them.
+      if (!surfaceState.paintsSunDisc) {
+        starMat.opacity = SURFACE_STAR_OPACITY;
+        return;
+      }
+      surfaceState.body.group.getWorldPosition(_surfBodyCenter);
+      _surfCamDir.copy(camera.position).sub(_surfBodyCenter).normalize();
+      sunMesh.getWorldPosition(_sunWorldTmp);
+      _toSunTmp.subVectors(_sunWorldTmp, _surfBodyCenter).normalize();
+      const sunElev = _surfCamDir.dot(_toSunTmp);
+      if (sunElev >= 0.06) {
+        starMat.opacity = 0;
+      } else {
+        const t = Math.min(1, Math.max(0, (0.06 - sunElev) / 0.44));
+        const eased = t * t * (3 - 2 * t);
+        starMat.opacity = eased * SURFACE_STAR_OPACITY;
+      }
     }
 
     // Per-frame: rebuild the camera transform from the body's current world
@@ -5764,52 +6050,473 @@
       }
     });
 
-    // Seed default moons from the solar system spec so Earth gets the Moon,
-    // Jupiter gets its Galilean crew, etc. Names/seeds are pinned per moon.
-    SOLAR_SYSTEM_SPEC.forEach((spec, i) => {
-      const parent = solarBodies[i];
-      (spec.moons || []).forEach(moonSpec => {
-        addMoon(parent, moonSpec.size, moonSpec.distance, {
-          name: moonSpec.name,
-          seed: moonSpec.seed,
-          inclination: moonSpec.inclination,
-          node: moonSpec.node,
-          speedSign: moonSpec.speedSign,
-          orbitPath: moonSpec.orbitPath,
-        });
-      });
-      (spec.probes || []).forEach(probeSpec => {
-        addSatellite(parent, probeSpec.size, probeSpec.distance, {
-          name: probeSpec.name,
-          seed: probeSpec.seed,
-          inclination: probeSpec.inclination,
-          node: probeSpec.node,
-          speedSign: probeSpec.speedSign,
-          orbitPath: probeSpec.orbitPath,
-          speed: probeSpec.speed,
-        });
-      });
-    });
+    // ====== 34. Star-system load / unload ======
+    // The 3D scene only ever holds one star system at a time. Switching systems
+    // (driven by the galaxy/constellation maps, added in later phases) tears the
+    // current one down and bootstraps another into the same renderer/scene — the
+    // Sun mesh and starfield are shared and never disposed. Sol is the immutable
+    // preset, rebuilt from SOLAR_SYSTEM_SPEC every time, so a reload always
+    // returns home; procedural systems live only in memory for the session.
 
-    // The world is now fully built and the climate model (section 22b) exists,
-    // so switch frost on and repaint every solid body — polar ice and altitude
-    // frost show from the first frame. Gas giants and stars skip the repaint
-    // (no visible solid surface) but still get a cached climate for the panel.
-    climateReady = true;
-    for (const b of bodies) {
-      computeClimate(b);
-      // Only planets render latitude frost; moons keep their fixed palette.
-      if (b.kind === 'planet' && b.matter && b.matter.solid) recolorBody(b);
+    // ---- Catalog ----------------------------------------------------------
+    // The galaxy → constellation → star-system tree the maps (Phase 3/4) will
+    // render. Session-only and rebuilt fresh on every load: Sol always exists
+    // in Helios Sector; the other constellations start empty and fill with
+    // user-created systems. mapX/mapY are normalized [0..1] positions for the
+    // map overlays; the empties are placed now so the galaxy map has anchors.
+    const galaxy = {
+      id: 'milky-way',
+      name: 'Milky Way Galaxy',
+      constellations: [
+        { id: 'helios-sector', name: 'Helios Sector', mapX: 0.50, mapY: 0.52, starSystems: [
+          { id: 'sol', name: 'Sol', isPreset: true, constellationId: 'helios-sector', mapX: 0.50, mapY: 0.50 },
+        ] },
+        { id: 'orion',       name: 'Orion',        mapX: 0.30, mapY: 0.34, starSystems: [] },
+        { id: 'lyra',        name: 'Lyra',         mapX: 0.70, mapY: 0.30, starSystems: [] },
+        { id: 'draco',       name: 'Draco',        mapX: 0.22, mapY: 0.66, starSystems: [] },
+        { id: 'cygnus',      name: 'Cygnus',       mapX: 0.78, mapY: 0.62, starSystems: [] },
+        { id: 'carina',      name: 'Carina',       mapX: 0.46, mapY: 0.80, starSystems: [] },
+      ],
+    };
+    // id of the system currently built into the 3D scene (set by loadStarSystem).
+    let currentSystemId = null;
+    let systemSeq = 0; // monotonic counter for unique procedural-system ids
+    // Where we are above the 3D scene. Declared here (not in 34b) because the
+    // bottom-nav render reads it during the very first boot, before 34b runs.
+    let viewLevel = 'system';            // 'system' | 'constellation' | 'galaxy'
+    // Which constellation the constellation map is showing (the galaxy map can
+    // open any constellation, independent of where the loaded system lives).
+    let viewedConstellationId = null;
+
+    function allStarSystems() {
+      return galaxy.constellations.flatMap(c => c.starSystems);
+    }
+    function findStarSystem(id) {
+      return allStarSystems().find(s => s.id === id) || null;
+    }
+    function findConstellation(id) {
+      return galaxy.constellations.find(c => c.id === id) || null;
     }
 
-    renderMoonsList();
-    renderProbesList();
-    updateBiomeTools();
-    // Default to the system-wide view so the user sees the whole replica at
-    // load — the eight planets at a glance.
-    setSystemFocus();
-    refreshActiveTool();
-    updateInfoPanel();
+    // ---- Procedural generator --------------------------------------------
+    // Build a planetSpecs array (same shape as SOLAR_SYSTEM_SPEC) for a new
+    // system: 4–9 planets on Kepler-ish widening orbits, weighted archetypes
+    // (commoner rock/desert/gas/ice over exotic), giants get rings + more moons.
+    // Star archetype is excluded — the central Sun is the shared mesh at origin.
+    function randomArchetypeKey() {
+      // Weighted bag: terrestrial-ish and giants are common; exotics are rare.
+      const weighted = [
+        'terrestrial','terrestrial','desert','desert','moon_like','moon_like',
+        'gas_giant','gas_giant','ice_giant','ice_planet','ocean','venusian',
+        'lava','jungle','swamp','toxic','metal','carbon','storm','living','rogue',
+      ];
+      return weighted[(Math.random() * weighted.length) | 0];
+    }
+    function generateStarSystemSpec(seed) {
+      const rand = (a, b) => a + Math.random() * (b - a);
+      const planetCount = 4 + ((Math.random() * 6) | 0); // 4..9
+      const specs = [];
+      let distance = rand(110, 160);
+      for (let i = 0; i < planetCount; i++) {
+        const arch = randomArchetypeKey();
+        const isGiant = arch === 'gas_giant' || arch === 'ice_giant';
+        const size = isGiant ? rand(0.45, 0.78) : rand(0.14, 0.30);
+        // Inner planets orbit faster; tie speed to distance (∝ 1/dist) like Sol.
+        const speed = (0.0175 * (120 / distance)) * rand(0.8, 1.2);
+        // Moons: giants 0–4, rocky worlds 0–2 (innermost rarely keeps any).
+        const moonMax = isGiant ? 4 : 2;
+        const moonCount = Math.max(0, Math.round(rand(-0.4, moonMax)));
+        const moons = [];
+        for (let m = 0; m < moonCount; m++) {
+          moons.push({
+            name: generateName('moon'),
+            size: rand(0.22, isGiant ? 0.45 : 0.34),
+            distance: (isGiant ? 18 : 8) + m * rand(5, 9),
+            seed: `${seed}-p${i}-m${m}`,
+          });
+        }
+        const spec = {
+          name: `Planet ${ROMAN[i] || i + 1}`,
+          archetype: arch,
+          size,
+          distance: Math.round(distance),
+          speed,
+          inclination: rand(-0.08, 0.08),
+          angle: Math.random() * Math.PI * 2,
+          seed: `${seed}-p${i}`,
+          moons,
+        };
+        if (isGiant && Math.random() < 0.45) {
+          spec.rings = { enabled: true, intensity: rand(0.5, 0.9) };
+        }
+        specs.push(spec);
+        distance += rand(90, 190);
+      }
+      return specs;
+    }
+
+    // ---- Catalog mutations (session only) --------------------------------
+    // Create a new procedural system inside a constellation, generating and
+    // caching its planetSpecs immediately so the system is reproducible for the
+    // session. Returns the new catalog entry (not yet loaded into the scene).
+    function createStarSystem(constellationId) {
+      const con = findConstellation(constellationId);
+      if (!con) return null;
+      const id = `sys-${++systemSeq}-${Math.floor(Math.random() * 1e4).toString(36)}`;
+      const seed = `${id}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+      const entry = {
+        id,
+        name: generateName('system'),
+        isPreset: false,
+        constellationId,
+        seed,
+        planetSpecs: generateStarSystemSpec(seed),
+        // Random position within the constellation's local map bounds.
+        mapX: 0.5 + (Math.random() - 0.5) * 0.7,
+        mapY: 0.5 + (Math.random() - 0.5) * 0.7,
+      };
+      con.starSystems.push(entry);
+      return entry;
+    }
+
+    // Remove a system from the catalog. Sol (preset) is undeletable. Refuses to
+    // delete the system currently in the scene — callers exit to a map / load
+    // another system first. Returns true on success.
+    function deleteStarSystem(id) {
+      const sys = findStarSystem(id);
+      if (!sys || sys.isPreset) return false;
+      if (id === currentSystemId) return false;
+      const con = findConstellation(sys.constellationId);
+      if (!con) return false;
+      const idx = con.starSystems.indexOf(sys);
+      if (idx >= 0) con.starSystems.splice(idx, 1);
+      return true;
+    }
+
+    // Load a system by catalog id (convenience wrapper over loadStarSystem).
+    function loadStarSystemById(id) {
+      const sys = findStarSystem(id);
+      if (!sys) return false;
+      loadStarSystem(sys);
+      return true;
+    }
+
+    // Build a system's bodies from a spec array (same shape as SOLAR_SYSTEM_SPEC:
+    // each entry is a planet with optional moons[]/probes[]/rings). spawnSolarPlanet
+    // is archetype-agnostic, so it serves both the preset and procedural systems.
+    // Returns the spawned planet bodies in spec order. Deliberately defined down
+    // here: moon/probe seeding needs moons[]/probes[]/cities[] and the climate
+    // model declared above. spawnSolarPlanet/addMoon/addSatellite are hoisted.
+    function buildSystemFromSpec(specArray) {
+      const spawned = specArray.map(spawnSolarPlanet);
+      specArray.forEach((spec, i) => {
+        const parent = spawned[i];
+        (spec.moons || []).forEach(moonSpec => {
+          addMoon(parent, moonSpec.size, moonSpec.distance, {
+            name: moonSpec.name,
+            seed: moonSpec.seed,
+            inclination: moonSpec.inclination,
+            node: moonSpec.node,
+            speedSign: moonSpec.speedSign,
+            orbitPath: moonSpec.orbitPath,
+          });
+        });
+        (spec.probes || []).forEach(probeSpec => {
+          addSatellite(parent, probeSpec.size, probeSpec.distance, {
+            name: probeSpec.name,
+            seed: probeSpec.seed,
+            inclination: probeSpec.inclination,
+            node: probeSpec.node,
+            speedSign: probeSpec.speedSign,
+            orbitPath: probeSpec.orbitPath,
+            speed: probeSpec.speed,
+          });
+        });
+      });
+      return spawned;
+    }
+
+    // Build Sol from the immutable preset. Earth is the home/default body.
+    function bootstrapSolSystem() {
+      systemName = 'Sol';
+      const solarBodies = buildSystemFromSpec(SOLAR_SYSTEM_SPEC);
+      planet = solarBodies[2]; // Earth — the conventional home/default body
+    }
+
+    // Tear down every body in the current system. removePlanetBody already
+    // cascade-deletes a planet's moons, probes, cities, and orbit line and
+    // disposes geometry/materials; with { force } it skips the keep-≥1 guard and
+    // the per-planet refocus. Afterwards bodies/planets/moons/probes/cities are
+    // all empty. The shared Sun, starfield, and renderer are left intact.
+    function unloadStarSystem() {
+      if (viewMode === 'surface') exitSurfaceMode();
+      else if (viewMode === 'pick') exitPickMode();
+      // Drop focus first so nothing renders against a body we're about to
+      // dispose (finalizeSystemLoad's list renders run before setSystemFocus).
+      focusedBody = null;
+      focusedCity = null;
+      focusedProbe = null;
+      // Snapshot first: removePlanetBody mutates planets[] as it runs.
+      for (const body of planets.map(p => p.body)) {
+        removePlanetBody(body, { force: true });
+      }
+      planet = null;
+    }
+
+    // Post-build step shared by every system (Sol or procedural): enable the
+    // climate model, repaint solid surfaces for frost, and settle into the
+    // system-wide view. setSystemFocus() cascades to the planet/moon/probe/nav
+    // panels. Mirrors the original end-of-init tail.
+    function finalizeSystemLoad() {
+      // The world is now fully built and the climate model (section 22b) exists,
+      // so switch frost on and repaint every solid body — polar ice and altitude
+      // frost show from the first frame. Gas giants and stars skip the repaint
+      // (no visible solid surface) but still get a cached climate for the panel.
+      climateReady = true;
+      for (const b of bodies) {
+        computeClimate(b);
+        // Only planets render latitude frost; moons keep their fixed palette.
+        if (b.kind === 'planet' && b.matter && b.matter.solid) recolorBody(b);
+      }
+      renderMoonsList();
+      renderProbesList();
+      updateBiomeTools();
+      // Default to the system-wide view so the user sees the whole system.
+      setSystemFocus();
+      refreshActiveTool();
+      updateInfoPanel();
+    }
+
+    // Build a user-created system from the planetSpecs cached on its catalog
+    // entry (generated once, at create time, so revisiting in the same session
+    // reproduces it exactly). planet (home/default) is the innermost planet.
+    function bootstrapProceduralSystem(system) {
+      systemName = system.name;
+      const spawned = buildSystemFromSpec(system.planetSpecs || []);
+      planet = spawned[0] || null;
+    }
+
+    // Swap the live system. A null system or one flagged isPreset rebuilds Sol;
+    // any other spec is generated procedurally (generator added in a later
+    // phase). Hooked up to the map overlays once those exist.
+    function loadStarSystem(system) {
+      unloadStarSystem();
+      if (!system || system.isPreset) bootstrapSolSystem();
+      else bootstrapProceduralSystem(system);
+      currentSystemId = (system && system.id) || 'sol';
+      finalizeSystemLoad();
+    }
+
+    // Initial boot: load Sol from the catalog (unload is a no-op on an empty
+    // scene) so currentSystemId is set through the same path as every later swap.
+    loadStarSystem(findStarSystem('sol'));
+
+    // Temporary console harness for Phase 2 (no map UI yet). Drive system swaps
+    // from devtools to verify the engine end-to-end, e.g.:
+    //   galaxyDebug.list()                       → every system + which is loaded
+    //   galaxyDebug.create('orion')              → make a random system in Orion
+    //   galaxyDebug.load('<id from list>')        → swap the 3D scene to it
+    //   galaxyDebug.load('sol')                  → return home
+    //   galaxyDebug.remove('<id>')               → delete a (non-current) system
+    // Removed once the map overlays drive these (Phase 3/4).
+    window.galaxyDebug = {
+      galaxy,
+      list() {
+        return allStarSystems().map(s => ({
+          id: s.id,
+          name: s.name,
+          constellation: s.constellationId,
+          planets: s.isPreset ? SOLAR_SYSTEM_SPEC.length : (s.planetSpecs || []).length,
+          current: s.id === currentSystemId,
+        }));
+      },
+      create: (constellationId = 'orion') => createStarSystem(constellationId),
+      load: (id) => loadStarSystemById(id),
+      remove: (id) => deleteStarSystem(id),
+      current: () => currentSystemId,
+    };
+
+    // ====== 34b. Star-map overlays ======
+    // The galaxy/constellation levels are 2D HTML overlays (not 3D scenes). The
+    // bottom transport panel stays visible and drives them: ▲ climbs (system →
+    // constellation → galaxy), ▼ descends. Picking a star runs an "Entering…"
+    // fade while loadStarSystem() swaps the scene underneath. viewLevel /
+    // viewedConstellationId are declared up in section 34 (the bottom-nav render
+    // needs them during the first boot, before this runs).
+    const mapOverlay          = document.getElementById('mapOverlay');
+    const mapField            = document.getElementById('mapField');
+    const mapTitleEl          = document.getElementById('mapTitle');
+    const mapEyebrowEl        = document.getElementById('mapEyebrow');
+    const mapNewBtn           = document.getElementById('mapNewBtn');
+    const mapHintEl           = document.getElementById('mapHint');
+    const systemTransitionTxt = document.getElementById('systemTransitionText');
+
+    // The constellation that holds the currently-loaded system (fallback: the
+    // first, Helios Sector — should never be needed once a system is loaded).
+    function currentConstellation() {
+      const sys = findStarSystem(currentSystemId);
+      return (sys && findConstellation(sys.constellationId)) || galaxy.constellations[0];
+    }
+
+    // Open the map overlay if it isn't already up (shared by both levels).
+    function showMapOverlay() {
+      document.body.classList.add('map-mode');
+      mapOverlay.setAttribute('aria-hidden', 'false');
+    }
+
+    // Enter the constellation map for a specific constellation. Defaults to the
+    // loaded system's home (the level you reach by pressing ▲ from System view).
+    function openConstellationMap(constellationId) {
+      viewedConstellationId = constellationId || currentConstellation().id;
+      viewLevel = 'constellation';
+      mapOverlay.classList.remove('is-galaxy');
+      showMapOverlay();
+      renderConstellationMap();
+      renderNavBodies();
+    }
+
+    // Enter the galaxy map: every constellation as a node, over the spiral art.
+    function openGalaxyMap() {
+      viewLevel = 'galaxy';
+      mapOverlay.classList.add('is-galaxy');
+      showMapOverlay();
+      renderGalaxyMap();
+      renderNavBodies();
+    }
+
+    function closeMap() {
+      viewLevel = 'system';
+      mapOverlay.classList.remove('is-galaxy');
+      document.body.classList.remove('map-mode');
+      mapOverlay.setAttribute('aria-hidden', 'true');
+      renderNavBodies();
+    }
+
+    // Adapt the chrome to the level: "+ New System" and the star hint belong to
+    // the constellation level (galaxy is the top, and systems are created inside
+    // a constellation). Up/down navigation lives on the bottom transport panel.
+    function syncMapButtons() {
+      const atConstellation = viewLevel === 'constellation';
+      if (mapNewBtn) mapNewBtn.style.display = atConstellation ? '' : 'none';
+      if (mapHintEl) {
+        mapHintEl.textContent = atConstellation
+          ? 'Click a star to travel · hover to inspect · ✕ to delete'
+          : 'Click a constellation to explore its systems';
+      }
+    }
+
+    // Galaxy map: each constellation is a violet nebula node positioned by its
+    // mapX/mapY. The node holding the loaded system is ringed (is-active). Click
+    // descends into that constellation's star map.
+    function renderGalaxyMap() {
+      syncMapButtons();
+      mapEyebrowEl.textContent = 'Galaxy';
+      mapTitleEl.textContent = galaxy.name;
+      mapField.innerHTML = '';
+      const homeConId = currentConstellation().id;
+      galaxy.constellations.forEach(con => {
+        const isActive = con.id === homeConId;
+        const n = con.starSystems.length;
+        const pt = document.createElement('button');
+        pt.type = 'button';
+        pt.className = 'map-point is-constellation' + (isActive ? ' is-active' : '');
+        pt.style.left = (con.mapX * 100) + '%';
+        pt.style.top  = (con.mapY * 100) + '%';
+        pt.title = con.name;
+        pt.innerHTML = `
+          <span class="map-point-dot"></span>
+          <span class="map-point-label">${con.name}
+            <span class="map-point-sub">${n} system${n === 1 ? '' : 's'}${isActive ? ' · here' : ''}</span>
+          </span>`;
+        pt.addEventListener('click', () => openConstellationMap(con.id));
+        mapField.appendChild(pt);
+      });
+    }
+
+    // Paint a constellation's star systems as glowing points. Sol is the gold
+    // preset point and can't be deleted; the loaded system is ringed.
+    function renderConstellationMap() {
+      syncMapButtons();
+      const con = findConstellation(viewedConstellationId) || currentConstellation();
+      mapEyebrowEl.textContent = 'Constellation';
+      mapTitleEl.textContent = con.name;
+      mapField.innerHTML = '';
+      con.starSystems.forEach(sys => {
+        const isCurrent = sys.id === currentSystemId;
+        const planetCount = sys.isPreset ? SOLAR_SYSTEM_SPEC.length : (sys.planetSpecs || []).length;
+        const pt = document.createElement('button');
+        pt.type = 'button';
+        pt.className = 'map-point'
+          + (isCurrent ? ' is-current' : '')
+          + (sys.isPreset ? ' is-preset' : '');
+        pt.style.left = (sys.mapX * 100) + '%';
+        pt.style.top  = (sys.mapY * 100) + '%';
+        pt.title = sys.name;
+        pt.innerHTML = `
+          <span class="map-point-dot"></span>
+          <span class="map-point-label">${sys.name}
+            <span class="map-point-sub">${planetCount} planets${isCurrent ? ' · here' : ''}</span>
+          </span>
+          ${sys.isPreset ? '' : '<span class="map-point-del" title="Delete system">✕</span>'}`;
+        pt.addEventListener('click', (e) => {
+          if (e.target.classList.contains('map-point-del')) {
+            e.stopPropagation();
+            if (deleteStarSystem(sys.id)) renderConstellationMap();
+            return;
+          }
+          travelToSystem(sys);
+        });
+        mapField.appendChild(pt);
+      });
+    }
+
+    // Travel to a system: no-op-but-close if it's already loaded, otherwise run
+    // the fade and swap the 3D scene mid-fade.
+    function travelToSystem(sys) {
+      if (sys.id === currentSystemId) { closeMap(); return; }
+      runSystemTransition(sys.name, () => {
+        loadStarSystem(sys);
+        closeMap();
+      });
+    }
+
+    // Full-screen "Entering …" fade: fade to black, swap at the peak, fade back.
+    let transitionBusy = false;
+    function runSystemTransition(name, doSwap) {
+      if (transitionBusy) { doSwap(); return; }
+      transitionBusy = true;
+      systemTransitionTxt.textContent = `Entering ${name}…`;
+      document.body.classList.add('transitioning');
+      setTimeout(() => {
+        doSwap();
+        setTimeout(() => {
+          document.body.classList.remove('transitioning');
+          transitionBusy = false;
+        }, 450);
+      }, 450);
+    }
+
+    if (mapNewBtn) {
+      mapNewBtn.onclick = () => {
+        // Create into whichever constellation the map is showing. On the galaxy
+        // map there's no single target, so fall back to the loaded system's home.
+        const conId = (viewLevel === 'constellation')
+          ? (viewedConstellationId || currentConstellation().id)
+          : currentConstellation().id;
+        const created = createStarSystem(conId);
+        if (!created) return;
+        if (viewLevel === 'galaxy') openConstellationMap(conId);
+        else renderConstellationMap();
+      };
+    }
+    // Up/down between levels is driven by the bottom transport panel (navUp /
+    // navDown), which stays visible on the maps. Esc is a shortcut for ▼:
+    // galaxy → home constellation, constellation → the loaded system.
+    addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (viewLevel === 'galaxy') { e.preventDefault(); openConstellationMap(); }
+      else if (viewLevel === 'constellation') { e.preventDefault(); closeMap(); }
+    });
 
     // ====== 35. Init + Resize ======
     addEventListener('resize', () => {
@@ -5879,6 +6586,7 @@
       if (viewMode === 'surface') {
         stepSurfaceWalk(dt);
         updateSurfaceCamera();
+        updateSurfaceSkyEffects();
       }
       if (isPainting && isBrushTool() && lastHitLocal && activeBrushBody) {
         applyBrushToBody(activeBrushBody, lastHitLocal, dt);

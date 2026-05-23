@@ -30,7 +30,7 @@
           <option value="ocean">Ocean World</option>
           <option value="gas_giant">Gas Giant</option>
           <option value="ice_giant">Ice Giant</option>
-          <option value="desert">Desert Planet</option>
+          <option value="desert">Martian Planet</option>
           <option value="lava">Lava Planet</option>
           <option value="ice_planet">Ice Planet</option>
           <option value="jungle">Jungle Planet</option>
@@ -259,6 +259,22 @@
     <div id="surfaceCrosshair"></div>
     <div id="surfaceHint">WASD / arrows to walk · Shift to sprint · Drag to look · Scroll to zoom</div>
   </div>
+
+  <div id="mapOverlay" aria-hidden="true">
+    <div id="mapStarfield"></div>
+    <div id="mapGalaxyArt"></div>
+    <div id="mapTopBar">
+      <div class="map-info">
+        <div class="map-eyebrow" id="mapEyebrow">Constellation</div>
+        <div class="map-title" id="mapTitle">Helios Sector</div>
+      </div>
+      <button id="mapNewBtn" type="button">+ NEW SYSTEM</button>
+    </div>
+    <div id="mapField"><!-- star-system points injected here --></div>
+    <p class="map-hint" id="mapHint">Click a star to travel · hover to inspect · ✕ to delete</p>
+  </div>
+
+  <div id="systemTransition" aria-hidden="true"><div id="systemTransitionText">Entering…</div></div>
 
   <div id="pickHint" aria-hidden="true">Click on solid land to land there · Esc to cancel</div>
   <div id="pickToast" aria-live="polite"></div>
