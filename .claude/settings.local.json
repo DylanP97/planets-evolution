@@ -36,7 +36,30 @@
       "Bash(git rm *)",
       "Bash(git -C \"C:\\\\Users\\\\dylan\\\\desktop\\\\planet tiles\" diff --stat HEAD)",
       "Read(//c/Users/dylan/desktop/planet tiles/**)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "WebSearch",
+      "PowerShell(Get-Item *)",
+      "PowerShell(node --check \"C:\\\\Users\\\\dylan\\\\Desktop\\\\planet tiles\\\\script.js\"; if \\($?\\) { \"PARSE OK\" })",
+      "WebFetch(domain:sketchfab.com)",
+      "PowerShell(Join-Path *)",
+      "PowerShell($p = \"C:\\\\Users\\\\dylan\\\\Desktop\\\\planet tiles\\\\astronaut.glb\"; $bytes = [System.IO.File]::ReadAllBytes\\($p\\); $jsonLen = [BitConverter]::ToInt32\\($bytes,12\\); $json = [System.Text.Encoding]::UTF8.GetString\\($bytes,20,$jsonLen\\); $obj = $json | ConvertFrom-Json; \"--- animations ---\"; $obj.animations | ForEach-Object { $_.name }; \"--- skins: $\\($obj.skins.Count\\) ---\")",
+      "Bash(ls package.json)",
+      "Bash(ls node_modules/.bin/playwright)",
+      "Bash(npm ls *)",
+      "Bash(npm root *)",
+      "Bash(ls \"$\\(npm root -g\\)/playwright/package.json\")",
+      "Bash(ls \"$\\(npm root -g\\)/playwright-core\")",
+      "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _shadertest.cjs)",
+      "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _harnessshot.cjs)",
+      "Bash(pip install *)",
+      "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _apptest.cjs)",
+      "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _coasttest.cjs)",
+      "Bash(sed -n '6932,6950p' script.js)",
+      "Bash(sed -n '7205,7225p' script.js)",
+      "Bash(echo \"SYNTAX OK \\(exit $?\\)\")",
+      "Bash(echo \"SYNTAX FAIL \\(exit $?\\)\")",
+      "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _watertest.cjs)",
+      "Bash(git checkout *)"
     ]
   }
 }

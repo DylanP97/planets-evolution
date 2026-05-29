@@ -165,8 +165,8 @@
 
       <div id="dynamicsSection">
         <div class="section-header" style="margin-top:10px">Dynamics</div>
-        <label>Show Orbits <input id="showOrbits" type="checkbox" checked></label>
-        <label id="showSatelliteOrbitsRow">Show Satellite Orbits <input id="showSatelliteOrbits" type="checkbox" checked></label>
+        <label>Show Orbits (O) <input id="showOrbits" type="checkbox" checked></label>
+        <label id="showSatelliteOrbitsRow">Show Satellites Orbits (O) <input id="showSatelliteOrbits" type="checkbox" checked></label>
         <label>Pause <input id="pauseRot" type="checkbox"></label>
       </div>
     </div>
@@ -176,7 +176,7 @@
         <span id="focusName">Planet</span>
         <button id="focusPlanet" class="small-btn">Reset Camera</button>
       </div>
-      <div id="legend">Right-drag: Action · Left-drag: Orbit</div>
+      <div id="legend">WASD: Move · O: Orbits · V: Camera · Space: Jump</div>
     </div>
   </div>
 
@@ -201,6 +201,7 @@
 
     <div class="info-section">
       <div class="info-section-title">Surface</div>
+      <div class="info-row"><span class="info-label">Gravity</span><span class="info-val" id="infoGravity">—</span></div>
       <div class="info-row"><span class="info-label">Peak</span><span class="info-val" id="infoPeak">—</span></div>
       <div class="info-row"><span class="info-label">Vertices</span><span class="info-val" id="infoVerts">—</span></div>
       <div class="info-row" id="infoMoonsRow"><span class="info-label">Satellites</span><span class="info-val" id="infoMoons">0</span></div>
@@ -257,7 +258,7 @@
       <button id="surfaceExitBtn" type="button" title="Return to orbital view">▲ RETURN TO ORBIT</button>
     </div>
     <div id="surfaceCrosshair"></div>
-    <div id="surfaceHint">WASD / arrows to walk · Shift to sprint · Drag to look · Scroll to zoom</div>
+    <div id="surfaceHint">WASD: Walk · Shift: Run · Space: Jump · V: Camera · O: Orbits · Drag: Look</div>
   </div>
 
   <div id="mapOverlay" aria-hidden="true">

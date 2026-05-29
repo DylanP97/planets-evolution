@@ -60,7 +60,7 @@ Each row maps a banner in `script.js` to its line range. After editing, re-grep 
 | 30  | Add / Remove planet           | 2730–3028   | `deployNewPlanet`, `removePlanetBody`, `renderPlanetList`, moons/probes list renderers.                 |
 | 31  | Hierarchy navigation          | 3029–3184   | Bottom-nav arrows: `navUp`, `navDown`, `navSibling`, `renderNavBodies`.                                 |
 | 32  | Surface walk                  | 3185–3424   | `enterPickMode` → click → `enterSurfaceMode` → `updateSurfaceCamera`. State in `surfaceState`.          |
-| 33  | Surface input                 | 3425–3539   | Drag-look, scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
+| 33  | Surface input                 | 3425–3539   | Mouse-look (Pointer Lock), scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
 | 34  | Renaming                      | 3540–3632   | `setBodyName`, `setSystemName`, `commitFocusName`. Triggers re-render fan-out.                          |
 | 35  | Init + Resize                 | 3633–3639   | Window-resize listener (and seed moons / final `setSystemFocus()` just above it).                       |
 | 36  | Animate                       | 3640–end    | The frame loop. Drives orbits, rotations, gas time, cities, lights, surface camera, render.             |
@@ -219,7 +219,7 @@ Single state variable, `viewMode`, gates everything: `'orbit' | 'pick' | 'surfac
 
 - **orbit** (default): OrbitControls drive the camera. Brush works. Click `VISIT SURFACE` button → `enterPickMode`.
 - **pick**: OrbitControls disabled. Next left-click on the focused body's mesh → `enterSurfaceMode`. Bodies fail the eligibility check if `matter.solid === false` (gas/ice giants).
-- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Drag = look, scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (clamped to sea level on ocean bodies); the eye lerps to `ground + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
+- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Mouse movement = look (Pointer Lock), scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (clamped to sea level on ocean bodies); the eye lerps to `ground + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
 
 Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the gas mesh's side (`DoubleSide` → `BackSide` again), and any `uOpaqueSky` override.
 
@@ -252,7 +252,7 @@ Anything referenced from JS by id, grouped by panel:
 | Colonies           | `cityNameInput`, `cityList`                                                                                                     |
 | Satellites         | `moonsList`, `addMoon`, `probesList`, `addProbe`                                                                                |
 | System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`      |
-| Dynamics           | `showOrbits`, `pauseRot`                                                                                                        |
+| Dynamics           | `showOrbits`, `showSatelliteOrbits`, `pauseRot`                                                                                 |
 | Info panel (right) | `infoBodyName`, `infoSubtitle`, `infoComposition`, `infoClimateSection`, `infoTempMean`, `infoTempRangeRow`, `infoTempRange`, `infoTempBar`, `infoPeak`, `infoVerts`, `infoMoons`, `infoDayPeriod`, `infoDayTime`, `infoOrbit*` |
 | Bottom nav         | `navBreadcrumb`, `navFocusLevel`, `navFocusName`, `navFocusSub`, `navUp/Down/Left/Right`, `navRandomBtn`, `navVisit`            |
 | Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`                                    |
