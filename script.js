@@ -60,6 +60,10 @@
     // water sphere, so colors there only show if the brush carves below water.
     const SAND_TOP   = 0.25;
     const GRASS_TOP  = 1.2;
+    // Surface-walk grass grows only ABOVE the full sand→grass blend, so the sandy
+    // beach/shore stays bare (no grass on sand). The non-zoned land ramp finishes
+    // at SAND_TOP+0.15, so that's where real grassland — and thus blades — begins.
+    const GRASS_FLOOR = SAND_TOP + 0.15;
     const ROCK_TOP   = 2.4;
     // Above ROCK_TOP we fade into snow over SNOW_FADE units.
     const SNOW_FADE  = 0.4;
@@ -200,6 +204,17 @@
     sun.shadow.bias        = -0.0005;
     scene.add(sun);
 
+    // Moonlight and night clarity. A very dim ambient light provides a "starry"
+    // baseline so the dark side isn't total 0,0,0 black; a DirectionalLight
+    // represents the primary moon's reflection, updated per-frame to follow
+    // the host planet's moons.
+    const ambientLight = new THREE.AmbientLight(0xd0d0ff, 0.04);
+    scene.add(ambientLight);
+
+    const moonLight = new THREE.DirectionalLight(0xd0e7ff, 0.0);
+    scene.add(moonLight);
+    scene.add(moonLight.target);
+
     const sunMesh = new THREE.Mesh(
       new THREE.SphereGeometry(SUN_RADIUS, 48, 24),
       new THREE.MeshBasicMaterial({ color: 0xfff0c0, fog: false })
@@ -237,6 +252,19 @@
     // (≈6% of radius at the values below), so the brush can't grow needle-spikes.
     const MAX_LAND_HEIGHT = 2.5;
     const MIN_LAND_HEIGHT = -2.5;
+    // On ocean worlds, below-sea-level terrain is deepened by this factor so
+    // seabeds drop into real basins (you can swim/wade down into them) instead of
+    // a gentle shelf. Land (height ≥ 0) is untouched, so coastlines don't move.
+    const OCEAN_DEPTH_BOOST = 2.2;
+
+    // Shoreline foam — RESERVED for a later step (crest foam + shoreline impact
+    // foam). bakeOceanShore still bakes the per-vertex signed seabed height into
+    // `aShore` (~0 at the coast, negative offshore) so these are ready to wire up;
+    // the ocean shader currently does NOT read them (Step 1 is waves only).
+    const FOAM_COLOR  = new THREE.Color(0xeef7ff);
+    const FOAM_LINE_W = 0.12;  // foam line half-width (height units) — bigger = thicker
+    const FOAM_SCALE  = 5.0;   // lacy break-up frequency of the foam line (world units)
+    const FOAM_ALPHA  = 0.9;   // peak opacity of the whitest foam
 
     const bodies = [];
 
@@ -1410,27 +1438,62 @@
       // latitude gradient: sea ice at the cold poles, steam/evaporation at the hot
       // equator. `aGlow` keeps polar sea ice luminous (same trick as land ice);
       // `aEvap` discards fully boiled-off fragments so the dried seabed shows.
-      const oceanGeo = new THREE.SphereGeometry(baseRadius, 96, 64);
+      const oceanGeo = new THREE.SphereGeometry(baseRadius, 160, 96);
       const oceanVerts = oceanGeo.attributes.position.count;
       oceanGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(oceanVerts * 3).fill(1), 3));
       oceanGeo.setAttribute('aGlow', new THREE.BufferAttribute(new Float32Array(oceanVerts), 1));
       oceanGeo.setAttribute('aEvap', new THREE.BufferAttribute(new Float32Array(oceanVerts), 1));
+      // Per-vertex signed seabed height for the foam line (~0 at the coast,
+      // negative offshore), baked by bakeOceanShore on regen / when stepping on.
+      oceanGeo.setAttribute('aShore', new THREE.BufferAttribute(new Float32Array(oceanVerts), 1));
       const oceanMat = new THREE.MeshStandardMaterial({
         color: 0xffffff,            // real tint comes from per-vertex colors below
         vertexColors: true,
         roughness: 0.30,
         metalness: 0.05,
         transparent: true,
-        opacity: 0.92,
+        opacity: 1.0,               // real alpha is driven per-fragment in the shader below
+        side: THREE.DoubleSide,     // walker can dive under: inner faces must render too
       });
       oceanMat.onBeforeCompile = (shader) => {
         shader.uniforms.uGlowColor = { value: ICE_GLOW_COLOR };
+        // View-angle transparency: water is nearly clear when you look straight
+        // down into it (so the seabed terrain below sea level shows through near
+        // shore) and turns opaque at grazing angles. uClearA / uOpaqueA bracket
+        // the alpha. CRUCIAL: this see-through only applies up close — a camera-
+        // distance fade (uBodyR below) forces the ocean back to fully opaque from
+        // orbit, so the planet looks exactly as it did before from space.
+        shader.uniforms.uClearA  = { value: 0.42 };
+        shader.uniforms.uOpaqueA = { value: 0.92 };
+        shader.uniforms.uBodyR   = { value: baseRadius };
+        // uSurface gates ALL water effects (waves + see-through) to surface-walk
+        // mode only. From space it's 0, so the ocean is the plain opaque sphere it
+        // always was. enterSurfaceMode flips it to 1.
+        shader.uniforms.uSurface = { value: 0 };
+        // STEP 1 — wave HEIGHT: uWaveTime advances on the gas clock (freezes on
+        // pause). Waves are real radial (up/down) vertex displacement from a sum of
+        // travelling sines (oceanWave). uWaveAmp scales the swell height; the mesh
+        // is 160×96 so only wavelengths > ~1 world unit survive (long ocean swells,
+        // not ripples). Foam is intentionally REMOVED here — added in a later step.
+        shader.uniforms.uWaveTime = { value: 0 };
+        shader.uniforms.uWaveAmp  = { value: baseRadius * 0.0016 };
+        oceanMat.userData.shader = shader;   // keep a handle so the loop can poke uWaveTime
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute float aEvap;\nvarying float vGlow;\nvarying float vEvap;')
-          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;\n  vEvap = aEvap;');
+          // oceanWave: travelling swells sampled in LOCAL position space (world
+          // units). Frequencies kept low so the wavelength clears the mesh Nyquist
+          // limit and the swell actually displaces geometry instead of aliasing.
+          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute float aEvap;\nattribute float aShore;\nvarying float vGlow;\nvarying float vEvap;\nvarying float vShore;\nvarying vec3 vLocalPos;\nvarying vec3 vWNormal;\nvarying vec3 vWPos;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nuniform float uSurface;\nfloat oceanWave(vec3 p){\n  float t = uWaveTime;\n  float h = 0.0;\n  h += sin(p.x * 1.3 + p.z * 0.7 + t * 1.1) * 0.60;\n  h += sin(p.z * 1.8 - p.x * 0.5 + t * 1.4) * 0.40;\n  h += sin((p.x + p.z) * 2.7 + t * 1.9) * 0.25;\n  return h;\n}')
+          // Perturb the shading normal from the wave slope (finite differences along
+          // two surface tangents) so the swells catch light. Keep the STABLE
+          // geometric normal (_gnrm) for the transparency calc — if the wave normal
+          // drove transparency it would shimmer and look like the coast reshaping.
+          .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n  vec3 _wp = position;\n  float _wh = oceanWave(_wp) * uSurface;\n  vec3 _gnrm = normalize(objectNormal);\n  vec3 _wup = abs(_gnrm.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n  vec3 _t1 = normalize(cross(_gnrm, _wup));\n  vec3 _t2 = cross(_gnrm, _t1);\n  float _e = 0.25;\n  float _gx = (oceanWave(_wp + _t1 * _e) * uSurface - _wh) / _e;\n  float _gy = (oceanWave(_wp + _t2 * _e) * uSurface - _wh) / _e;\n  objectNormal = normalize(_gnrm - (_t1 * _gx + _t2 * _gy) * uWaveAmp * 6.0);')
+          // Displace the vertex radially by the wave height (this is the up/down).
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;\n  vEvap = aEvap;\n  vShore = aShore;\n  vLocalPos = position;\n  transformed += normalize(position) * (_wh * uWaveAmp);\n  vec4 _owp = modelMatrix * vec4(transformed, 1.0);\n  vWPos = _owp.xyz;\n  vWNormal = normalize(mat3(modelMatrix) * _gnrm);');
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', '#include <common>\nuniform vec3 uGlowColor;\nvarying float vGlow;\nvarying float vEvap;')
+          .replace('#include <common>', '#include <common>\nuniform vec3 uGlowColor;\nuniform float uClearA;\nuniform float uOpaqueA;\nuniform float uBodyR;\nuniform float uSurface;\nvarying float vGlow;\nvarying float vEvap;\nvarying float vShore;\nvarying vec3 vLocalPos;\nvarying vec3 vWNormal;\nvarying vec3 vWPos;')
           .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  if (vEvap > 0.5) discard;')   // ocean boiled away here
+          .replace('#include <color_fragment>', '#include <color_fragment>\n  float _facing = abs(dot(normalize(vWNormal), normalize(cameraPosition - vWPos)));\n  float _clearA = mix(uOpaqueA, uClearA, _facing);\n  float _prox = uSurface * (1.0 - smoothstep(uBodyR * 0.6, uBodyR * 1.6, distance(cameraPosition, vWPos)));\n  diffuseColor.a = mix(uOpaqueA, _clearA, _prox);')
           .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += uGlowColor * vGlow;');
       };
       oceanMat.customProgramCacheKey = () => 'oceanClimate';
@@ -1991,8 +2054,12 @@
       const sorted = Float32Array.from(samples).sort();
       const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * seaCoverage)));
       const bias = sorted[idx];
+      // Deepen submerged terrain on ocean worlds (see OCEAN_DEPTH_BOOST). The
+      // zero-crossing is unchanged, so sea coverage and the coastline stay put.
+      const oceanBoost = (body.matter && body.matter.liquid) ? OCEAN_DEPTH_BOOST : 1.0;
       for (let i = 0; i < body.N; i++) {
-        const h = (samples[i] - bias) * amplitude;
+        let h = (samples[i] - bias) * amplitude;
+        if (h < 0) h *= oceanBoost;
         body.heights[i] = h < MIN_LAND_HEIGHT ? MIN_LAND_HEIGHT
                         : h > MAX_LAND_HEIGHT ? MAX_LAND_HEIGHT
                         : h;
@@ -2003,6 +2070,7 @@
       }
       commitBodyChanges(body);
       colorOceanByClimate(body);  // sea ice / evaporation track the fresh climate
+      bakeOceanShore(body);       // shoreline foam follows the fresh coastline
       // Full-gas planets don't render the solid surface, but Generate World
       // should still feel like "make this body fresh" — so re-roll the band
       // composition from the same seed. Whirlpools survive (they're a separate
@@ -2079,6 +2147,102 @@
         }
       }
       colA.needsUpdate = true; glowA.needsUpdate = true; evapA.needsUpdate = true;
+    }
+
+    // Bake the ocean's per-vertex signed seabed height (aShore: ~0 at the coast,
+    // negative offshore) whose zero contour is the coastline the foam line hugs.
+    // A planet's land mesh carries ~160k verts, so a nearest-neighbour lookup per
+    // ocean vertex is far too costly; instead average the seabed heights into a
+    // coarse equirect grid in one O(N) pass, then read it under each ocean vertex.
+    // Cheap enough to re-run on regen and when stepping onto a body.
+    function bakeOceanShore(body) {
+      const om = body.oceanMesh;
+      if (!om || !body.matter || !body.matter.liquid) return;
+      const geo = om.geometry;
+      let shoreAttr = geo.getAttribute('aShore');
+      if (!shoreAttr) {
+        shoreAttr = new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1);
+        geo.setAttribute('aShore', shoreAttr);
+      }
+      // Grid sized to land density (~4 verts per cell) so the seabed map stays
+      // filled without holes. GW = 2*GH for an equirect (lon × lat) map. We store
+      // the AVERAGE seabed height per cell so the coastline (the height ≈ 0
+      // contour) sits where land actually meets sea — that contour is what the
+      // foam line hugs.
+      const GH = Math.min(160, Math.max(8, Math.round(Math.sqrt(body.N / 8))));
+      const GW = GH * 2;
+      const sum = new Float32Array(GW * GH);
+      const cnt = new Float32Array(GW * GH);
+      const dirs = body.unitDirs, hs = body.heights, N = body.N;
+      const TAU = Math.PI * 2;
+      for (let i = 0; i < N; i++) {
+        const uy = Math.max(-1, Math.min(1, dirs[3 * i + 1]));
+        let row = ((Math.asin(uy) / Math.PI) + 0.5) * GH | 0;
+        let col = ((Math.atan2(dirs[3 * i + 2], dirs[3 * i]) / TAU) + 0.5) * GW | 0;
+        if (row < 0) row = 0; else if (row >= GH) row = GH - 1;
+        if (col < 0) col = 0; else if (col >= GW) col = GW - 1;
+        const idx = row * GW + col;
+        sum[idx] += hs[i]; cnt[idx] += 1;
+      }
+      const EMPTY = 1e9;
+      const grid = new Float32Array(GW * GH);
+      for (let k = 0; k < grid.length; k++) grid[k] = cnt[k] > 0 ? sum[k] / cnt[k] : EMPTY;
+      // Fill isolated empty cells from the average of filled neighbours (one pass,
+      // wrapping in longitude) so a sparse body doesn't get gaps in the foam line.
+      for (let r = 0; r < GH; r++) {
+        for (let c = 0; c < GW; c++) {
+          const idx = r * GW + c;
+          if (grid[idx] !== EMPTY) continue;
+          let acc = 0, num = 0;
+          for (let dr = -1; dr <= 1; dr++) {
+            const rr = r + dr; if (rr < 0 || rr >= GH) continue;
+            for (let dc = -1; dc <= 1; dc++) {
+              const v = grid[rr * GW + ((c + dc + GW) % GW)];
+              if (v !== EMPTY) { acc += v; num++; }
+            }
+          }
+          if (num > 0) grid[idx] = acc / num;
+        }
+      }
+      const pos = geo.attributes.position;
+      const out = shoreAttr.array;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        const inv = 1 / Math.hypot(x, y, z);
+        const uy = Math.max(-1, Math.min(1, y * inv));
+        let row = ((Math.asin(uy) / Math.PI) + 0.5) * GH | 0;
+        let col = ((Math.atan2(z * inv, x * inv) / TAU) + 0.5) * GW | 0;
+        if (row < 0) row = 0; else if (row >= GH) row = GH - 1;
+        if (col < 0) col = 0; else if (col >= GW) col = GW - 1;
+        let H = grid[row * GW + col];
+        if (H === EMPTY) H = MIN_LAND_HEIGHT;       // unknown cell → deep, no foam
+        out[i] = H;                                 // signed seabed height: ~0 at the coast
+      }
+      shoreAttr.needsUpdate = true;
+
+      // Also expose the seabed-height grid as an equirect texture the local water
+      // patch samples per-fragment for depth-based transparency (clear shallows →
+      // opaque deep) and shoreline crash foam. Encoded into 8-bit over [SB_MIN,
+      // SB_MAX] (decoded in the patch shader). The terrain itself is only ~0.5-unit
+      // resolution, so this coarse grid loses nothing the geometry didn't already.
+      const SB_MIN = -6, SB_SPAN = 9;
+      if (!body.seabedTex || body.seabedTex.image.width !== GW || body.seabedTex.image.height !== GH) {
+        if (body.seabedTex) body.seabedTex.dispose();
+        body.seabedTex = new THREE.DataTexture(new Uint8Array(GW * GH * 4), GW, GH, THREE.RGBAFormat);
+        body.seabedTex.wrapS = THREE.RepeatWrapping;      // longitude wraps around
+        body.seabedTex.wrapT = THREE.ClampToEdgeWrapping;
+        body.seabedTex.minFilter = THREE.LinearFilter;
+        body.seabedTex.magFilter = THREE.LinearFilter;
+      }
+      const td = body.seabedTex.image.data;
+      for (let k = 0; k < grid.length; k++) {
+        const H = grid[k] === EMPTY ? MIN_LAND_HEIGHT : grid[k];
+        let n = (H - SB_MIN) / SB_SPAN;
+        n = n < 0 ? 0 : n > 1 ? 1 : n;
+        const b = (n * 255) | 0;
+        td[4 * k] = b; td[4 * k + 1] = b; td[4 * k + 2] = b; td[4 * k + 3] = 255;
+      }
+      body.seabedTex.needsUpdate = true;
     }
 
     // Recompute a body's climate and, if it's a solid planet, repaint so its
@@ -3053,6 +3217,140 @@
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
 
+    // ====== 19a. Galactic band (procedural Milky Way) ======
+    // An inward-facing sphere recentred on the camera every frame (a skybox, so
+    // it surrounds the eye at any zoom) painted by a shader that builds the
+    // Milky Way from noise: a tilted bright band, clumpy star clouds, dark dust
+    // lanes hugging the mid-plane, fine grain, and a faintly warm galactic core.
+    // ADDITIVE over scene.background so it only *adds* light (lanes read as gaps
+    // in the glow). uBrightness is driven per-frame off the starfield's daylight
+    // fade, so the band blazes on the night side / in space and washes out
+    // behind a planet's daytime atmosphere — see the render loop.
+    const milkyMat = new THREE.ShaderMaterial({
+      uniforms: { uBrightness: { value: 1.0 } },
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      // Opaque (not `transparent`) on purpose: three.js draws transparent
+      // objects in a later pass, which let this additively paint OVER planet
+      // night sides. As an opaque draw with renderOrder -1 it lands first, and
+      // depthWrite:false lets the planets paint over it — so it stays a backdrop.
+      transparent: false,
+      depthWrite: false,
+      depthTest: false,
+      fog: false,
+      vertexShader: /* glsl */`
+        varying vec3 vDir;
+        void main() {
+          // The mesh is only translated (to the camera), never rotated, so the
+          // local vertex position doubles as a world-space view direction.
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        varying vec3 vDir;
+        uniform float uBrightness;
+
+        // --- Ashima 3D simplex noise (public domain) ---
+        vec4 permute(vec4 x){ return mod(((x*34.0)+1.0)*x, 289.0); }
+        vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+        float snoise(vec3 v){
+          const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+          const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+          vec3 i  = floor(v + dot(v, C.yyy));
+          vec3 x0 = v - i + dot(i, C.xxx);
+          vec3 g = step(x0.yzx, x0.xyz);
+          vec3 l = 1.0 - g;
+          vec3 i1 = min(g.xyz, l.zxy);
+          vec3 i2 = max(g.xyz, l.zxy);
+          vec3 x1 = x0 - i1 + C.xxx;
+          vec3 x2 = x0 - i2 + C.yyy;
+          vec3 x3 = x0 - D.yyy;
+          i = mod(i, 289.0);
+          vec4 p = permute(permute(permute(
+                     i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                   + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                   + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+          float n_ = 1.0/7.0;
+          vec3 ns = n_ * D.wyz - D.xzx;
+          vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+          vec4 x_ = floor(j * ns.z);
+          vec4 y_ = floor(j - 7.0 * x_);
+          vec4 x = x_ * ns.x + ns.yyyy;
+          vec4 y = y_ * ns.x + ns.yyyy;
+          vec4 h = 1.0 - abs(x) - abs(y);
+          vec4 b0 = vec4(x.xy, y.xy);
+          vec4 b1 = vec4(x.zw, y.zw);
+          vec4 s0 = floor(b0)*2.0 + 1.0;
+          vec4 s1 = floor(b1)*2.0 + 1.0;
+          vec4 sh = -step(h, vec4(0.0));
+          vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+          vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+          vec3 p0 = vec3(a0.xy, h.x);
+          vec3 p1 = vec3(a0.zw, h.y);
+          vec3 p2 = vec3(a1.xy, h.z);
+          vec3 p3 = vec3(a1.zw, h.w);
+          vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+          p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+          vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+          m = m * m;
+          return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+        }
+        float fbm(vec3 p){
+          float s = 0.0, a = 0.5;
+          for (int i = 0; i < 5; i++){ s += a * snoise(p); p *= 2.0; a *= 0.5; }
+          return s; // ~[-1, 1]
+        }
+
+        void main(){
+          vec3 dir = normalize(vDir);
+
+          // Galactic plane: a tilted normal so the band crosses the sky diagonally.
+          vec3 N = normalize(vec3(0.32, 0.90, -0.28));
+          float d = dot(dir, N);                       // signed distance from plane
+
+          // Core band: a soft Gaussian stripe about the mid-plane.
+          float band = exp(-(d*d) / (2.0 * 0.16 * 0.16));
+
+          // Large-scale clumping so the band has structure, not a flat smear.
+          float clump = 0.55 + 0.55 * fbm(dir * 2.2);
+          band *= clamp(clump, 0.0, 1.3);
+
+          // Bright star-cloud knots, concentrated tight to the mid-plane.
+          float knots = fbm(dir * 4.5 + 7.3);
+          band += smoothstep(0.45, 0.95, knots) * exp(-(d*d) / (2.0 * 0.10 * 0.10)) * 0.6;
+
+          // Dust lanes: dark filaments carved out of the densest part of the band.
+          float dust     = fbm(dir * 3.0 + 19.0);
+          float laneMask = smoothstep(0.10, 0.45, dust);
+          float nearMid  = exp(-(d*d) / (2.0 * 0.09 * 0.09));
+          band *= 1.0 - 0.75 * laneMask * nearMid;
+
+          // Fine grain so the glow has texture at small scales.
+          band *= 0.85 + 0.25 * fbm(dir * 22.0);
+          band  = max(band, 0.0);
+
+          // Galactic centre: a faintly warmer, brighter region toward one heading.
+          vec3  C        = normalize(vec3(0.85, 0.10, 0.52));
+          float toCenter = smoothstep(0.55, 1.0, dot(dir, C));
+
+          // Subtle, low-saturation palette (blue-white edges → faint warm core).
+          vec3 coolCol = vec3(0.62, 0.70, 0.92);
+          vec3 warmCol = vec3(0.95, 0.86, 0.70);
+          vec3 col     = mix(coolCol, warmCol, toCenter * 0.8);
+
+          float intensity = 0.34;          // overall restraint — keep it understated
+          vec3 outc = col * band * intensity * (1.0 + 0.8 * toCenter) * uBrightness;
+          gl_FragColor = vec4(outc, 1.0);  // additive: only adds light to the sky
+        }
+      `,
+    });
+    const milkyway = new THREE.Mesh(new THREE.SphereGeometry(100, 64, 32), milkyMat);
+    milkyway.renderOrder = -1;       // paint first, behind stars / planets / sun
+    milkyway.frustumCulled = false;  // always recentred on the camera each frame
+    scene.add(milkyway);
+
     // ====== 19b. Eruptions (lava bursts off bodies) ======
     // A burst of glowing molten DROPLETS ejected from a surface point: each
     // particle launches outward along the local normal (with a spread cone),
@@ -3304,6 +3602,65 @@
           }
         }
       }
+    }
+
+    function updateMoonLight() {
+      // Moonlight is only calculated for the current "focus" context: either the
+      // planet we're walking on, or the body (planet/moon) the camera is focused on.
+      const targetBody = (viewMode === 'surface' ? surfaceState.body : (focusedProbe ? null : focusedBody));
+      if (!targetBody) {
+        moonLight.intensity = 0;
+        return;
+      }
+
+      let primarySat = null;
+      let maxImpact = 0;
+
+      if (targetBody.kind === 'planet') {
+        // Find the moon with the most "impact" (apparent size) on this planet.
+        for (const m of moons) {
+          if (m.parent === targetBody) {
+            const size = m.body.baseRadius * m.body.group.scale.x;
+            // impact is proportional to solid angle (size^2 / distance^2)
+            const impact = (size * size) / (m.distance * m.distance);
+            if (impact > maxImpact) {
+              maxImpact = impact;
+              primarySat = m.body;
+            }
+          }
+        }
+      } else if (targetBody.kind === 'moon') {
+        // If we're on a moon, the host planet is our "primary" light source (planetlight).
+        const m = moons.find(mn => mn.body === targetBody);
+        if (m && m.parent) {
+          primarySat = m.parent;
+          maxImpact = 1.0; // host planet is always the dominant night light
+        }
+      }
+
+      if (!primarySat) {
+        moonLight.intensity = 0;
+        return;
+      }
+
+      // Direction from target to satellite.
+      primarySat.group.getWorldPosition(_sunWorldTmp);
+      targetBody.group.getWorldPosition(_bodyPosTmp);
+      _toSunTmp.subVectors(_sunWorldTmp, _bodyPosTmp);
+      
+      if (_toSunTmp.lengthSq() < 1e-8) {
+        moonLight.intensity = 0;
+        return;
+      }
+      _toSunTmp.normalize();
+      
+      // DirectionalLight: position is the direction vector relative to the target.
+      // We set target at the body center, and position at (body center + direction).
+      moonLight.target.position.copy(_bodyPosTmp);
+      moonLight.position.copy(_bodyPosTmp).add(_toSunTmp);
+      
+      // Subtle cool blue moonlight.
+      moonLight.intensity = 0.18;
     }
 
     // ====== 22. Focus ======
@@ -3566,6 +3923,31 @@
       return `rgb(${s[0][1].join(',')})`;
     }
 
+    // ====== 22c. Surface gravity model ======
+    // A toy gravity model in the same not-to-scale spirit as the climate model.
+    // Surface gravity scales as g = (4/3)·πG·ρ·R — i.e. density × radius. We
+    // don't track mass, so we read the body's *rendered* radius and pair it with
+    // a per-archetype relative density, then anchor a reference Earth-size
+    // terrestrial world at 1 g. The radius term is softened (^0.6) so small
+    // moons stay playfully floaty without collapsing to near-zero, and giants
+    // don't blow far past a few g. Drives both the telemetry readout and the
+    // surface-walk feel (jump arc height + walk pace).
+    const GRAVITY_REF_RADIUS = BASE_RADIUS * 0.27;  // Earth's rendered radius (spec size 0.27)
+    const ARCHETYPE_DENSITY = {
+      terrestrial: 1.00, ocean: 0.95, desert: 0.95, lava: 1.10, ice_planet: 0.55,
+      ice_giant: 0.30, gas_giant: 0.22, jungle: 0.95, swamp: 0.90, toxic: 1.00,
+      venusian: 0.95, metal: 2.00, carbon: 1.30, moon_like: 0.85, storm: 0.55,
+      living: 0.90, rogue: 0.90,
+    };
+    // Relative surface gravity (Earth = 1 g) for any planet or moon.
+    function surfaceGravityG(body) {
+      const arch = body.archetype || (body.kind === 'moon' ? 'moon_like' : 'terrestrial');
+      const density = ARCHETYPE_DENSITY[arch] ?? 1.0;
+      const worldRadius = body.baseRadius * (body.group ? body.group.scale.x : 1);
+      const g = density * Math.pow(worldRadius / GRAVITY_REF_RADIUS, 0.6);
+      return Math.max(0.05, Math.min(3.5, g));
+    }
+
     // ====== 23. Info panel ======
     let planetCurrentSeed = 'planet';
 
@@ -3729,6 +4111,7 @@
       tempRangeRow: document.getElementById('infoTempRangeRow'),
       tempRange:    document.getElementById('infoTempRange'),
       tempBar:      document.getElementById('infoTempBar'),
+      gravity:      document.getElementById('infoGravity'),
       peak:         document.getElementById('infoPeak'),
       verts:        document.getElementById('infoVerts'),
       moonsRow:     document.getElementById('infoMoonsRow'),
@@ -3803,6 +4186,7 @@
           `<div class="info-row"><span>Artificial satellite</span></div>` +
           `<div class="info-row"><span>Orbiting</span><span>${focusedProbe.parent?.name || '—'}</span></div>` +
           `<div class="info-row"><span>Orbit dist</span><span>${focusedProbe.distance.toFixed(1)} u</span></div>`;
+        if (infoEls.gravity) infoEls.gravity.textContent = '—';
         infoEls.peak.textContent = '—';
         infoEls.verts.textContent = '—';
         infoEls.moonsRow.style.display = 'none';
@@ -3816,6 +4200,7 @@
         infoEls.name.textContent = `${systemName} System`;
         infoEls.subtitle.textContent = `${planets.length} planet${planets.length === 1 ? '' : 's'} · ${moons.length} satellite${moons.length === 1 ? '' : 's'}`;
         infoEls.composition.innerHTML = '<div class="info-row"><span>System overview</span></div>';
+        if (infoEls.gravity) infoEls.gravity.textContent = '—';
         infoEls.peak.textContent = '—';
         infoEls.verts.textContent = '—';
         infoEls.moonsRow.style.display = '';
@@ -3894,6 +4279,18 @@
         const pctOfRadius = stats.peak * BODY_HEIGHT_SCALE * 100;
         infoEls.peak.textContent = `${worldPeak.toFixed(2)} u (${pctOfRadius.toFixed(1)}%)`;
         infoEls.verts.textContent = stats.N.toLocaleString();
+      }
+
+      // Surface gravity — meaningful for any planet or moon (stars handled by
+      // the probe/plasma readouts elsewhere). Suffix a quick qualitative read.
+      if (infoEls.gravity) {
+        if (isPlasma) {
+          infoEls.gravity.textContent = '—';
+        } else {
+          const g = surfaceGravityG(body);
+          const note = g < 0.5 ? 'low' : (g <= 1.2 ? 'Earth-like' : 'high');
+          infoEls.gravity.textContent = `${g.toFixed(2)} g (${note})`;
+        }
       }
 
       renderClimateSection(body);
@@ -4570,9 +4967,6 @@
       bodyOrbitSectionEl.classList.toggle('is-hidden-section', !(isPlanet || isMoon || isProbe));
       if (satelliteOrbitPlaneSection) {
         satelliteOrbitPlaneSection.style.display = (isMoon || isProbe) ? '' : 'none';
-      }
-      if (showSatelliteOrbitsRow) {
-        showSatelliteOrbitsRow.style.display = (isPlanet || isMoon || isProbe) ? '' : 'none';
       }
 
       if (isSystem) {
@@ -5427,12 +5821,37 @@
       localUp:  new THREE.Vector3(0, 1, 0),// surface normal in body-local
       localFwd: new THREE.Vector3(0, 0, 1),// initial forward, tangent to surface
       localRight: new THREE.Vector3(1, 0, 0),
+      faceLocal: new THREE.Vector3(0, 0, 1),// direction the avatar faces (movement dir while moving, look heading at idle)
       yaw: 0,
       pitch: 0,
       fov: 60,
-      eyeHeight: 0.04,                     // body-local units above surface
+      eyeHeight: 0.04,                     // body-local units above surface (eye/head height)
       groundRadius: 0,                     // body-local radius of the standing surface
       moveSpeed: 0,                        // body-local units per second when walking
+      // Camera rig: 'third' trails the astronaut, 'first' sits at the eye.
+      cameraMode: 'third',
+      camDist: 0,                          // third-person trail distance (body-local units)
+      charWorldH: 0,                       // avatar's actual rendered world height (camera framing unit)
+      // Jump physics, all in body-local radial units along localUp.
+      jumpOffset: 0,                       // current height above the ground sphere
+      vertVel: 0,                          // vertical velocity (units/sec)
+      grounded: true,
+      jumpSpeed: 0,                        // launch velocity, sized per body
+      gravity: 0,                          // pulls the jump back down, sized per body × surface gravity
+      gravityG: 1,                         // body's surface gravity (Earth = 1 g), shown in telemetry
+      locoScale: 1,                        // gravity-driven locomotion rate (slows walk + animation in low-g)
+      // Astronaut animation state machine: 'idle' | 'walk' | 'run' | 'jump'.
+      animName: 'idle',
+      stridePhase: 0,                      // drives procedural bob/sway for unrigged models
+      // Grass treadmill: how far (in body-local tangent units) the walker has
+      // drifted from the patch origin along localRight / localFwd. The grass
+      // field wraps blades modulo the patch size against these so the lawn reads
+      // as ground-fixed while staying centered on the avatar. Reset on entry.
+      grassU: 0,
+      grassV: 0,
+      // True while the global ocean sphere is hidden for a water-world surface
+      // visit (the local water patch takes over). Restored on exit.
+      oceanHidden: false,
       // Saved orbit state, restored on exit.
       savedFov: 45,
       savedNear: 0.1,
@@ -5513,6 +5932,160 @@
       outFwd.copy(outUp).cross(outRight).normalize();
     }
 
+    // ── Astronaut character ────────────────────────────────────────────────
+    // A GLB drives the surface avatar. It loads once and is re-parented to the
+    // scene for each visit (only one surface session is ever active). The model
+    // is astronaut.glb. If it carries animation clips matching ASTRO_CLIPS we
+    // play them through an AnimationMixer; if it's an UNRIGGED static mesh (no
+    // skeleton / no clips — like the current astronaut), we fall back to
+    // procedural bob + lean so it still reads as moving. To get true limb
+    // animation, supply a rigged+animated GLB whose clips match ASTRO_CLIPS.
+    const ASTRO_MODEL_URL = 'astronaut.glb';
+    const ASTRO_CLIPS = { idle: 'Idle', walk: 'Walking', run: 'Running', jump: 'Jump' };
+    // The model's local forward axis. Flip sign if the avatar faces the camera
+    // instead of showing its back. Soldier.glb faces -Z, so we use -1.
+    const ASTRO_FACING = -1;
+    const ASTRO_TURN_RATE = 10;            // how fast the avatar swivels to face its heading
+    const ASTRO_FADE = 0.18;               // animation crossfade seconds
+    const ASTRO_HEIGHT_FACTOR = 0.9;       // avatar height as a fraction of eye height (tune the visual size)
+
+    let astronaut = null;                  // { root, inner, mixer, actions, animated, footOffset, nativeHeight }
+    let astronautLoading = null;
+
+    function loadAstronaut() {
+      if (astronaut) return Promise.resolve(astronaut);
+      if (astronautLoading) return astronautLoading;
+      const loader = new GLTFLoader();
+      astronautLoading = new Promise((resolve, reject) => {
+        loader.load(ASTRO_MODEL_URL, (gltf) => {
+          const inner = gltf.scene;
+          // Re-seat so the model's feet sit at the pivot origin and it's centred
+          // on X/Z. These offsets are in native model units; the pivot's scale
+          // (set per visit) shrinks the whole thing to human size on the body.
+          // updateMatrixWorld FIRST so the bbox includes the rig's nested node
+          // scales — otherwise the measured height is wrong and scaling breaks.
+          inner.updateMatrixWorld(true);
+          const bbox = new THREE.Box3().setFromObject(inner);
+          const size = bbox.getSize(new THREE.Vector3());
+          const center = bbox.getCenter(new THREE.Vector3());
+          const footOffset = new THREE.Vector3(-center.x, -bbox.min.y, -center.z);
+          inner.position.copy(footOffset);
+          inner.traverse((o) => {
+            if (!o.isMesh) return;
+            o.castShadow = true;
+            o.frustumCulled = false;       // tiny on-screen; culling math gets twitchy at this scale
+            // A dim self-glow so the avatar stays readable on the night side,
+            // where the Sun PointLight doesn't reach.
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach((m) => {
+              // Dim neutral fill so the avatar stays faintly visible on the night
+              // side without washing out under daylight.
+              if (m && m.emissive) { m.emissive.setHex(0x222428); m.emissiveIntensity = 1.0; }
+            });
+          });
+          const pivot = new THREE.Group();
+          pivot.add(inner);
+          // Build a mixer only if the model actually ships clips. We fuzzy-match
+          // clip names (case-insensitive substring) so most rigged models from
+          // Mixamo/Sketchfab/etc. "just work" without manual renaming. Exact
+          // ASTRO_CLIPS names are tried first as a hint.
+          const actions = {};
+          let mixer = null;
+          if (gltf.animations && gltf.animations.length) {
+            mixer = new THREE.AnimationMixer(inner);
+            const anims = gltf.animations;
+            const pick = (...keys) => {
+              for (const want of keys) {
+                const w = want.toLowerCase();
+                const c = anims.find(a => a.name && a.name.toLowerCase().includes(w));
+                if (c) return c;
+              }
+              return null;
+            };
+            const clips = {
+              idle: pick(ASTRO_CLIPS.idle, 'idle', 'breath', 'stand', 'rest') || anims[0],
+              walk: pick(ASTRO_CLIPS.walk, 'walk'),
+              run:  pick(ASTRO_CLIPS.run, 'run', 'sprint', 'jog'),
+              jump: pick(ASTRO_CLIPS.jump, 'jump', 'leap'),
+            };
+            for (const key in clips) {
+              if (clips[key]) actions[key] = mixer.clipAction(clips[key]);
+            }
+          }
+          // "Animated" = we have at least a stand or walk clip to drive.
+          const animated = !!(actions.idle || actions.walk);
+          astronaut = { root: pivot, inner, mixer, actions, animated, current: null, footOffset, nativeHeight: size.y || 1 };
+          if (animated) {
+            console.info('[surface] astronaut clips:', Object.keys(actions).join(', '));
+          } else {
+            console.info('[surface] astronaut.glb has no usable clips — using procedural motion');
+          }
+          resolve(astronaut);
+        }, undefined, (err) => {
+          console.error('[surface] failed to load astronaut model', ASTRO_MODEL_URL, err);
+          reject(err);
+        });
+      });
+      return astronautLoading;
+    }
+
+    // Resolve a desired state to whatever clip the model actually has, with
+    // graceful fallbacks (run→walk→idle, jump→idle) so partial clip sets work.
+    function resolveAstronautAction(name) {
+      const A = astronaut.actions;
+      if (name === 'run')  return A.run  || A.walk || A.idle || null;
+      if (name === 'walk') return A.walk || A.idle || null;
+      if (name === 'jump') return A.jump || A.idle || null;
+      return A.idle || A.walk || null;
+    }
+
+    // Crossfade to the clip for a state (clip-driven models only). For static
+    // models we just record the state name so updateAstronaut fakes it.
+    function setAstronautAction(name) {
+      if (!astronaut) return;
+      surfaceState.animName = name;
+      if (!astronaut.animated) return;
+      const next = resolveAstronautAction(name);
+      if (!next || next === astronaut.current) return;
+
+      next.reset();
+      next.enabled = true;
+      next.setEffectiveWeight(1);
+      next.setEffectiveTimeScale(1.0);
+      next.play();
+      if (astronaut.current) astronaut.current.crossFadeTo(next, ASTRO_FADE, false);
+      astronaut.current = next;
+    }
+
+    // Mount the (already loaded) avatar into the scene for a fresh visit.
+    function attachAstronaut() {
+      if (!astronaut) return;
+      const body = surfaceState.body;
+      if (!body) return;
+      const worldScale = body.group.scale.x || 1;
+      // Target world height = a fraction of eye height, scaled into world units.
+      const targetH = surfaceState.eyeHeight * ASTRO_HEIGHT_FACTOR * worldScale;
+      const s = targetH / astronaut.nativeHeight;
+      astronaut.root.scale.setScalar(s);
+      // Remember the avatar's real rendered height so the camera can frame it in
+      // units of "character heights" instead of guessing from eye height.
+      surfaceState.charWorldH = targetH;
+      astronaut.root.visible = surfaceState.cameraMode === 'third';
+      if (!astronaut.root.parent) scene.add(astronaut.root);
+      surfaceState.animName = 'idle';
+      surfaceState.stridePhase = 0;
+      if (astronaut.animated) {
+        // Reset to a clean idle so a previous visit's pose doesn't carry over.
+        for (const k in astronaut.actions) astronaut.actions[k].stop();
+        astronaut.current = null;
+        setAstronautAction('idle');
+      } else {
+        // Static model: clear any leftover procedural pose.
+        astronaut.inner.position.copy(astronaut.footOffset);
+        astronaut.inner.rotation.set(0, 0, 0);
+      }
+    }
+
     function enterSurfaceMode(body, hitPoint) {
       // hitPoint comes in as a world-space Vector3 from the raycast result.
       const localHit = body.mesh.worldToLocal(hitPoint.clone());
@@ -5521,21 +6094,80 @@
       // vertices form the visible "ground", and we want the camera to ride
       // their height field, not float over the click coordinate.
       surfaceState.body = body;
-      surfaceState.eyeHeight = Math.max(0.012, body.baseRadius * 0.003);
+      // On a WATER world the local water patch (attachWaterPatch below) becomes the
+      // only water up close — it reaches past the horizon, so the coarse global
+      // ocean sphere is hidden while we walk to avoid a second, separately-shaded
+      // water layer fighting it. Non-water liquids (lava/acid) have no patch, so
+      // their sphere stays visible. Restored on exit. uSurface stays 0 (the sphere
+      // is never put into surface see-through/wave mode now that the patch exists).
+      surfaceState.oceanHidden = false;
+      if (body.oceanMesh && body.matter && body.matter.liquid && body.oceanIsWater) {
+        body.oceanMesh.visible = false;
+        surfaceState.oceanHidden = true;
+      }
+      // Shrink the character scale on planets so the world feels larger and
+      // traversal takes longer without needing slow-motion animations.
+      const sizeMult = (body.kind === 'planet') ? 0.4 : 1.0;
+      surfaceState.eyeHeight = Math.max(0.012, body.baseRadius * 0.003 * sizeMult);
       buildLocalFrame(localHit, surfaceState.localUp, surfaceState.localFwd, surfaceState.localRight);
+      surfaceState.faceLocal.copy(surfaceState.localFwd);
       // Place the eye at (vertex height + eyeHeight) along the surface normal.
       // The picked point's local radius is the initial ground level; while
       // walking, stepSurfaceWalk resamples the terrain under each step so the
       // eye rises over mountains and dips into valleys.
       surfaceState.groundRadius = localHit.length();
-      // Walk pace scales with body size so small moons don't feel like a
-      // marathon and giants don't fly past. Tuned so a full circumnav of an
-      // Earth-sized body at sprint takes a couple of minutes.
-      surfaceState.moveSpeed = body.baseRadius * 0.12;
+      // Surface gravity for this body (Earth = 1 g). Low gravity gives a
+      // low-traction, bounding feel: short, drifting strides paired with the
+      // long, high leaps the reduced fall accel below produces. A heavy world
+      // gives more purchase — faster, planted strides and a snappy jump. Clamp
+      // the pace factor so the extremes stay playable rather than silly.
+      const gFactor = surfaceGravityG(body);
+      surfaceState.gravityG = gFactor;
+      // Locomotion slows in low gravity for a "moonwalk" slow-motion read.
+      // Walking speed scales ~√g (the Froude-number relation for a pendulum
+      // stride), so the Moon's ~0.2 g lands near 45% pace — a clear slow-mo —
+      // while a heavy world strides a touch faster. This SAME factor is fed to
+      // the avatar's animation playback (see updateAstronaut) so the legs cycle
+      // in slow motion too and the feet don't slide. Clamped so the extremes
+      // stay playable.
+      const locoScale = Math.min(1.3, Math.max(0.4, Math.sqrt(gFactor)));
+      surfaceState.locoScale = locoScale;
+      // Walk pace scales with character size. Because the character is smaller
+      // on planets, they cover less absolute distance per step, but move at
+      // a natural human cadence — then slowed/sped by gravity.
+      surfaceState.moveSpeed = surfaceState.eyeHeight * 9.3 * locoScale;
       surfaceState.localEye.copy(surfaceState.localUp).multiplyScalar(surfaceState.groundRadius + surfaceState.eyeHeight);
       surfaceState.yaw = 0;
       surfaceState.pitch = 0;
       surfaceState.fov = 60;
+
+      // Third-person trail distance + jump tuning, all scaled to the avatar's
+      // size so jumps and camera framing feel the same on a moon or a giant.
+      // Fixed distance (no scroll dolly in third person).
+      surfaceState.camDist = surfaceState.eyeHeight * 2.2;
+      // Launch velocity is constant across worlds; the per-body gravity below
+      // does the work, so a weak-gravity moon yields a much higher, longer leap.
+      surfaceState.jumpSpeed = surfaceState.eyeHeight * 9;
+      // Fall acceleration scales with the body's gravity. The Earth baseline
+      // (gFactor ≈ 1) keeps the ~0.7s, slightly-floaty hang time; the Moon's
+      // ~0.2 g makes jumps drift, while a dense world snaps them straight down.
+      surfaceState.gravity   = surfaceState.eyeHeight * 26 * gFactor;
+      surfaceState.jumpOffset = 0;
+      surfaceState.vertVel = 0;
+      surfaceState.grounded = true;
+
+      // Kick off (or reuse) the avatar load, then mount it for this visit.
+      loadAstronaut().then(() => {
+        if (viewMode === 'surface') attachAstronaut();
+      }).catch(() => { /* avatar optional — surface view still works without it */ });
+
+      // Reset and mount the grass field (gated to green ground by sampleGrassGround).
+      surfaceState.grassU = 0;
+      surfaceState.grassV = 0;
+      attachGrass(body);
+      attachRocks(body);
+      // Lay the local high-detail water patch (waves) under the avatar.
+      attachWaterPatch(body);
 
       // Save orbit state for clean restore.
       surfaceState.savedFov = camera.fov;
@@ -5609,10 +6241,22 @@
       pickTargetBody = null;
       updateVisitButtonState();
       updateSurfaceCamera();
+
+      // Request pointer lock for mouse-look.
+      try {
+        renderer.domElement.requestPointerLock();
+      } catch (err) {
+        console.warn('Pointer lock request failed:', err);
+      }
     }
 
     function exitSurfaceMode() {
       if (viewMode !== 'surface') return;
+
+      if (document.pointerLockElement === renderer.domElement) {
+        document.exitPointerLock();
+      }
+
       // Restore camera projection + transform.
       camera.fov = surfaceState.savedFov;
       camera.near = surfaceState.savedNear;
@@ -5640,6 +6284,26 @@
         surfaceState.savedSunVisible = null;
       }
       starMat.opacity = SURFACE_STAR_OPACITY;
+      scene.fog = null;            // drop any underwater fog
+      // Unmount the avatar (it persists in memory for the next visit).
+      if (astronaut && astronaut.root.parent) {
+        scene.remove(astronaut.root);
+        for (const k in astronaut.actions) astronaut.actions[k].stop();
+        surfaceState.animName = 'idle';
+      }
+      detachGrass();
+      detachRocks();
+      detachWaterPatch();
+      // Restore the global ocean sphere we hid for the surface visit (water worlds)
+      // and make sure it's back to the plain opaque sphere for the orbit view.
+      if (surfaceState.body && surfaceState.body.oceanMesh) {
+        const om = surfaceState.body.oceanMesh;
+        if (surfaceState.oceanHidden) {
+          om.visible = !!(surfaceState.body.matter && surfaceState.body.matter.liquid);
+          surfaceState.oceanHidden = false;
+        }
+        if (om.material.userData.shader) om.material.userData.shader.uniforms.uSurface.value = 0;
+      }
       surfaceState.body = null;
       controls.enabled = true;
       document.body.classList.remove('surface-mode');
@@ -5653,10 +6317,30 @@
     const _surfBodyCenter = new THREE.Vector3();
     const _surfCamDir     = new THREE.Vector3();
     const SURFACE_STAR_OPACITY = 0.95;
+    // Reused single fog instance for the underwater look (a blue exponential fog
+    // that collapses visibility to a short radius). scene.fog is otherwise unused.
+    const underwaterFog = new THREE.FogExp2(0x10566f, 0.0);
     function updateSurfaceSkyEffects() {
       if (viewMode !== 'surface' || !surfaceState.body) {
         starMat.opacity = SURFACE_STAR_OPACITY;
+        scene.fog = null;
         return;
+      }
+      // Underwater: once the eye drops below sea level on a liquid body, fill the
+      // scene with blue fog so you can only see a short distance (just the nearby
+      // seabed) and everything reads submerged. Density deepens the further under
+      // you go; cleared the moment the eye breaks the surface.
+      {
+        const b = surfaceState.body;
+        const eyeR = surfaceState.groundRadius + surfaceState.eyeHeight + surfaceState.jumpOffset;
+        if (b.matter && b.matter.liquid && eyeR < b.baseRadius) {
+          const depth = b.baseRadius - eyeR;                 // local units below sea level
+          const vis   = Math.max(0.5, b.baseRadius * 0.22);  // clear sight range just under the surface
+          underwaterFog.density = (1.6 / vis) * (1.0 + 1.5 * depth / b.baseRadius);
+          scene.fog = underwaterFog;
+        } else {
+          scene.fog = null;
+        }
       }
       // Atmosphere worlds: shader paints the sun, so keep the real mesh hidden.
       // Airless worlds: show the real Sun (occluded by the body when it sets).
@@ -5687,30 +6371,1091 @@
     // the local eye/look vectors through body.mesh.matrixWorld every frame,
     // the camera naturally rides along — sun and stars wheel overhead.
     const _worldEye    = new THREE.Vector3();
-    const _worldLook   = new THREE.Vector3();
-    const _worldUp     = new THREE.Vector3();
+    const _worldLook   = new THREE.Vector3();   // normalized world look direction (yaw+pitch)
+    const _worldUp     = new THREE.Vector3();   // normalized world surface normal
+    const _worldHeading= new THREE.Vector3();   // normalized world heading (yaw only, level)
     const _localLookDir= new THREE.Vector3();
+    const _localHeading= new THREE.Vector3();
+    const _eyeLocal    = new THREE.Vector3();
+    const _footLocal   = new THREE.Vector3();
+    const _footWorld   = new THREE.Vector3();
+    const _astroZ      = new THREE.Vector3();
+    const _astroX      = new THREE.Vector3();
+    const _astroMat    = new THREE.Matrix4();
+    const _astroQuat   = new THREE.Quaternion();
+    const _lookAtTmp   = new THREE.Vector3();
+    const _camLocalTmp = new THREE.Vector3();
+
     function updateSurfaceCamera() {
       const body = surfaceState.body;
       if (!body) return;
       body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
 
-      // Local look direction: start from forward, rotate by pitch about right,
-      // then by yaw about up. Order matters — yaw last so the horizon stays
-      // level relative to the surface (not the camera).
+      // Look direction (yaw + pitch) and a level heading (yaw only). Order
+      // matters — yaw last so the horizon stays level relative to the surface.
       _localLookDir.copy(surfaceState.localFwd)
         .applyAxisAngle(surfaceState.localRight, surfaceState.pitch)
         .applyAxisAngle(surfaceState.localUp, surfaceState.yaw)
         .normalize();
 
-      _worldEye.copy(surfaceState.localEye).applyMatrix4(body.mesh.matrixWorld);
-      _worldUp.copy(surfaceState.localUp).transformDirection(body.mesh.matrixWorld);
-      _worldLook.copy(_localLookDir).transformDirection(body.mesh.matrixWorld)
-        .add(_worldEye);
+      // Eye/head sits at ground + eyeHeight, lifted by any active jump.
+      const eyeRadius = surfaceState.groundRadius + surfaceState.eyeHeight + surfaceState.jumpOffset;
+      _eyeLocal.copy(surfaceState.localUp).multiplyScalar(eyeRadius);
 
-      camera.position.copy(_worldEye);
+      // Body matrix carries the group scale, so transformed directions come out
+      // scaled — normalize them to get unit world vectors. _worldHeading is the
+      // avatar's facing (its movement direction), not the camera look.
+      _worldEye.copy(_eyeLocal).applyMatrix4(mw);
+      _worldUp.copy(surfaceState.localUp).transformDirection(mw).normalize();
+      _worldLook.copy(_localLookDir).transformDirection(mw).normalize();
+      _worldHeading.copy(surfaceState.faceLocal).transformDirection(mw).normalize();
+
       camera.up.copy(_worldUp);
-      camera.lookAt(_worldLook);
+      if (surfaceState.cameraMode === 'first') {
+        camera.position.copy(_worldEye);
+        _lookAtTmp.copy(_worldEye).add(_worldLook);
+        camera.lookAt(_lookAtTmp);
+      } else {
+        // Third person framed in units of the avatar's actual height: aim at its
+        // chest (~0.6× height above the feet), then trail behind a few body-
+        // heights and lifted, so we look down at it at a gentle angle.
+        const ch = surfaceState.charWorldH || (surfaceState.eyeHeight * (body.group.scale.x || 1));
+        // Foot point in world (ground + any jump lift).
+        _footLocal.copy(surfaceState.localUp)
+          .multiplyScalar(surfaceState.groundRadius + surfaceState.jumpOffset);
+        _footWorld.copy(_footLocal).applyMatrix4(mw);
+        // Aim at the chest.
+        _lookAtTmp.copy(_footWorld).addScaledVector(_worldUp, ch * 0.6);
+        const dist = ch * 3.2;             // trail distance in character-heights
+        const lift = ch * 1.5;             // camera elevation
+        camera.position.copy(_lookAtTmp)
+          .addScaledVector(_worldLook, -dist)
+          .addScaledVector(_worldUp, lift);
+        // Never let the look-around drag the camera under the ground: clamp its
+        // distance from planet-centre to stay a hair above the standing surface.
+        const minR = surfaceState.groundRadius + surfaceState.eyeHeight * 0.4;
+        _camLocalTmp.copy(camera.position);
+        body.mesh.worldToLocal(_camLocalTmp);
+        if (_camLocalTmp.length() < minR) {
+          _camLocalTmp.setLength(minR);
+          body.mesh.localToWorld(_camLocalTmp);
+          camera.position.copy(_camLocalTmp);
+        }
+        camera.lookAt(_lookAtTmp);
+      }
+    }
+
+    // Per-frame avatar update: advance its animation, plant its feet on the
+    // ground (lifted during a jump), and swivel it to face its heading. Reads
+    // the world vectors that updateSurfaceCamera just computed this frame.
+    function updateAstronaut(dt) {
+      if (!astronaut) return;
+      // Play the locomotion clips in slow motion under low gravity so the legs
+      // cycle at the same rate the body actually translates (surfaceState.moveSpeed
+      // carries the same locoScale) — keeps the feet planted instead of sliding,
+      // and sells the floaty moonwalk feel alongside the lofted jump.
+      if (astronaut.mixer) {
+        astronaut.mixer.timeScale = surfaceState.locoScale;
+        astronaut.mixer.update(dt);
+      }
+      if (!astronaut.root.parent || !surfaceState.body) return;
+      const mw = surfaceState.body.mesh.matrixWorld;
+
+      // Static (unrigged) models get faked motion: a stride-driven vertical bob,
+      // a forward lean while moving, and a gentle side-to-side sway. Applied to
+      // `inner` about the foot origin so the feet stay planted. Stride frequency
+      // is slowed by the same gravity locoScale as the rigged clips above.
+      if (!astronaut.animated) {
+        const a = astronaut.animName;
+        const moving = a === 'walk' || a === 'run';
+        const freq = (a === 'run' ? 9 : (moving ? 5.5 : 2.2)) * surfaceState.locoScale;
+        surfaceState.stridePhase += dt * freq;
+        const ph = surfaceState.stridePhase;
+        const h = astronaut.nativeHeight;
+        const bobAmp  = a === 'run' ? 0.05 : (moving ? 0.03 : 0.006);
+        const lean    = a === 'run' ? 0.20 : (moving ? 0.12 : 0);
+        const swayAmp = moving ? (a === 'run' ? 0.06 : 0.04) : 0;
+        const inner = astronaut.inner;
+        inner.position.y = astronaut.footOffset.y + Math.abs(Math.sin(ph)) * bobAmp * h;
+        inner.rotation.x = lean;                       // forward tilt about the feet
+        inner.rotation.z = Math.sin(ph) * swayAmp;     // weight-shift sway
+      }
+
+      const footRadius = surfaceState.groundRadius + surfaceState.jumpOffset;
+      _footLocal.copy(surfaceState.localUp).multiplyScalar(footRadius);
+      _footWorld.copy(_footLocal).applyMatrix4(mw);
+      astronaut.root.position.copy(_footWorld);
+
+      // Orthonormal basis: Z = facing, Y = up, X = up × Z (right-handed).
+      _astroZ.copy(_worldHeading).multiplyScalar(ASTRO_FACING);
+      _astroX.crossVectors(_worldUp, _astroZ).normalize();
+      _astroMat.makeBasis(_astroX, _worldUp, _astroZ);
+      _astroQuat.setFromRotationMatrix(_astroMat);
+      // Smoothly rotate toward the target so turns read as a swivel, not a snap.
+      astronaut.root.quaternion.slerp(_astroQuat, Math.min(1, dt * ASTRO_TURN_RATE));
+    }
+
+    // ── Surface grass ──────────────────────────────────────────────────────
+    // A single InstancedMesh of stylized blades that exists only while walking.
+    // It's parented to the focused body's mesh, so it inherits the planet's spin
+    // and orbit exactly like the terrain it grows on. Blades aren't pinned to the
+    // ground individually — they tile a square patch of side 2·PR that "treadmills"
+    // around the avatar: each blade's tangent coordinate is wrapped modulo the
+    // patch against the walker's drift (surfaceState.grassU/V), so the lawn appears
+    // fixed to the surface while always staying centered under the camera. Blades
+    // scale to zero as they near any patch edge (Chebyshev edge fade), so they grow
+    // in / out smoothly instead of popping whole rows in at the wrap seam as you
+    // walk. Grass shows ONLY on the *grass* biome (checked against the terrain's own
+    // biome/zone logic — not color), so sand, water, rock, snow and desert stay
+    // bare: the footing under the avatar gates the whole field on/off, AND a
+    // per-cell biome mask (read from the same raycast grid as terrain height) fades
+    // individual blades back from coastlines so the lawn never spills onto beach or
+    // water. Blades are clustered into dense tufts and follow real terrain height
+    // via the grid so they sit on slopes and in dips, not a single sphere.
+    const GRASS_COUNT = 18000;
+    const GRASS_GN    = 8;        // height + biome grid resolution (GN×GN raycast samples)
+    let grassField = null;
+    let grassUniforms = null;     // captured from onBeforeCompile (uTime/uWind/uReveal)
+
+    // One tapered blade pointing +Y, base at y=0, tip at y=1. Normals point
+    // straight up so the instance orientation lights each blade like the ground
+    // patch it stands on (vertical flat normals would crush to black edge-on).
+    // A base→tip grey gradient in vertex color fakes ambient occlusion at the
+    // roots; the per-instance color and material tint layer green on top.
+    function buildGrassBladeGeometry() {
+      const segs = 4, halfBase = 0.13;
+      const pos = [], col = [], nrm = [], aH = [], idx = [];
+      for (let s = 0; s <= segs; s++) {
+        const y = s / segs;
+        const hw = halfBase * (1 - y * 0.85);  // taper toward (but not fully to) a point
+        const z = y * y * 0.18;                // gentle forward droop
+        pos.push(-hw, y, z,  hw, y, z);
+        const shade = 0.4 + 0.6 * y;           // dark roots → bright tip
+        col.push(shade, shade, shade,  shade, shade, shade);
+        nrm.push(0, 1, 0,  0, 1, 0);
+        aH.push(y, y);
+      }
+      for (let s = 0; s < segs; s++) {
+        const a = s * 2, b = s * 2 + 1, c = s * 2 + 2, d = s * 2 + 3;
+        idx.push(a, c, b,  b, c, d);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+      g.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
+      g.setAttribute('aH',       new THREE.Float32BufferAttribute(aH, 1));
+      g.setIndex(idx);
+      return g;
+    }
+
+    function buildGrassField() {
+      const geo = buildGrassBladeGeometry();
+      // Per-instance distance-fade (1 = full blade, 0 = melted into the ground).
+      // Drives BOTH height (in the placement matrix) and shading (flatten below).
+      const fadeArr = new Float32Array(GRASS_COUNT); fadeArr.fill(1);
+      geo.setAttribute('aFade', new THREE.InstancedBufferAttribute(fadeArr, 1).setUsage(THREE.DynamicDrawUsage));
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide,
+      });
+      // Wind sway + grow-in reveal, injected into the standard vertex shader.
+      // Sway bends the blade in its own local X/Z (so the instance orientation
+      // carries it to the right world direction), weighted by height so roots
+      // stay planted; phase varies per blade from its instance translation.
+      // aFade additionally flattens the root→tip shading toward the flat ground
+      // tint as a blade recedes, so a far blade is visually identical to the bare
+      // green ground — the lawn's outer ring melts into the terrain instead of
+      // showing a moving edge where blades "grow in" ahead of the walker.
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uTime   = { value: 0 };
+        sh.uniforms.uWind   = { value: 0.18 };
+        sh.uniforms.uReveal = { value: 0 };
+        grassUniforms = sh.uniforms;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>',
+            '#include <common>\nattribute float aH;\nattribute float aFade;\nuniform float uTime;\nuniform float uWind;\nuniform float uReveal;')
+          .replace('#include <color_vertex>',
+            '#include <color_vertex>\n  vColor = mix(vec3(1.0), vColor, clamp(aFade, 0.0, 1.0));')
+          .replace('#include <begin_vertex>',
+            '#include <begin_vertex>\n'
+          + '  float _gph = instanceMatrix[3][0] * 11.0 + instanceMatrix[3][2] * 7.0;\n'
+          + '  float _gsway = uWind * pow(aH, 1.5) * (sin(uTime * 1.6 + _gph) * 0.7 + sin(uTime * 3.1 + _gph * 1.7) * 0.3);\n'
+          + '  transformed.x += _gsway;\n'
+          + '  transformed.z += _gsway * 0.35;\n'
+          + '  transformed *= uReveal;\n');
+      };
+      mat.customProgramCacheKey = () => 'grassBlade';
+
+      const mesh = new THREE.InstancedMesh(geo, mat, GRASS_COUNT);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false;   // the patch is always at the camera
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+
+      const baseUV    = new Float32Array(GRASS_COUNT * 2);  // normalized [-1,1], scaled by PR at runtime
+      const yaw       = new Float32Array(GRASS_COUNT);
+      const hScale    = new Float32Array(GRASS_COUNT);
+      const leanAmt   = new Float32Array(GRASS_COUNT);      // tilt off vertical (tuft splay)
+      const leanTheta = new Float32Array(GRASS_COUNT);      // tilt direction
+      const tint      = new THREE.Color();
+      // Scatter as tufts: pick a clump centre, then drop a handful of blades in a
+      // tight disc around it. Reads as clustered grass instead of lone stems.
+      let i = 0;
+      while (i < GRASS_COUNT) {
+        const cx = Math.random() * 2 - 1, cy = Math.random() * 2 - 1;
+        const n  = 9 + (Math.random() * 11 | 0);         // 9..19 blades per tuft (dense clumps)
+        const cr = 0.006 + Math.random() * 0.016;        // tight tuft radius (normalized)
+        for (let k = 0; k < n && i < GRASS_COUNT; k++, i++) {
+          const a  = Math.random() * Math.PI * 2;
+          const rr = Math.sqrt(Math.random()) * cr;
+          baseUV[2 * i]     = Math.max(-1, Math.min(1, cx + Math.cos(a) * rr));
+          baseUV[2 * i + 1] = Math.max(-1, Math.min(1, cy + Math.sin(a) * rr));
+          yaw[i]       = Math.random() * Math.PI * 2;
+          hScale[i]    = 0.82 + Math.random() * 0.36;
+          leanAmt[i]   = Math.random() * 0.28;            // splay tips outward a bit
+          leanTheta[i] = Math.random() * Math.PI * 2;
+          // Per-blade brightness + slight warm/cool jitter so the lawn isn't a flat
+          // wash; the green itself comes from mat.color (sampled from the ground).
+          const v = 0.72 + Math.random() * 0.42;
+          tint.setRGB(v * (0.88 + Math.random() * 0.22), v, v * (0.82 + Math.random() * 0.22));
+          mesh.setColorAt(i, tint);
+        }
+      }
+      mesh.instanceColor.needsUpdate = true;
+      grassField = {
+        mesh, mat, baseUV, yaw, hScale, leanAmt, leanTheta, fadeArr,
+        reveal: 0, targetReveal: 0, sampleTimer: 0, PR: 1, bladeH: 0.02,
+        // Height grid: ground radii sampled in a snapshot tangent frame, so blades
+        // read terrain height by bilinear lookup instead of one flat sphere.
+        grid: new Float32Array(GRASS_GN * GRASS_GN),
+        gridGrass: new Float32Array(GRASS_GN * GRASS_GN),  // 1 = grass-biome cell, 0 = bare (sand/water/rock)
+        gridHalf: 1, gridValid: false,
+        gridU: 0, gridV: 0,
+        gridUp: new THREE.Vector3(), gridRight: new THREE.Vector3(), gridFwd: new THREE.Vector3(),
+        lastU: NaN, lastV: NaN, placed: false,
+      };
+    }
+
+    // Attach the (lazily built) grass to a body for a fresh surface visit.
+    // PR (patch half-size) and blade height scale to the body's eye height so the
+    // lawn reads the same on a moon or a giant.
+    function attachGrass(body) {
+      if (!grassField) buildGrassField();
+      const gf = grassField;
+      // Patch half-size reaches PAST the horizon (the eye-height horizon on these
+      // bodies is ~26 eye-heights). Grass stays full almost the whole way out and
+      // only fades over the outermost ~18% — i.e. at and beyond the skyline, where
+      // the planet's own curvature hides the transition. So the visible ground is
+      // grass everywhere; the walker never sees a bare ring sprouting grass ahead.
+      gf.PR     = surfaceState.eyeHeight * 30;
+      gf.bladeH = surfaceState.eyeHeight * 0.34;
+      gf.reveal = 0;
+      gf.targetReveal = 0;
+      gf.sampleTimer = 0;
+      gf.gridValid = false;
+      gf.placed = false;
+      gf.lastU = NaN; gf.lastV = NaN;
+      if (grassUniforms) grassUniforms.uReveal.value = 0;
+      gf.mesh.visible = false;
+      if (gf.mesh.parent) gf.mesh.parent.remove(gf.mesh);
+      body.mesh.add(gf.mesh);
+    }
+
+    function detachGrass() {
+      if (grassField && grassField.mesh.parent) grassField.mesh.parent.remove(grassField.mesh);
+    }
+
+    // Console diagnostic: run `grassDiag()` in DevTools while standing on a planet
+    // to see whether the lawn is gated off (and why) vs. an actual render problem.
+    window.grassDiag = () => {
+      const gf = grassField, body = surfaceState.body;
+      if (!gf) return 'grass not built yet (enter a surface first)';
+      let probe = 'no body';
+      if (body) {
+        body.mesh.updateMatrixWorld();
+        const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+        _grOrigin.copy(surfaceState.localUp).multiplyScalar(high).applyMatrix4(body.mesh.matrixWorld);
+        _grDir.copy(surfaceState.localUp).multiplyScalar(-1).transformDirection(body.mesh.matrixWorld).normalize();
+        grassRaycaster.set(_grOrigin, _grDir);
+        const hit = grassRaycaster.intersectObject(body.mesh, false)[0];
+        const f = hit ? hit.face : null;
+        probe = f ? {
+          biome: body.biomes[f.a],
+          heightAvg: ((body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3).toFixed(2),
+          zoned: !!(body.climate && body.climate.spread > 0.5 && CLIMATE_LAND_ZONES[body.archetype]),
+          isGrass: groundIsGrassFace(body, f),
+        } : 'raycast missed';
+      }
+      return {
+        body: body && body.name, archetype: body && body.archetype,
+        visible: gf.mesh.visible, reveal: +gf.reveal.toFixed(3), targetReveal: gf.targetReveal,
+        placed: gf.placed, gridValid: gf.gridValid, PR: gf.PR, bladeH: gf.bladeH,
+        count: GRASS_COUNT, parented: !!gf.mesh.parent, probe,
+      };
+    };
+
+    // True when terrain face `f` is vegetated green land — replicating
+    // colorBodyVertex's land logic so the lawn only grows where the ground reads
+    // green. Excludes sand/beach/water (below GRASS_FLOOR), rock/snow (above ROCK_TOP),
+    // and the desert/tundra/ice climate zones; INCLUDES the grass + jungle zones,
+    // painted forest, and the plain grass band. Moons stay bare. Only terrestrial
+    // worlds have a genuine grassland mid-band — every other archetype's mid-band
+    // is its own (orange dunes, red lava plain, blue ice plain…), NOT grassland —
+    // so grass is gated to terrestrial worlds entirely; every other archetype
+    // grows no grass blades, including under painted forest.
+    const GRASS_ZONE_KEYS = { grass: 1, jungle: 1 };
+    function groundIsGrassFace(body, f) {
+      if (body.kind !== 'planet' || body.archetype !== 'terrestrial') return false;
+      const bm = body.biomes[f.a];
+      if (bm === BIOME.FOREST) return true;                       // painted forest = vegetated
+      if (bm !== BIOME.AUTO) return false;                        // other painted biomes: bare
+      const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+      if (h < GRASS_FLOOR || h >= ROCK_TOP) return false;         // sandy beach below, rock/snow above
+      const zoned = body.climate && body.climate.spread > 0.5 && CLIMATE_LAND_ZONES[body.archetype];
+      if (zoned) return !!GRASS_ZONE_KEYS[pickLandZone(CLIMATE_LAND_ZONES[body.archetype], vertexTempC(body, f.a)).key];
+      return h < GRASS_TOP;                                        // plain grass band
+    }
+
+    // Throttled biome probe: cast down under the avatar, decide whether we're on
+    // grass, and tint the blades from the face's actual green.
+    const grassRaycaster = new THREE.Raycaster();
+    const _grOrigin = new THREE.Vector3();
+    const _grDir    = new THREE.Vector3();
+    const _grHit    = new THREE.Vector3();
+    const _grCol    = new THREE.Color();
+    const _grTint   = new THREE.Color();
+    const _grGreen  = new THREE.Color(COL.grass);
+    function sampleGrassGround() {
+      const body = surfaceState.body, gf = grassField;
+      if (!body) { gf.targetReveal = 0; return; }
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      const footR = surfaceState.groundRadius;
+      const up = surfaceState.localUp, right = surfaceState.localRight, fwd = surfaceState.localFwd;
+      const d = gf.PR * 0.5;
+      // Probe a small cross of points (centre + 4 around the avatar) and keep the
+      // lawn ON if ANY of them is grass. A single odd bare face under one ray — a
+      // height blip above GRASS_TOP, a climate-zone edge, the faceted icosphere —
+      // no longer blinks the whole field off and on as you walk. The per-blade
+      // biome mask still hides individual blades over genuinely bare spots.
+      let onGrass = false, tf = null;
+      for (let s = 0; s < 5; s++) {
+        const ou = s === 1 ? d : s === 2 ? -d : 0;
+        const ov = s === 3 ? d : s === 4 ? -d : 0;
+        _grHit.copy(up).multiplyScalar(footR).addScaledVector(right, ou).addScaledVector(fwd, ov).normalize();
+        _grOrigin.copy(_grHit).multiplyScalar(high).applyMatrix4(mw);
+        _grDir.copy(_grHit).multiplyScalar(-1).transformDirection(mw).normalize();
+        grassRaycaster.set(_grOrigin, _grDir);
+        const hits = grassRaycaster.intersectObject(body.mesh, false);
+        const f = hits.length ? hits[0].face : null;
+        if (f && groundIsGrassFace(body, f)) { onGrass = true; if (s === 0 || !tf) tf = f; }
+      }
+      gf.targetReveal = onGrass ? 1 : 0;
+      if (tf) {                                          // tint from a grass face (centre preferred)
+        const ca = body.colorArr;
+        _grCol.setRGB(
+          (ca[3 * tf.a]     + ca[3 * tf.b]     + ca[3 * tf.c])     / 3,
+          (ca[3 * tf.a + 1] + ca[3 * tf.b + 1] + ca[3 * tf.c + 1]) / 3,
+          (ca[3 * tf.a + 2] + ca[3 * tf.b + 2] + ca[3 * tf.c + 2]) / 3,
+        );
+        _grTint.copy(_grCol).lerp(_grGreen, 0.3);
+        gf.mat.color.copy(_grTint);
+      }
+    }
+
+    // Re-sample the terrain-height grid in the avatar's current tangent frame,
+    // snapshotting that frame so blades can be placed relative to it until the
+    // walker drifts far enough to warrant a fresh grid. GN×GN downward raycasts.
+    function refreshGrassGrid() {
+      const gf = grassField, body = surfaceState.body;
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      gf.gridUp.copy(surfaceState.localUp);
+      gf.gridRight.copy(surfaceState.localRight);
+      gf.gridFwd.copy(surfaceState.localFwd);
+      gf.gridU = surfaceState.grassU;
+      gf.gridV = surfaceState.grassV;
+      gf.gridHalf = gf.PR * 1.3;                 // cover the patch + the re-anchor slack
+      const footR = surfaceState.groundRadius, GH = gf.gridHalf, GN = GRASS_GN;
+      for (let iy = 0; iy < GN; iy++) {
+        for (let ix = 0; ix < GN; ix++) {
+          const gu = (ix / (GN - 1) * 2 - 1) * GH;
+          const gv = (iy / (GN - 1) * 2 - 1) * GH;
+          _gP.copy(gf.gridUp).multiplyScalar(footR).addScaledVector(gf.gridRight, gu).addScaledVector(gf.gridFwd, gv);
+          _gUp.copy(_gP).normalize();
+          _grOrigin.copy(_gUp).multiplyScalar(high).applyMatrix4(mw);
+          _grDir.copy(_gUp).multiplyScalar(-1).transformDirection(mw).normalize();
+          grassRaycaster.set(_grOrigin, _grDir);
+          const hits = grassRaycaster.intersectObject(body.mesh, false);
+          let r = footR, isGrass = 0;
+          if (hits.length) {
+            _grHit.copy(hits[0].point); body.mesh.worldToLocal(_grHit); r = _grHit.length();
+            isGrass = groundIsGrassFace(body, hits[0].face) ? 1 : 0;
+            if (body.matter && body.matter.liquid) r = Math.max(r, body.baseRadius);
+          }
+          gf.grid[iy * GN + ix] = r;
+          gf.gridGrass[iy * GN + ix] = isGrass;
+        }
+      }
+      gf.gridValid = true;
+    }
+
+    // Bilinear ground radius from the snapshot grid at snapshot-tangent (su, sv).
+    function grassGroundRadius(gf, su, sv) {
+      const GN = GRASS_GN, GH = gf.gridHalf;
+      let fx = (su / GH * 0.5 + 0.5) * (GN - 1);
+      let fy = (sv / GH * 0.5 + 0.5) * (GN - 1);
+      fx = fx < 0 ? 0 : fx > GN - 1 ? GN - 1 : fx;
+      fy = fy < 0 ? 0 : fy > GN - 1 ? GN - 1 : fy;
+      const x0 = fx | 0, y0 = fy | 0;
+      const x1 = x0 < GN - 1 ? x0 + 1 : x0, y1 = y0 < GN - 1 ? y0 + 1 : y0;
+      const tx = fx - x0, ty = fy - y0, g = gf.grid;
+      const a = g[y0 * GN + x0] + (g[y0 * GN + x1] - g[y0 * GN + x0]) * tx;
+      const b = g[y1 * GN + x0] + (g[y1 * GN + x1] - g[y1 * GN + x0]) * tx;
+      return a + (b - a) * ty;
+    }
+
+    // Bilinear grass-biome coverage (0..1) from the snapshot mask grid; lets blades
+    // fade out as the ground beneath them turns to beach / water / rock / snow.
+    function grassMask(gf, su, sv) {
+      const GN = GRASS_GN, GH = gf.gridHalf;
+      let fx = (su / GH * 0.5 + 0.5) * (GN - 1);
+      let fy = (sv / GH * 0.5 + 0.5) * (GN - 1);
+      fx = fx < 0 ? 0 : fx > GN - 1 ? GN - 1 : fx;
+      fy = fy < 0 ? 0 : fy > GN - 1 ? GN - 1 : fy;
+      const x0 = fx | 0, y0 = fy | 0;
+      const x1 = x0 < GN - 1 ? x0 + 1 : x0, y1 = y0 < GN - 1 ? y0 + 1 : y0;
+      const tx = fx - x0, ty = fy - y0, g = gf.gridGrass;
+      const a = g[y0 * GN + x0] + (g[y0 * GN + x1] - g[y0 * GN + x0]) * tx;
+      const b = g[y1 * GN + x0] + (g[y1 * GN + x1] - g[y1 * GN + x0]) * tx;
+      return a + (b - a) * ty;
+    }
+
+    const _gP     = new THREE.Vector3();
+    const _gUp    = new THREE.Vector3();
+    const _gTilt  = new THREE.Vector3();
+    const _gMat   = new THREE.Matrix4();
+    const _gQuat  = new THREE.Quaternion();
+    const _gRot   = new THREE.Quaternion();
+    const _gScale = new THREE.Vector3();
+    const _gAxisY = new THREE.Vector3(0, 1, 0);
+
+    // Per-frame: refresh the biome probe + height grid as needed, advance wind +
+    // reveal, and (only when the patch actually moved) re-place every blade.
+    function updateGrass(dt) {
+      if (!grassField || viewMode !== 'surface' || !surfaceState.body) return;
+      const gf = grassField;
+
+      gf.sampleTimer -= dt;
+      if (gf.sampleTimer <= 0) { gf.sampleTimer = 0.3; sampleGrassGround(); }
+
+      gf.reveal += (gf.targetReveal - gf.reveal) * Math.min(1, dt * 4);
+      if (grassUniforms) {
+        grassUniforms.uReveal.value = gf.reveal;
+        grassUniforms.uTime.value  += dt;
+      }
+      if (gf.reveal <= 0.01) { gf.mesh.visible = false; return; }
+      gf.mesh.visible = true;
+
+      const PR = gf.PR;
+      // Re-anchor the height grid once the walker drifts ~0.4 of the patch. The grid
+      // (gridHalf = PR·1.3) still blankets the near field at that drift, so relaxing
+      // the threshold just spreads the GN×GN raycast burst out in time (fewer hitches)
+      // without leaving near blades un-sampled.
+      let gridRefreshed = false;
+      if (!gf.gridValid ||
+          Math.abs(surfaceState.grassU - gf.gridU) > PR * 0.4 ||
+          Math.abs(surfaceState.grassV - gf.gridV) > PR * 0.4) {
+        refreshGrassGrid();
+        gridRefreshed = true;
+      }
+
+      // Blade matrices only need rebuilding when the lawn shifted relative to the
+      // ground (walker moved or grid re-anchored) — wind/grow-in live in the shader.
+      const moved = surfaceState.grassU !== gf.lastU || surfaceState.grassV !== gf.lastV;
+      if (!moved && !gridRefreshed && gf.placed) return;
+      gf.lastU = surfaceState.grassU;
+      gf.lastV = surfaceState.grassV;
+      gf.placed = true;
+
+      const period = PR * 2, bladeH = gf.bladeH, rootSink = bladeH * 0.12;
+      const up = surfaceState.localUp, right = surfaceState.localRight, fwd = surfaceState.localFwd;
+      const footR = surfaceState.groundRadius;
+      const uOff = surfaceState.grassU, vOff = surfaceState.grassV;
+      const driftU = surfaceState.grassU - gf.gridU, driftV = surfaceState.grassV - gf.gridV;
+      for (let i = 0; i < GRASS_COUNT; i++) {
+        // Treadmill wrap into [-PR, PR) so the blade maps to a fixed ground cell.
+        let u = gf.baseUV[2 * i]     * PR - uOff;
+        let v = gf.baseUV[2 * i + 1] * PR - vOff;
+        u -= period * Math.floor((u + PR) / period);
+        v -= period * Math.floor((v + PR) / period);
+        // Edge fade (Chebyshev): grass is FULL out to 0.92·PR ≈ 27.6 eye-heights,
+        // genuinely PAST the ~26 eye-height horizon, and only fades over the thin
+        // outer ring (0.92→1.0) that sits beyond the skyline where the planet's
+        // curvature already hides it. (This was 0.82·PR ≈ 24.6 eh — INSIDE the
+        // horizon — so grass visibly thinned / popped in right at the skyline.)
+        // The aFade attribute also melts that ring's shading into the ground tint.
+        const au = u < 0 ? -u : u, av = v < 0 ? -v : v;
+        let ef = (1.0 - (au > av ? au : av) / PR) * 12.5;
+        ef = ef < 0 ? 0 : ef > 1 ? 1 : ef;
+        // Biome mask: pull blades back from beach / sand / water so the lawn never
+        // spills onto bare ground. Tightened (full at ≥0.75 coverage, gone ≤0.30) so
+        // grass keeps clear of the shoreline; broad bare regions (water, sand, rock)
+        // still clear it, while a stray bare face inland barely dents the meadow.
+        let mf = (grassMask(gf, driftU + u, driftV + v) - 0.30) * 2.2222;
+        mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+        let fade = ef * mf;
+        if (fade <= 0.004) { gf.fadeArr[i] = 0; _gMat.makeScale(0, 0, 0); gf.mesh.setMatrixAt(i, _gMat); continue; }
+        fade = fade * fade * (3 - 2 * fade);                          // smoothstep ease
+        gf.fadeArr[i] = fade;                                         // height (below) + shading flatten (shader)
+        // Tangent offset → surface direction, then lift to the real ground height
+        // (blade position in the snapshot frame = drift since snapshot + uv).
+        _gP.copy(up).multiplyScalar(footR).addScaledVector(right, u).addScaledVector(fwd, v);
+        _gUp.copy(_gP).normalize();
+        const r = grassGroundRadius(gf, driftU + u, driftV + v) - rootSink;
+        _gP.copy(_gUp).multiplyScalar(r);
+        // Splay: tilt the blade off vertical a touch for a tuft look, then spin.
+        const lean = gf.leanAmt[i], th = gf.leanTheta[i];
+        _gTilt.copy(_gUp)
+          .addScaledVector(right, Math.cos(th) * lean)
+          .addScaledVector(fwd,   Math.sin(th) * lean)
+          .normalize();
+        _gQuat.setFromUnitVectors(_gAxisY, _gTilt);
+        _gRot.setFromAxisAngle(_gUp, gf.yaw[i]);
+        _gQuat.premultiply(_gRot);
+        const s = bladeH * gf.hScale[i] * fade;
+        _gScale.set(s, s, s);
+        _gMat.compose(_gP, _gQuat, _gScale);
+        gf.mesh.setMatrixAt(i, _gMat);
+      }
+      gf.mesh.instanceMatrix.needsUpdate = true;
+      gf.mesh.geometry.getAttribute('aFade').needsUpdate = true;
+    }
+
+    // ── Surface rocks (Martian / desert worlds) ────────────────────────────
+    // A sparse InstancedMesh of low-poly boulders, built and scattered with the
+    // same treadmill machinery as the grass above but gated to the DESERT
+    // (Martian) archetype, so red rocks litter the flats only on Mars-type
+    // worlds. One jittered icosahedron is reused for every instance; per-instance
+    // non-uniform scale + tilt + yaw gives each boulder its own silhouette, and
+    // the material colour is sampled from the ground (biased rust-red) so the
+    // rocks match whatever the surface paints. They follow real terrain height
+    // via a raycast grid (reusing grassGroundRadius, same GN/layout) and sink
+    // ~1/3 into the ground so they read as embedded. No external assets - same
+    // stylized, UV-free approach as the grass.
+    const ROCK_COUNT = 280;
+    const ROCK_GN    = GRASS_GN;     // reuse grassGroundRadius (identical GN + grid layout)
+    let rockField = null;
+
+    // One lumpy low-poly rock: an icosahedron whose every vertex is pushed in/out
+    // by a position-hash noise. Duplicate verts at shared corners hash identically
+    // (same position in -> same offset out), so the faces stay welded - no cracks.
+    // flatShading then renders the irregular hull faceted, like a chipped stone.
+    function buildRockGeometry() {
+      const geo = new THREE.IcosahedronGeometry(1, 1);
+      const pos = geo.getAttribute('position');
+      const col = [];
+      const rh = (x, y, z) => { const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return s - Math.floor(s); };
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        // Two octaves of radial displacement -> chunky, irregular boulder.
+        const r = 1
+          + (rh(v.x, v.y, v.z) - 0.5) * 0.55
+          + (rh(v.y * 2.3, v.z * 2.3, v.x * 2.3) - 0.5) * 0.22;
+        v.normalize().multiplyScalar(r);
+        v.y *= 0.78;                                     // squash: boulders sit wider than tall
+        pos.setXYZ(i, v.x, v.y, v.z);
+        const shade = 0.55 + 0.45 * (v.y * 0.5 + 0.5);   // dark base -> lit crown (baked AO)
+        col.push(shade, shade, shade);
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    function buildRockField() {
+      const geo = buildRockGeometry();
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.95, metalness: 0.0, flatShading: true,
+      });
+      const mesh = new THREE.InstancedMesh(geo, mat, ROCK_COUNT);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false;          // the patch is always at the camera
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+
+      const baseUV    = new Float32Array(ROCK_COUNT * 2);   // normalized [-1,1], scaled by PR at runtime
+      const yaw       = new Float32Array(ROCK_COUNT);
+      const tiltAmt   = new Float32Array(ROCK_COUNT);       // tip off vertical (tumbled look)
+      const tiltTheta = new Float32Array(ROCK_COUNT);
+      const nsx       = new Float32Array(ROCK_COUNT);       // per-axis scale -> varied silhouettes
+      const nsy       = new Float32Array(ROCK_COUNT);
+      const nsz       = new Float32Array(ROCK_COUNT);
+      const size      = new Float32Array(ROCK_COUNT);
+      const tint      = new THREE.Color();
+      // Scatter as CLUSTERS with bare ground between — rock piles and debris
+      // fields of varying character, not an even gravel spread. Each cluster
+      // rolls a "tier" that sets its size band and packing; rocks crowd toward
+      // the cluster centre. This leaves open Martian flats punctuated by the odd
+      // boulder field, which reads far better than a uniform sprinkle.
+      let i = 0;
+      while (i < ROCK_COUNT) {
+        const cx = Math.random() * 2 - 1, cy = Math.random() * 2 - 1;
+        const roll = Math.random();
+        let n, spread, sizeLo, sizeHi, flatChance;
+        if (roll < 0.20) {                 // hero pile: 1–3 big boulders + a little rubble
+          n = 1 + (Math.random() * 3 | 0);
+          spread = 0.012 + Math.random() * 0.022;
+          sizeLo = 1.5; sizeHi = 3.0; flatChance = 0.0;
+        } else if (roll < 0.52) {          // debris field: many small angular pebbles / slabs
+          n = 10 + (Math.random() * 24 | 0);
+          spread = 0.03 + Math.random() * 0.07;
+          sizeLo = 0.16; sizeHi = 0.5; flatChance = 0.5;
+        } else {                           // mixed rubble: small-to-medium clump
+          n = 3 + (Math.random() * 9 | 0);
+          spread = 0.018 + Math.random() * 0.05;
+          sizeLo = 0.4; sizeHi = 1.2; flatChance = 0.2;
+        }
+        for (let k = 0; k < n && i < ROCK_COUNT; k++, i++) {
+          const a = Math.random() * Math.PI * 2;
+          const rr = Math.pow(Math.random(), 0.7) * spread;     // crowd toward the centre
+          baseUV[2 * i]     = Math.max(-1, Math.min(1, cx + Math.cos(a) * rr));
+          baseUV[2 * i + 1] = Math.max(-1, Math.min(1, cy + Math.sin(a) * rr));
+          yaw[i]       = Math.random() * Math.PI * 2;
+          tiltAmt[i]   = Math.random() * 0.35;
+          tiltTheta[i] = Math.random() * Math.PI * 2;
+          // Size: skew within the tier's band; the lead rock of a hero pile is the
+          // largest, the rest taper off (st*st) so a cluster has a clear hierarchy.
+          const st = Math.random();
+          size[i] = sizeLo + (sizeHi - sizeLo) * (k === 0 ? Math.pow(st, 0.45) : st * st);
+          if (Math.random() < flatChance) {                     // flat slab: wide + low
+            nsx[i] = 1.0 + Math.random() * 0.8;
+            nsy[i] = 0.26 + Math.random() * 0.22;
+            nsz[i] = 1.0 + Math.random() * 0.8;
+          } else {                                              // chunky block
+            nsx[i] = 0.7 + Math.random() * 0.7;
+            nsy[i] = 0.55 + Math.random() * 0.65;
+            nsz[i] = 0.7 + Math.random() * 0.7;
+          }
+          // Per-rock brightness + warm jitter (multiplies the sampled ground tint).
+          const b = 0.68 + Math.random() * 0.46;
+          tint.setRGB(b * (0.95 + Math.random() * 0.2), b * (0.88 + Math.random() * 0.12), b * (0.8 + Math.random() * 0.12));
+          mesh.setColorAt(i, tint);
+        }
+      }
+      mesh.instanceColor.needsUpdate = true;
+      rockField = {
+        mesh, mat, baseUV, yaw, tiltAmt, tiltTheta, nsx, nsy, nsz, size,
+        reveal: 0, targetReveal: 0, sampleTimer: 0, PR: 1, rockH: 0.02,
+        grid: new Float32Array(ROCK_GN * ROCK_GN),         // ground radii in a snapshot tangent frame
+        gridRock: new Float32Array(ROCK_GN * ROCK_GN),     // 1 = desert-rock cell, 0 = bare
+        gridHalf: 1, gridValid: false, gridU: 0, gridV: 0,
+        gridUp: new THREE.Vector3(), gridRight: new THREE.Vector3(), gridFwd: new THREE.Vector3(),
+      };
+    }
+
+    function attachRocks(body) {
+      if (!rockField) buildRockField();
+      const rf = rockField;
+      rf.PR    = surfaceState.eyeHeight * 30;        // same horizon-reaching patch as grass
+      rf.rockH = surfaceState.eyeHeight * 0.5;       // base boulder size (scaled per instance)
+      rf.reveal = 0;
+      rf.targetReveal = 0;
+      rf.sampleTimer = 0;
+      rf.gridValid = false;
+      rf.mesh.visible = false;
+      if (rf.mesh.parent) rf.mesh.parent.remove(rf.mesh);
+      body.mesh.add(rf.mesh);
+    }
+
+    function detachRocks() {
+      if (rockField && rockField.mesh.parent) rockField.mesh.parent.remove(rockField.mesh);
+    }
+
+    // True when terrain face `f` is dry Martian rock ground: desert archetype,
+    // unpainted, above the basin sand line and below the salt-peak snow line.
+    const ROCK_TOP_CAP = ROCK_TOP + 0.6;
+    function groundIsRockFace(body, f) {
+      if (body.kind !== 'planet' || body.archetype !== 'desert') return false;
+      if (body.biomes[f.a] !== BIOME.AUTO) return false;         // painted faces: leave bare
+      const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+      return h >= SAND_TOP && h < ROCK_TOP_CAP;                  // flats -> mesa, not basins/peaks
+    }
+
+    // Throttled biome probe: is the avatar on Martian rock ground, and what colour?
+    const _rkRust = new THREE.Color(0x9c4a2a);
+    function sampleRockGround() {
+      const body = surfaceState.body, rf = rockField;
+      if (!body) { rf.targetReveal = 0; return; }
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      const footR = surfaceState.groundRadius;
+      const up = surfaceState.localUp, right = surfaceState.localRight, fwd = surfaceState.localFwd;
+      const d = rf.PR * 0.5;
+      let onRock = false, tf = null;
+      for (let s = 0; s < 5; s++) {
+        const ou = s === 1 ? d : s === 2 ? -d : 0;
+        const ov = s === 3 ? d : s === 4 ? -d : 0;
+        _grHit.copy(up).multiplyScalar(footR).addScaledVector(right, ou).addScaledVector(fwd, ov).normalize();
+        _grOrigin.copy(_grHit).multiplyScalar(high).applyMatrix4(mw);
+        _grDir.copy(_grHit).multiplyScalar(-1).transformDirection(mw).normalize();
+        grassRaycaster.set(_grOrigin, _grDir);
+        const hits = grassRaycaster.intersectObject(body.mesh, false);
+        const f = hits.length ? hits[0].face : null;
+        if (f && groundIsRockFace(body, f)) { onRock = true; if (s === 0 || !tf) tf = f; }
+      }
+      rf.targetReveal = onRock ? 1 : 0;
+      if (tf) {                                          // tint from the ground, biased rust-red + darker
+        const ca = body.colorArr;
+        _grCol.setRGB(
+          (ca[3 * tf.a]     + ca[3 * tf.b]     + ca[3 * tf.c])     / 3,
+          (ca[3 * tf.a + 1] + ca[3 * tf.b + 1] + ca[3 * tf.c + 1]) / 3,
+          (ca[3 * tf.a + 2] + ca[3 * tf.b + 2] + ca[3 * tf.c + 2]) / 3,
+        );
+        _grTint.copy(_grCol).lerp(_rkRust, 0.45).multiplyScalar(0.9);
+        rf.mat.color.copy(_grTint);
+      }
+    }
+
+    // Re-sample the height + rock-mask grid in the avatar's current tangent frame.
+    function refreshRockGrid() {
+      const rf = rockField, body = surfaceState.body;
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      rf.gridUp.copy(surfaceState.localUp);
+      rf.gridRight.copy(surfaceState.localRight);
+      rf.gridFwd.copy(surfaceState.localFwd);
+      rf.gridU = surfaceState.grassU;
+      rf.gridV = surfaceState.grassV;
+      rf.gridHalf = rf.PR * 1.3;
+      const footR = surfaceState.groundRadius, GH = rf.gridHalf, GN = ROCK_GN;
+      for (let iy = 0; iy < GN; iy++) {
+        for (let ix = 0; ix < GN; ix++) {
+          const gu = (ix / (GN - 1) * 2 - 1) * GH;
+          const gv = (iy / (GN - 1) * 2 - 1) * GH;
+          _gP.copy(rf.gridUp).multiplyScalar(footR).addScaledVector(rf.gridRight, gu).addScaledVector(rf.gridFwd, gv);
+          _gUp.copy(_gP).normalize();
+          _grOrigin.copy(_gUp).multiplyScalar(high).applyMatrix4(mw);
+          _grDir.copy(_gUp).multiplyScalar(-1).transformDirection(mw).normalize();
+          grassRaycaster.set(_grOrigin, _grDir);
+          const hits = grassRaycaster.intersectObject(body.mesh, false);
+          let r = footR, isRock = 0;
+          if (hits.length) {
+            _grHit.copy(hits[0].point); body.mesh.worldToLocal(_grHit); r = _grHit.length();
+            isRock = groundIsRockFace(body, hits[0].face) ? 1 : 0;
+          }
+          rf.grid[iy * GN + ix] = r;
+          rf.gridRock[iy * GN + ix] = isRock;
+        }
+      }
+      rf.gridValid = true;
+    }
+
+    // Bilinear rock-ground coverage (0..1) from the snapshot mask grid.
+    function rockMask(rf, su, sv) {
+      const GN = ROCK_GN, GH = rf.gridHalf;
+      let fx = (su / GH * 0.5 + 0.5) * (GN - 1);
+      let fy = (sv / GH * 0.5 + 0.5) * (GN - 1);
+      fx = fx < 0 ? 0 : fx > GN - 1 ? GN - 1 : fx;
+      fy = fy < 0 ? 0 : fy > GN - 1 ? GN - 1 : fy;
+      const x0 = fx | 0, y0 = fy | 0;
+      const x1 = x0 < GN - 1 ? x0 + 1 : x0, y1 = y0 < GN - 1 ? y0 + 1 : y0;
+      const tx = fx - x0, ty = fy - y0, g = rf.gridRock;
+      const a = g[y0 * GN + x0] + (g[y0 * GN + x1] - g[y0 * GN + x0]) * tx;
+      const b = g[y1 * GN + x0] + (g[y1 * GN + x1] - g[y1 * GN + x0]) * tx;
+      return a + (b - a) * ty;
+    }
+
+    // Per-frame: refresh the probe + grid as needed, then re-place every boulder.
+    // (Only ~1000 instances, so we re-place each frame rather than guard on motion;
+    // the reveal lerp folds straight into the per-instance scale for a smooth fade.)
+    // Rock collision: treat each nearby boulder as a solid disc in the avatar's
+    // tangent (treadmill) frame and stop/deflect the proposed step (du,dv) at its
+    // edge, so you can't walk through rocks. Short pebbles are stepped over, and
+    // once a jump clears a boulder's height you pass over it. Tunables: the colR
+    // footprint factor (0.95) and the minColH step-over threshold.
+    const _rkOut = [0, 0];
+    function resolveRockCollision(du, dv) {
+      _rkOut[0] = du; _rkOut[1] = dv;
+      const rf = rockField, body = surfaceState.body;
+      if (!rf || !rf.mesh.visible || rf.reveal < 0.5 || !body || body.archetype !== 'desert') return _rkOut;
+      const PR = rf.PR, period = PR * 2, rockH = rf.rockH;
+      const uOff = surfaceState.grassU, vOff = surfaceState.grassV;
+      const eh = surfaceState.eyeHeight;
+      const minColH = eh * 0.18;          // pebbles shorter than this: just step over
+      const bodyR   = eh * 0.20;          // avatar half-width padding
+      const near    = eh * 5;             // ignore rocks beyond this tangent range
+      const airborne = !surfaceState.grounded;
+      let nu = du, nv = dv;
+      for (let i = 0; i < ROCK_COUNT; i++) {
+        const colH = rockH * rf.size[i] * rf.nsy[i];
+        if (colH < minColH) continue;                              // step over pebbles
+        if (airborne && surfaceState.jumpOffset > colH) continue;  // jump cleared its top
+        let u = rf.baseUV[2 * i]     * PR - uOff;
+        let v = rf.baseUV[2 * i + 1] * PR - vOff;
+        u -= period * Math.floor((u + PR) / period);
+        v -= period * Math.floor((v + PR) / period);
+        if (u < -near || u > near || v < -near || v > near) continue;
+        const colR = rockH * rf.size[i] * Math.max(rf.nsx[i], rf.nsz[i]) * 0.95 + bodyR;
+        const dx = nu - u, dy = nv - v;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < colR * colR) {                                    // proposed pos inside the rock
+          const d = Math.sqrt(d2) || 1e-5;
+          const push = colR / d;                                  // shove back out to the edge (slides)
+          nu = u + dx * push;
+          nv = v + dy * push;
+        }
+      }
+      _rkOut[0] = nu; _rkOut[1] = nv;
+      return _rkOut;
+    }
+    function updateRocks(dt) {
+      if (!rockField || viewMode !== 'surface' || !surfaceState.body) return;
+      const rf = rockField;
+
+      rf.sampleTimer -= dt;
+      if (rf.sampleTimer <= 0) { rf.sampleTimer = 0.4; sampleRockGround(); }
+
+      rf.reveal += (rf.targetReveal - rf.reveal) * Math.min(1, dt * 4);
+      if (rf.reveal <= 0.01) { rf.mesh.visible = false; return; }
+      rf.mesh.visible = true;
+
+      const PR = rf.PR;
+      if (!rf.gridValid ||
+          Math.abs(surfaceState.grassU - rf.gridU) > PR * 0.4 ||
+          Math.abs(surfaceState.grassV - rf.gridV) > PR * 0.4) {
+        refreshRockGrid();
+      }
+
+      const period = PR * 2, rockH = rf.rockH, reveal = rf.reveal;
+      const up = surfaceState.localUp, right = surfaceState.localRight, fwd = surfaceState.localFwd;
+      const footR = surfaceState.groundRadius;
+      const uOff = surfaceState.grassU, vOff = surfaceState.grassV;
+      const driftU = surfaceState.grassU - rf.gridU, driftV = surfaceState.grassV - rf.gridV;
+      for (let i = 0; i < ROCK_COUNT; i++) {
+        let u = rf.baseUV[2 * i]     * PR - uOff;
+        let v = rf.baseUV[2 * i + 1] * PR - vOff;
+        u -= period * Math.floor((u + PR) / period);
+        v -= period * Math.floor((v + PR) / period);
+        const au = u < 0 ? -u : u, av = v < 0 ? -v : v;
+        let ef = (1.0 - (au > av ? au : av) / PR) * 9.0;          // full to ~0.89·PR (past the horizon); thin fade beyond
+        ef = ef < 0 ? 0 : ef > 1 ? 1 : ef;
+        let mf = (rockMask(rf, driftU + u, driftV + v) - 0.18) * 2.7027;
+        mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+        let fade = ef * mf * reveal;
+        if (fade <= 0.004) { _gMat.makeScale(0, 0, 0); rf.mesh.setMatrixAt(i, _gMat); continue; }
+        fade = fade * fade * (3 - 2 * fade);                      // smoothstep ease
+        _gP.copy(up).multiplyScalar(footR).addScaledVector(right, u).addScaledVector(fwd, v);
+        _gUp.copy(_gP).normalize();
+        const sz = rockH * rf.size[i];
+        const grR = grassGroundRadius(rf, driftU + u, driftV + v);
+        const r = grR + sz * rf.nsy[i] * 0.25 * fade;             // sink lower third into the ground
+        _gP.copy(_gUp).multiplyScalar(r);
+        // Tip off vertical for a tumbled look, then spin about the surface normal.
+        const lean = rf.tiltAmt[i], th = rf.tiltTheta[i];
+        _gTilt.copy(_gUp)
+          .addScaledVector(right, Math.cos(th) * lean)
+          .addScaledVector(fwd,   Math.sin(th) * lean)
+          .normalize();
+        _gQuat.setFromUnitVectors(_gAxisY, _gTilt);
+        _gRot.setFromAxisAngle(_gUp, rf.yaw[i]);
+        _gQuat.premultiply(_gRot);
+        _gScale.set(sz * rf.nsx[i] * fade, sz * rf.nsy[i] * fade, sz * rf.nsz[i] * fade);
+        _gMat.compose(_gP, _gQuat, _gScale);
+        rf.mesh.setMatrixAt(i, _gMat);
+      }
+      rf.mesh.instanceMatrix.needsUpdate = true;
+    }
+
+
+    // ── Local water patch (surface-walk only) ──────────────────────────────
+    // The shared ocean SPHERE is far too coarse to show waves at the walking
+    // avatar's scale — there are only one or two triangles between the eye and the
+    // horizon, so sphere-level displacement can only heave slowly. In surface mode
+    // we instead lay a dedicated, finely-tessellated water mesh tangent to the sea
+    // under the avatar: a flat grid whose verts are projected onto the sea-level
+    // sphere (so it hugs the planet's curvature) and displaced by short-wavelength
+    // travelling waves in the vertex shader. It re-centres on the avatar each frame
+    // while the waves are sampled in ground-fixed coords (the grass treadmill's
+    // drift) so the swell reads as world-fixed rather than dragged along. It's only
+    // attached while walking a water world, so the orbit/system view never sees it.
+    // STEP 1: waves only (real up/down). Crest + shoreline foam come later.
+    const WATER_PATCH_N = 144;          // grid resolution (verts per side)
+    let waterPatch = null;
+    let waterUniforms = null;
+
+    function buildWaterPatch() {
+      const N = WATER_PATCH_N;
+      // Flat unit grid; after the rotate it lies in the XZ plane with position.xz
+      // spanning [-1,1] (the tangent coords the shader scales by the patch radius).
+      const geo = new THREE.PlaneGeometry(2, 2, N - 1, N - 1);
+      geo.rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshStandardMaterial({
+        // Opaque so it reads as a clean blue sea — at 0.92 it revealed the deep,
+        // dark OCEAN_DEPTH_BOOST seabed beneath and looked blotchy. (See-through
+        // shallows can come back later as a depth-aware effect.) The shader still
+        // fades alpha at the rim, which needs transparent:true.
+        color: 0xffffff, roughness: 0.22, metalness: 0.04,
+        transparent: true, opacity: 1.0, side: THREE.DoubleSide,
+      });
+      mat.polygonOffset = true;          // bias against the global ocean sphere it sits on
+      mat.polygonOffsetFactor = -1;
+      mat.polygonOffsetUnits = -1;
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uPUp    = { value: new THREE.Vector3(0, 1, 0) };
+        sh.uniforms.uPRight = { value: new THREE.Vector3(1, 0, 0) };
+        sh.uniforms.uPFwd   = { value: new THREE.Vector3(0, 0, 1) };
+        sh.uniforms.uPR     = { value: 0.4 };           // patch half-size (body-local units)
+        sh.uniforms.uBodyR  = { value: 12 };            // sea-level radius (curvature)
+        sh.uniforms.uLift   = { value: 0.004 };         // tiny outward bias over the sphere ocean
+        sh.uniforms.uDrift  = { value: new THREE.Vector2(0, 0) };  // ground-fixed wave offset
+        sh.uniforms.uWaveTime = { value: 0 };
+        sh.uniforms.uWaveAmp  = { value: 0.004 };
+        // STEP 2 — crest foam: white foam riding the tops of the waves.
+        sh.uniforms.uFoamColor = { value: FOAM_COLOR };
+        sh.uniforms.uCrestFoam = { value: 0.85 };       // crest foam strength (0 = off)
+        // Depth-based look (clearer shallows → deeper blue) + STEP 3 shoreline foam.
+        // uSeabedTex is the equirect seabed-height map (built by bakeOceanShore);
+        // the shader reads water depth under each fragment from it.
+        sh.uniforms.uSeabedTex  = { value: null };
+        sh.uniforms.uShallowCol = { value: new THREE.Color(0x9fe0ee) };  // clear shallow tint
+        sh.uniforms.uDeepCol    = { value: new THREE.Color(0x2f7fc0) };  // deeper open-water tint
+        sh.uniforms.uShallowA   = { value: 0.72 };      // alpha in the shallows (only slightly see-through)
+        sh.uniforms.uDeepA      = { value: 0.95 };      // alpha in deep water (near opaque)
+        sh.uniforms.uDepthFade  = { value: 0.65 };      // seabed-height units over which it deepens
+        sh.uniforms.uShoreFoam  = { value: 0.9 };       // shoreline crash-foam strength
+        sh.uniforms.uShoreW     = { value: 0.16 };      // shoreline foam band width (depth units)
+        // Stylized self-illumination floor so the water keeps its clear blue even
+        // in dim / colour-tinted surface lighting instead of crushing to near-black.
+        sh.uniforms.uWaterGlow  = { value: 0.28 };
+        waterUniforms = sh.uniforms;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>',
+            '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\n'
+          + 'float wv(vec2 p){\n  float t = uWaveTime;\n  float h = 0.0;\n'
+          + '  h += sin(dot(p, vec2(1.0, 0.25)) * 60.0 + t * 1.6) * 0.50;\n'
+          + '  h += sin(dot(p, vec2(-0.35, 1.0)) * 85.0 - t * 1.9) * 0.32;\n'
+          + '  h += sin(dot(p, vec2(0.80, 0.60)) * 130.0 + t * 2.6) * 0.18;\n'
+          + '  return h;\n}')
+          // Project the grid point onto the sea sphere, bump the normal from the
+          // wave slope (finite differences), then displace radially by wave height.
+          .replace('#include <beginnormal_vertex>',
+            '#include <beginnormal_vertex>\n'
+          + '  vec2 _uv = position.xz;\n'
+          + '  float _u = _uv.x * uPR;\n  float _v = _uv.y * uPR;\n'
+          + '  vec2 _w = vec2(_u, _v) + uDrift;\n'
+          + '  float _h = wv(_w);\n'
+          + '  vec3 _dir = normalize(uPUp * uBodyR + uPRight * _u + uPFwd * _v);\n'
+          + '  float _e = 0.004;\n'
+          + '  float _hR = wv(_w + vec2(_e, 0.0));\n  float _hF = wv(_w + vec2(0.0, _e));\n'
+          + '  vec3 _grad = (uPRight * (_hR - _h) + uPFwd * (_hF - _h)) / _e;\n'
+          + '  objectNormal = normalize(_dir - _grad * uWaveAmp * 1.2);\n')
+          .replace('#include <begin_vertex>',
+            '#include <begin_vertex>\n'
+          + '  transformed = _dir * (uBodyR + uLift + _h * uWaveAmp);\n'
+          + '  vEdge = max(abs(_uv.x), abs(_uv.y));\n'
+          + '  vWaveH = _h;\n'      // wave height ∈[-1,1] (crest ≈ +1) → crest foam
+          + '  vW = _w;\n'          // ground-fixed coords → foam noise rides the wave
+          + '  vDir = _dir;\n');    // unit body-local dir → equirect seabed-depth lookup
+        // Soft rim fade so the patch edge melts into the global ocean sphere out
+        // past the horizon (where curvature already hides the seam anyway).
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', '#include <common>\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nuniform float uWaveTime;\nuniform vec3 uFoamColor;\nuniform float uCrestFoam;\nuniform sampler2D uSeabedTex;\nuniform vec3 uShallowCol;\nuniform vec3 uDeepCol;\nuniform float uShallowA;\nuniform float uDeepA;\nuniform float uDepthFade;\nuniform float uShoreFoam;\nuniform float uShoreW;\nuniform float uWaterGlow;\nvec3 _waterEmit = vec3(0.0);\nfloat fHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat fNoise(vec2 x){ vec2 i = floor(x); vec2 f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(mix(fHash(i), fHash(i + vec2(1.0, 0.0)), f.x), mix(fHash(i + vec2(0.0, 1.0)), fHash(i + vec2(1.0, 1.0)), f.x), f.y); }\nfloat fFbm(vec2 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 3; k++){ s += a * fNoise(p); p *= 2.03; a *= 0.5; } return s; }')
+          // Sea floor depth from the equirect seabed map → clearer, more
+          // transparent shallows over a deeper, opaque blue; plus a shoreline
+          // crash-foam band that surges in and recedes as the waves wash up.
+          .replace('#include <color_fragment>',
+            '#include <color_fragment>\n'
+          + '  vec3 _d = normalize(vDir);\n'
+          + '  vec2 _suv = vec2(atan(_d.z, _d.x) / PI2 + 0.5, asin(clamp(_d.y, -1.0, 1.0)) / PI + 0.5);\n'
+          + '  float _H = texture2D(uSeabedTex, _suv).r * 9.0 - 6.0;\n'   // decode seabed height
+          + '  float _depth = max(0.0, -_H);\n'                          // water depth (height units)
+          + '  float _df = smoothstep(0.0, uDepthFade, _depth);\n'
+          + '  diffuseColor.rgb = mix(uShallowCol, uDeepCol, _df);\n'     // clearer shallows → deep blue
+          + '  float _alpha = mix(uShallowA, uDeepA, _df);\n'
+          + '  _alpha *= 1.0 - smoothstep(0.86, 1.0, vEdge);\n'           // rim fade into the far sea
+          // Crest foam (Step 2): white caps on the upper part of each wave crest.
+          + '  float _crest = smoothstep(0.45, 0.92, vWaveH);\n'
+          + '  float _ctex = fFbm(vW * 240.0 + vec2(uWaveTime * 0.5, -uWaveTime * 0.4));\n'
+          + '  float _crestFoam = uCrestFoam * _crest * smoothstep(0.30, 0.75, _ctex);\n'
+          // Shoreline crash foam (Step 3): a foam band hugging the waterline whose
+          // width pulses with time (waves rushing up the sand, then drawing back),
+          // broken into lacy streaks. Strongest right at depth 0, gone past uShoreW.
+          + '  float _wash = 0.6 + 0.4 * sin(uWaveTime * 2.2 + (vW.x + vW.y) * 26.0);\n'
+          + '  float _band = smoothstep(uShoreW * _wash, 0.0, _depth);\n'
+          + '  float _stex = fFbm(vW * 170.0 + vec2(-uWaveTime * 0.35, uWaveTime * 0.5));\n'
+          + '  float _shoreFoam = uShoreFoam * _band * smoothstep(0.25, 0.8, _stex);\n'
+          + '  float _foam = clamp(max(_crestFoam, _shoreFoam), 0.0, 1.0);\n'
+          + '  diffuseColor.rgb = mix(diffuseColor.rgb, uFoamColor, _foam);\n'
+          + '  diffuseColor.a = max(_alpha, _foam * 0.9);\n'
+          + '  _waterEmit = diffuseColor.rgb;\n')   // feed the self-illumination floor below
+          // Stylized glow floor: lift the water toward its own colour so it stays a
+          // clear blue (and foam stays white) even where the scene light is dim.
+          .replace('#include <emissivemap_fragment>',
+            '#include <emissivemap_fragment>\n  totalEmissiveRadiance += _waterEmit * uWaterGlow;\n');
+      };
+      mat.customProgramCacheKey = () => 'waterPatch';
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;        // always centred on the camera
+      mesh.renderOrder = 2;
+      mesh.visible = false;
+      waterPatch = { mesh, mat };
+    }
+
+    // Mount the water patch for a fresh surface visit. Only shows on liquid WATER
+    // worlds (lava/acid seas keep the plain sphere); sized to the body's eye height
+    // so the swell reads the same on a moon or a giant.
+    function attachWaterPatch(body) {
+      if (!waterPatch) buildWaterPatch();
+      const wp = waterPatch;
+      wp.mesh.visible = false;
+      if (wp.mesh.parent) wp.mesh.parent.remove(wp.mesh);
+      const show = !!(body.matter && body.matter.liquid && body.oceanIsWater);
+      if (!show) return;
+      // Ensure the seabed-depth texture exists/fresh (depth transparency + shore foam).
+      if (!body.seabedTex) bakeOceanShore(body);
+      if (waterUniforms) {
+        waterUniforms.uPR.value       = surfaceState.eyeHeight * 30;
+        waterUniforms.uBodyR.value    = body.baseRadius;
+        // uLift MUST be ≥ uWaveAmp so wave TROUGHS never dip below sea level —
+        // otherwise the shallow seabed pokes up through the troughs near shore and
+        // the water looks blotchy. The whole sea then rides slightly above true sea
+        // level (negligible) with troughs ≈ sea level and crests ≈ +2·amp.
+        waterUniforms.uWaveAmp.value  = surfaceState.eyeHeight * 0.22;
+        waterUniforms.uLift.value     = surfaceState.eyeHeight * 0.27;
+        waterUniforms.uWaveTime.value = 0;
+        waterUniforms.uDrift.value.set(0, 0);
+        waterUniforms.uSeabedTex.value = body.seabedTex || null;
+        // Clearer-blue look derived from the body's own water tint: shallows lean
+        // bright/pale, open water leans a touch deeper than the base tint.
+        const base = new THREE.Color(body.oceanBaseColor || COL.water);
+        waterUniforms.uShallowCol.value.copy(base).lerp(new THREE.Color(0xffffff), 0.45);
+        waterUniforms.uDeepCol.value.copy(base);   // keep deep water a bright clear blue, not near-black
+      }
+      body.mesh.add(wp.mesh);
+      wp.mesh.visible = true;
+    }
+
+    function detachWaterPatch() {
+      if (waterPatch && waterPatch.mesh.parent) waterPatch.mesh.parent.remove(waterPatch.mesh);
+    }
+
+    // Per-frame: re-centre the patch on the avatar (current tangent frame) and
+    // scroll the wave field by the walker's drift so it stays world-fixed. Waves
+    // freeze while the sim is paused, matching the sphere ocean's clock.
+    function updateWaterPatch(dt) {
+      if (!waterPatch || !waterPatch.mesh.visible || viewMode !== 'surface' || !surfaceState.body) return;
+      if (!waterUniforms) return;
+      waterUniforms.uPUp.value.copy(surfaceState.localUp);
+      waterUniforms.uPRight.value.copy(surfaceState.localRight);
+      waterUniforms.uPFwd.value.copy(surfaceState.localFwd);
+      waterUniforms.uDrift.value.set(surfaceState.grassU, surfaceState.grassV);
+      if (!paused) waterUniforms.uWaveTime.value += dt;
     }
 
     // WASD walking. Movement happens in body-local space along the tangent
@@ -5720,7 +7465,7 @@
     // direction the user faces relative to "north" remains consistent step
     // to step.
     const surfaceKeys = { w: false, a: false, s: false, d: false, shift: false };
-    const SURFACE_SPRINT_MULT = 3.0;
+    const SURFACE_SPRINT_MULT = 2.0;
     const _walkHeading = new THREE.Vector3();
     const _walkStrafe  = new THREE.Vector3();
     const _walkDelta   = new THREE.Vector3();
@@ -5754,33 +7499,80 @@
       _groundHitLocal.copy(hits[0].point);
       body.mesh.worldToLocal(_groundHitLocal);
       let ground = _groundHitLocal.length();
-      // On bodies with oceans, never descend below sea level — walk on the
-      // waterline instead of sinking to the seabed.
-      if (body.matter && body.matter.liquid) ground = Math.max(ground, body.baseRadius);
+      // Ocean bodies USED to clamp the walker to the waterline here. Now the eye
+      // follows the real seabed, so wading off a beach actually sinks you below
+      // sea level and underwater fog kicks in (see updateSurfaceSkyEffects).
       return ground;
     }
 
     function stepSurfaceWalk(dt) {
       if (viewMode !== 'surface' || !surfaceState.body) return;
+
+      // Jump physics: integrate vertical motion along the surface normal. Runs
+      // every frame (not just on input) so a leap always arcs back to ground.
+      if (!surfaceState.grounded) {
+        surfaceState.vertVel -= surfaceState.gravity * dt;
+        surfaceState.jumpOffset += surfaceState.vertVel * dt;
+        if (surfaceState.jumpOffset <= 0) {
+          surfaceState.jumpOffset = 0;
+          surfaceState.vertVel = 0;
+          surfaceState.grounded = true;
+        }
+      }
+
       const fwdInput    = (surfaceKeys.w ? 1 : 0) + (surfaceKeys.s ? -1 : 0);
       const strafeInput = (surfaceKeys.d ? 1 : 0) + (surfaceKeys.a ? -1 : 0);
-      if (fwdInput === 0 && strafeInput === 0) return;
+      const moving = fwdInput !== 0 || strafeInput !== 0;
+
+      // Drive the animation state machine: airborne → jump; on the ground →
+      // run (sprint) / walk / idle depending on input.
+      if (!surfaceState.grounded)      setAstronautAction('jump');
+      else if (moving)                 setAstronautAction(surfaceKeys.shift ? 'run' : 'walk');
+      else                             setAstronautAction('idle');
 
       // Heading and strafe in local space: take the basis vectors and rotate
       // them by the current yaw about local up, so "forward" is whichever way
-      // the user is currently facing.
+      // the camera currently looks.
       _walkHeading.copy(surfaceState.localFwd)
         .applyAxisAngle(surfaceState.localUp, surfaceState.yaw);
       _walkStrafe.copy(surfaceState.localRight)
         .applyAxisAngle(surfaceState.localUp, surfaceState.yaw);
 
-      const speed = surfaceState.moveSpeed * (surfaceKeys.shift ? SURFACE_SPRINT_MULT : 1);
+      // The avatar faces the direction it actually MOVES (not the camera), so the
+      // forward walk/run clip matches strafing and diagonal motion instead of
+      // looking like it's running forwards sideways. Idle keeps the look heading.
+      if (moving) {
+        surfaceState.faceLocal.copy(_walkHeading).multiplyScalar(fwdInput)
+          .addScaledVector(_walkStrafe, strafeInput).normalize();
+      } else {
+        surfaceState.faceLocal.copy(_walkHeading);
+        return;
+      }
+
+      // Wading drag: moving below sea level on an ocean body is slower, so
+      // stepping into water feels heavier than striding on land.
+      const submerged = surfaceState.body.matter && surfaceState.body.matter.liquid &&
+        (surfaceState.groundRadius + surfaceState.eyeHeight) < surfaceState.body.baseRadius;
+      const speed = surfaceState.moveSpeed * (surfaceKeys.shift ? SURFACE_SPRINT_MULT : 1) * (submerged ? 0.55 : 1);
       const step  = speed * dt;
       _walkDelta.set(0, 0, 0)
         .addScaledVector(_walkHeading, fwdInput * step)
         .addScaledVector(_walkStrafe,  strafeInput * step);
 
+      // Rock collision: convert the tangent step to (du,dv), let solid boulders
+      // block/deflect it, then rebuild the step from the resolved values.
+      let _rkDu = _walkDelta.dot(surfaceState.localRight);
+      let _rkDv = _walkDelta.dot(surfaceState.localFwd);
+      const _rkRes = resolveRockCollision(_rkDu, _rkDv);
+      _rkDu = _rkRes[0]; _rkDv = _rkRes[1];
+      _walkDelta.copy(surfaceState.localRight).multiplyScalar(_rkDu)
+        .addScaledVector(surfaceState.localFwd, _rkDv);
       surfaceState.localEye.add(_walkDelta);
+
+      // Feed the grass treadmill: how far this step drifted along the (pre-
+      // transport) tangent basis the field places blades against.
+      surfaceState.grassU += _walkDelta.dot(surfaceState.localRight);
+      surfaceState.grassV += _walkDelta.dot(surfaceState.localFwd);
 
       // new up = normalized eye position after the tangent step.
       _walkNewUp.copy(surfaceState.localEye).normalize();
@@ -5812,6 +7604,22 @@
       surfaceState.localUp.copy(_walkNewUp);
     }
 
+    // Launch a jump if we're standing on the ground. Mid-air presses are
+    // ignored (no double-jump) so the arc stays predictable.
+    function tryJump() {
+      if (viewMode !== 'surface' || !surfaceState.grounded) return;
+      surfaceState.vertVel = surfaceState.jumpSpeed;
+      surfaceState.grounded = false;
+    }
+
+    // Flip between the trailing third-person rig and the eye-level first-person
+    // view. The avatar is hidden in first person so it doesn't fill the screen.
+    function toggleSurfaceCamera() {
+      if (viewMode !== 'surface') return;
+      surfaceState.cameraMode = surfaceState.cameraMode === 'third' ? 'first' : 'third';
+      if (astronaut) astronaut.root.visible = surfaceState.cameraMode === 'third';
+    }
+
     // ====== 33. Surface input ======
     let surfaceDragging = false;
     let surfaceDragLastX = 0;
@@ -5820,8 +7628,8 @@
     const SURFACE_PITCH_LIMIT = Math.PI * 0.49;
 
     renderer.domElement.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
       if (viewMode === 'pick') {
+        if (e.button !== 0) return;
         e.preventDefault();
         setPointerFromEvent(e);
         raycaster.setFromCamera(pointer, camera);
@@ -5850,6 +7658,15 @@
         return;
       }
       if (viewMode === 'surface') {
+        // Re-request pointer lock if lost.
+        if (document.pointerLockElement !== renderer.domElement) {
+          try {
+            renderer.domElement.requestPointerLock();
+          } catch (err) {}
+        }
+
+        // Left OR right drag orbits the camera around the character.
+        if (e.button !== 0 && e.button !== 2) return;
         e.preventDefault();
         surfaceDragging = true;
         surfaceDragLastX = e.clientX;
@@ -5858,12 +7675,28 @@
       }
     });
 
+    // Suppress the browser context menu while on a surface so right-drag can
+    // orbit the camera without popping a menu.
+    renderer.domElement.addEventListener('contextmenu', (e) => {
+      if (viewMode === 'surface') e.preventDefault();
+    });
+
     renderer.domElement.addEventListener('pointermove', (e) => {
-      if (!surfaceDragging || viewMode !== 'surface') return;
-      const dx = e.clientX - surfaceDragLastX;
-      const dy = e.clientY - surfaceDragLastY;
-      surfaceDragLastX = e.clientX;
-      surfaceDragLastY = e.clientY;
+      if (viewMode !== 'surface') return;
+
+      let dx = 0, dy = 0;
+      if (document.pointerLockElement === renderer.domElement) {
+        dx = e.movementX;
+        dy = e.movementY;
+      } else if (surfaceDragging) {
+        dx = e.clientX - surfaceDragLastX;
+        dy = e.clientY - surfaceDragLastY;
+        surfaceDragLastX = e.clientX;
+        surfaceDragLastY = e.clientY;
+      } else {
+        return;
+      }
+
       surfaceState.yaw   -= dx * SURFACE_LOOK_SPEED;
       surfaceState.pitch += dy * SURFACE_LOOK_SPEED;
       if (surfaceState.pitch >  SURFACE_PITCH_LIMIT) surfaceState.pitch =  SURFACE_PITCH_LIMIT;
@@ -5878,12 +7711,20 @@
     renderer.domElement.addEventListener('pointerup', endSurfaceDrag);
     renderer.domElement.addEventListener('pointercancel', endSurfaceDrag);
 
-    // Scroll = FOV zoom in surface mode. We piggyback on the canvas wheel
-    // event with capture so we can intercept it before OrbitControls (which
-    // is disabled anyway, but the listener still exists).
+    // If the browser releases pointer lock (ESC), also exit surface mode.
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement !== renderer.domElement && viewMode === 'surface') {
+        exitSurfaceMode();
+      }
+    });
+
+    // Scroll in surface mode: in first person it zooms the FOV. Third person has
+    // a fixed framing, so scroll does nothing there. We piggyback on the canvas
+    // wheel event so we intercept it before OrbitControls (disabled anyway).
     renderer.domElement.addEventListener('wheel', (e) => {
       if (viewMode !== 'surface') return;
       e.preventDefault();
+      if (surfaceState.cameraMode !== 'first') return;   // no zoom in third person
       const step = e.deltaY > 0 ? 1.08 : 1 / 1.08;
       surfaceState.fov = Math.max(20, Math.min(95, surfaceState.fov * step));
       camera.fov = surfaceState.fov;
@@ -5905,6 +7746,22 @@
 
       const k = e.key.toLowerCase();
 
+      // Toggle orbits (global shortcut)
+      if (k === 'o') {
+        const next = !showSatelliteOrbits;
+        setSatelliteOrbitLinesVisible(next);
+        const satInput = document.getElementById('showSatelliteOrbits');
+        if (satInput) satInput.checked = next;
+
+        const orbitsInput = document.getElementById('showOrbits');
+        if (orbitsInput) {
+          orbitsInput.checked = next;
+          orbitLinesGroup.visible = next;
+        }
+        e.preventDefault();
+        return;
+      }
+
       // Navigation (orbit/pick modes)
       if (viewMode !== 'surface') {
         if (k === 'arrowup' || k === 'w') { navUp(); e.preventDefault(); }
@@ -5920,6 +7777,8 @@
       else if (k === 'a' || k === 'arrowleft')  { surfaceKeys.a = true; e.preventDefault(); }
       else if (k === 'd' || k === 'arrowright') { surfaceKeys.d = true; e.preventDefault(); }
       else if (k === 'shift') surfaceKeys.shift = true;
+      else if (k === ' ' || e.code === 'Space') { tryJump(); e.preventDefault(); }
+      else if (k === 'v') { toggleSurfaceCamera(); e.preventDefault(); }
     });
     document.addEventListener('keyup', (e) => {
       const k = e.key.toLowerCase();
@@ -6078,6 +7937,25 @@
         { id: 'carina',      name: 'Carina',       mapX: 0.46, mapY: 0.80, starSystems: [] },
       ],
     };
+    // Scatter the constellations across the galaxy map with rough spacing so the
+    // sectors look randomly placed (like the systems inside them), not on a fixed
+    // grid. Session-only — re-rolled each load. mapX/mapY can also be dragged.
+    (function scatterConstellations() {
+      const placed = [];
+      const minD = 0.24;
+      galaxy.constellations.forEach(con => {
+        let x, y, tries = 0;
+        do {
+          x = 0.15 + Math.random() * 0.70;
+          y = 0.18 + Math.random() * 0.60;
+          tries++;
+        } while (tries < 50 && placed.some(p => Math.hypot(p.x - x, p.y - y) < minD));
+        placed.push({ x, y });
+        con.mapX = x;
+        con.mapY = y;
+      });
+    })();
+
     // id of the system currently built into the 3D scene (set by loadStarSystem).
     let currentSystemId = null;
     let systemSeq = 0; // monotonic counter for unique procedural-system ids
@@ -6311,31 +8189,6 @@
     // scene) so currentSystemId is set through the same path as every later swap.
     loadStarSystem(findStarSystem('sol'));
 
-    // Temporary console harness for Phase 2 (no map UI yet). Drive system swaps
-    // from devtools to verify the engine end-to-end, e.g.:
-    //   galaxyDebug.list()                       → every system + which is loaded
-    //   galaxyDebug.create('orion')              → make a random system in Orion
-    //   galaxyDebug.load('<id from list>')        → swap the 3D scene to it
-    //   galaxyDebug.load('sol')                  → return home
-    //   galaxyDebug.remove('<id>')               → delete a (non-current) system
-    // Removed once the map overlays drive these (Phase 3/4).
-    window.galaxyDebug = {
-      galaxy,
-      list() {
-        return allStarSystems().map(s => ({
-          id: s.id,
-          name: s.name,
-          constellation: s.constellationId,
-          planets: s.isPreset ? SOLAR_SYSTEM_SPEC.length : (s.planetSpecs || []).length,
-          current: s.id === currentSystemId,
-        }));
-      },
-      create: (constellationId = 'orion') => createStarSystem(constellationId),
-      load: (id) => loadStarSystemById(id),
-      remove: (id) => deleteStarSystem(id),
-      current: () => currentSystemId,
-    };
-
     // ====== 34b. Star-map overlays ======
     // The galaxy/constellation levels are 2D HTML overlays (not 3D scenes). The
     // bottom transport panel stays visible and drives them: ▲ climbs (system →
@@ -6344,6 +8197,7 @@
     // viewedConstellationId are declared up in section 34 (the bottom-nav render
     // needs them during the first boot, before this runs).
     const mapOverlay          = document.getElementById('mapOverlay');
+    const mapGalaxyArt        = document.getElementById('mapGalaxyArt');
     const mapField            = document.getElementById('mapField');
     const mapTitleEl          = document.getElementById('mapTitle');
     const mapEyebrowEl        = document.getElementById('mapEyebrow');
@@ -6356,6 +8210,125 @@
     function currentConstellation() {
       const sys = findStarSystem(currentSystemId);
       return (sys && findConstellation(sys.constellationId)) || galaxy.constellations[0];
+    }
+
+    // Build the spiral-galaxy art once (lazily, on first galaxy-map open): a
+    // spinning wrapper carrying star particles laid along two logarithmic arms,
+    // warm (pink/white) near the core fading to cool (violet/blue) at the rim,
+    // plus a scattering of faint field stars. Left in the DOM after building.
+    function buildGalaxyArt() {
+      if (!mapGalaxyArt || mapGalaxyArt.dataset.built) return;
+      mapGalaxyArt.dataset.built = '1';
+      const spin = document.createElement('div');
+      spin.className = 'galaxy-spin';
+      const frag = document.createDocumentFragment();
+      const ramp = [ // warm-core → cool-rim colour stops, lerped by t
+        [255, 236, 240], [255, 188, 214], [226, 130, 214], [150, 110, 240], [110, 150, 255],
+      ];
+      const lerpColor = (t) => {
+        const s = Math.max(0, Math.min(0.999, t)) * (ramp.length - 1);
+        const i = s | 0, f = s - i, a = ramp[i], b = ramp[i + 1] || a;
+        return `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)},${Math.round(a[1] + (b[1] - a[1]) * f)},${Math.round(a[2] + (b[2] - a[2]) * f)})`;
+      };
+      const addStar = (x, y, size, color, opacity, glow) => {
+        const star = document.createElement('span');
+        star.className = 'galaxy-star';
+        star.style.left = x + '%';
+        star.style.top = y + '%';
+        star.style.width = size + 'px';
+        star.style.height = size + 'px';
+        star.style.background = color;
+        star.style.opacity = opacity;
+        if (glow) star.style.boxShadow = `0 0 ${(size * 1.7).toFixed(1)}px ${color}`;
+        frag.appendChild(star);
+      };
+      const arms = 2, perArm = 180, turns = 2.6;
+      for (let arm = 0; arm < arms; arm++) {
+        const base = (arm / arms) * Math.PI * 2;
+        for (let i = 0; i < perArm; i++) {
+          const t = i / perArm;
+          const r = Math.pow(t, 0.6) * 46;                  // % radius, tight near core
+          const theta = base + t * turns * Math.PI * 2;
+          const spread = 0.7 + t * 6;                       // arms thicken outward
+          const x = 50 + Math.cos(theta) * r + (Math.random() - 0.5) * spread;
+          const y = 50 + Math.sin(theta) * r + (Math.random() - 0.5) * spread;
+          const size = (1 - t) * 2.4 + 0.7 + Math.random() * 1.6;
+          addStar(x, y, size, lerpColor(t * 1.05), (0.3 + (1 - t) * 0.55).toFixed(2), true);
+        }
+      }
+      for (let i = 0; i < 130; i++) {                        // faint field stars for density
+        const ang = Math.random() * Math.PI * 2;
+        const rr = Math.pow(Math.random(), 0.5) * 47;
+        addStar(50 + Math.cos(ang) * rr, 50 + Math.sin(ang) * rr,
+          0.5 + Math.random() * 1.2, 'rgba(220,222,255,0.85)', (0.12 + Math.random() * 0.4).toFixed(2), false);
+      }
+      spin.appendChild(frag);
+      mapGalaxyArt.appendChild(spin);
+    }
+
+    // Make a map point draggable: live-update its model's mapX/mapY so the layout
+    // persists for the session, and cancel the navigation click if the press was
+    // an actual drag (not a tap). onMove redraws dependent art (e.g. lines).
+    function enablePointDrag(pt, model, onMove) {
+      let down = false, moved = false, sx = 0, sy = 0;
+      pt.addEventListener('pointerdown', (e) => {
+        if (e.target.classList.contains('map-point-del')) return;
+        down = true; moved = false; sx = e.clientX; sy = e.clientY;
+        try { pt.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+      pt.addEventListener('pointermove', (e) => {
+        if (!down) return;
+        if (!moved && Math.abs(e.clientX - sx) < 4 && Math.abs(e.clientY - sy) < 4) return;
+        moved = true;
+        pt.classList.add('dragging');
+        const rect = mapField.getBoundingClientRect();
+        const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        model.mapX = nx; model.mapY = ny;
+        pt.style.left = (nx * 100) + '%';
+        pt.style.top = (ny * 100) + '%';
+        if (onMove) onMove();
+      });
+      const end = (e) => {
+        if (!down) return;
+        down = false;
+        pt.classList.remove('dragging');
+        try { pt.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      pt.addEventListener('pointerup', end);
+      pt.addEventListener('pointercancel', end);
+      // Capture phase: swallow the click so a drag doesn't also navigate/travel.
+      pt.addEventListener('click', (e) => {
+        if (moved) { e.stopImmediatePropagation(); e.preventDefault(); moved = false; }
+      }, true);
+    }
+
+    // Faint star-chart links: connect each system to its two nearest neighbours,
+    // so the systems read as a constellation figure. Coordinates share the points'
+    // 0..100 % space (viewBox 100×100, non-uniform scale). Rebuilt on drag.
+    function drawConstellationLines(svg, systems) {
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      const pts = systems.map(s => ({ x: s.mapX * 100, y: s.mapY * 100 }));
+      const NS = 'http://www.w3.org/2000/svg';
+      const seen = new Set();
+      for (let i = 0; i < pts.length; i++) {
+        // Rank the other points by distance and link to the closest two.
+        const near = [];
+        for (let j = 0; j < pts.length; j++) {
+          if (j === i) continue;
+          near.push({ j, d: (pts[i].x - pts[j].x) ** 2 + (pts[i].y - pts[j].y) ** 2 });
+        }
+        near.sort((a, b) => a.d - b.d);
+        near.slice(0, 2).forEach(({ j }) => {
+          const key = i < j ? `${i}-${j}` : `${j}-${i}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          const ln = document.createElementNS(NS, 'line');
+          ln.setAttribute('x1', pts[i].x); ln.setAttribute('y1', pts[i].y);
+          ln.setAttribute('x2', pts[j].x); ln.setAttribute('y2', pts[j].y);
+          svg.appendChild(ln);
+        });
+      }
     }
 
     // Open the map overlay if it isn't already up (shared by both levels).
@@ -6379,6 +8352,7 @@
     function openGalaxyMap() {
       viewLevel = 'galaxy';
       mapOverlay.classList.add('is-galaxy');
+      buildGalaxyArt();
       showMapOverlay();
       renderGalaxyMap();
       renderNavBodies();
@@ -6429,6 +8403,7 @@
             <span class="map-point-sub">${n} system${n === 1 ? '' : 's'}${isActive ? ' · here' : ''}</span>
           </span>`;
         pt.addEventListener('click', () => openConstellationMap(con.id));
+        enablePointDrag(pt, con);
         mapField.appendChild(pt);
       });
     }
@@ -6441,7 +8416,14 @@
       mapEyebrowEl.textContent = 'Constellation';
       mapTitleEl.textContent = con.name;
       mapField.innerHTML = '';
-      con.starSystems.forEach(sys => {
+      const systems = con.starSystems;
+      // Constellation links go in first so they sit behind the dots.
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.id = 'mapLines';
+      svg.setAttribute('viewBox', '0 0 100 100');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      mapField.appendChild(svg);
+      systems.forEach(sys => {
         const isCurrent = sys.id === currentSystemId;
         const planetCount = sys.isPreset ? SOLAR_SYSTEM_SPEC.length : (sys.planetSpecs || []).length;
         const pt = document.createElement('button');
@@ -6466,8 +8448,10 @@
           }
           travelToSystem(sys);
         });
+        enablePointDrag(pt, sys, () => drawConstellationLines(svg, systems));
         mapField.appendChild(pt);
       });
+      drawConstellationLines(svg, systems);
     }
 
     // Travel to a system: no-op-but-close if it's already loaded, otherwise run
@@ -6572,13 +8556,22 @@
             }
           }
         }
+        // Ocean waves drift on the same clock as clouds (frozen while paused).
+        // The uniforms live on the compiled shader, captured in userData.shader.
+        for (const b of bodies) {
+          if (!b.oceanMesh || !b.oceanMesh.visible) continue;
+          const os = b.oceanMesh.material.userData.shader;
+          if (os) os.uniforms.uWaveTime.value = gasTime;
+        }
       }
       updateMoons(dt);
       updateSatellites(dt);
       updateEruptions(dt);
       updateCityMarkers();
       updateSunLightForFocus();
+      updateMoonLight();
       updateFocusTracking();
+
       controls.update();
       // In surface mode the camera rides the focused body — recompute its
       // transform from the body's current world matrix every frame so spin
@@ -6586,11 +8579,21 @@
       if (viewMode === 'surface') {
         stepSurfaceWalk(dt);
         updateSurfaceCamera();
+        updateAstronaut(dt);
+        updateGrass(dt);
+        updateRocks(dt);
+        updateWaterPatch(dt);
         updateSurfaceSkyEffects();
       }
       if (isPainting && isBrushTool() && lastHitLocal && activeBrushBody) {
         applyBrushToBody(activeBrushBody, lastHitLocal, dt);
       }
+      // Galactic band rides with the camera (skybox) and inherits the
+      // starfield's daylight fade so it washes out under a daytime atmosphere
+      // and blazes on the night side / in space. SURFACE_STAR_OPACITY is the
+      // full-brightness reference, so this is 1.0 everywhere but surface-daytime.
+      milkyway.position.copy(camera.position);
+      milkyMat.uniforms.uBrightness.value = starMat.opacity / SURFACE_STAR_OPACITY;
       liveInfoAccum += dt;
       if (liveInfoAccum >= 0.1) { liveInfoAccum = 0; updateLiveInfo(); }
       renderer.render(scene, camera);

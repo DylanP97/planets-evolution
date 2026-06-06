@@ -1204,6 +1204,17 @@ body.map-mode #bottomNav { z-index: 31; }
 }
 .map-point:focus,
 .map-point:focus-visible { outline: none; }
+/* Kill the global button chrome (border/box/glow) so a point is just its glowing
+   dot — no rectangular "card" on hover. */
+.map-point,
+.map-point:hover:not(:disabled) {
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.map-point.dragging { cursor: grabbing; }
+.map-point.dragging .map-point-label { opacity: 0; }
 .map-point-dot {
   position: relative;
   width: 14px; height: 14px;
@@ -1353,16 +1364,16 @@ body.transitioning #systemTransition { opacity: 1; pointer-events: auto; }
 }
 
 /* ====== Galaxy-level backdrop ======
-   On the galaxy map the plain starfield gives way to a spinning spiral galaxy
-   seen at an angle: a perspective-tilted disk whose colour runs warm at the
-   core (white → pink → magenta) out to cool arms (purple → blue), with lighter
-   spiral streaks layered on top. .is-galaxy is toggled on #mapOverlay by the
-   map controller. (A CSS approximation of a real spiral-galaxy photo.) */
+   On the galaxy map the plain starfield gives way to a spiral galaxy seen at an
+   angle. #mapGalaxyArt is the perspective-tilted disk; inside it .galaxy-spin
+   slowly rotates and carries the JS-generated star particles (buildGalaxyArt)
+   that trace two logarithmic spiral arms, plus a faint nebular haze. The core
+   bulge is the static ::after. .is-galaxy is toggled on #mapOverlay. */
 #mapGalaxyArt {
   position: absolute;
-  left: 50%; top: 46%;
-  width: 130vmax; height: 130vmax;
-  transform: translate(-50%, -50%) perspective(1400px) rotateX(62deg);
+  left: 50%; top: 47%;
+  width: 120vmax; height: 120vmax;
+  transform: translate(-50%, -50%) perspective(1500px) rotateX(64deg);
   transform-style: preserve-3d;
   border-radius: 50%;
   opacity: 0;
@@ -1371,40 +1382,58 @@ body.transitioning #systemTransition { opacity: 1; pointer-events: auto; }
   z-index: 0;
 }
 #mapOverlay.is-galaxy #mapGalaxyArt { opacity: 1; }
-#mapOverlay.is-galaxy #mapStarfield { opacity: 0.45; }
-/* Spinning disk: spiral-arm streaks (top) over a radial colour gradient. */
-#mapGalaxyArt::before {
-  content: '';
+#mapOverlay.is-galaxy #mapStarfield { opacity: 0.4; }
+/* Slowly spinning wrapper: faint colour haze under the star particles. The arms
+   themselves are the particles, so the haze is a soft radial wash only. */
+.galaxy-spin {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background:
-    conic-gradient(from 0deg at 50% 50%,
-      rgba(255,255,255,0)   0deg, rgba(255,210,235,0.20)  26deg, rgba(200,160,255,0.10) 64deg, rgba(255,255,255,0) 92deg,
-      rgba(255,255,255,0)  98deg, rgba(255,210,235,0.20) 124deg, rgba(200,160,255,0.10) 162deg, rgba(255,255,255,0) 190deg,
-      rgba(255,255,255,0) 196deg, rgba(255,210,235,0.20) 222deg, rgba(200,160,255,0.10) 260deg, rgba(255,255,255,0) 288deg,
-      rgba(255,255,255,0) 294deg, rgba(255,210,235,0.20) 320deg, rgba(200,160,255,0.10) 358deg, rgba(255,255,255,0) 360deg),
-    radial-gradient(circle at 50% 50%,
-      rgba(255,250,245,0.95)  0%,
-      rgba(255,196,214,0.72)  8%,
-      rgba(232,120,190,0.55) 18%,
-      rgba(168,96,224,0.45)  32%,
-      rgba(104,96,222,0.36)  50%,
-      rgba(64,82,186,0.22)   68%,
-      rgba(36,52,130,0.08)   82%,
-      rgba(20,30,90,0)       92%);
-  filter: blur(14px);
-  animation: galaxySpin 160s linear infinite;
+  transform-style: preserve-3d;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(255,244,240,0.55)  0%,
+    rgba(255,196,214,0.34)  9%,
+    rgba(220,120,200,0.22) 20%,
+    rgba(150,96,224,0.16)  36%,
+    rgba(92,104,222,0.12)  54%,
+    rgba(48,66,160,0.05)   74%,
+    rgba(20,30,90,0)       90%);
+  filter: blur(6px);
+  animation: galaxySpin 200s linear infinite;
+}
+/* One star particle in an arm (positioned/sized/coloured by buildGalaxyArt). */
+.galaxy-star {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 /* Bright, slightly elongated core bulge (static, so the centre stays lit). */
 #mapGalaxyArt::after {
   content: '';
   position: absolute;
   left: 50%; top: 50%;
-  width: 26%; height: 20%;
+  width: 24%; height: 18%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,252,248,0.98) 0%, rgba(255,205,222,0.78) 28%, rgba(236,130,196,0.3) 60%, rgba(236,130,196,0) 78%);
-  filter: blur(7px);
+  background: radial-gradient(circle, rgba(255,252,248,0.98) 0%, rgba(255,210,226,0.8) 26%, rgba(236,140,200,0.32) 58%, rgba(236,130,196,0) 78%);
+  filter: blur(6px);
+  z-index: 2;
 }
 @keyframes galaxySpin { to { transform: rotate(360deg); } }
+
+/* Constellation lines: faint star-chart strokes linking each system to its
+   nearest neighbour(s). Drawn into an SVG behind the points. */
+#mapLines {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+#mapLines line {
+  stroke: rgba(0, 242, 255, 0.28);
+  stroke-width: 1;
+  filter: drop-shadow(0 0 3px rgba(0, 242, 255, 0.35));
+}
