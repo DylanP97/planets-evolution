@@ -557,6 +557,20 @@ select, input.text-input {
   100% { top: 100%; }
 }
 
+/* Full-screen underwater tint. The 3D fog can't touch the fog-less sky/sun/star
+   shaders, so this overlay is what makes the WHOLE view read submerged. The
+   gradient (body's own water colour) and opacity are driven from script.js. */
+#underwaterOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 90;
+  opacity: 0;
+}
+
 #scanOverlay {
   position: fixed;
   top: 0;

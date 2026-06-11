@@ -2,7 +2,7 @@
 
 > Map for navigating this project. Optimized for greppability — every section here matches a `// ====== Section ======` banner in `script.js`, so you can jump from a topic to the code in one search.
 
-The project is intentionally a flat, single-file Three.js app (`script.js`, ~3,500 lines) plus `index.html` and `style.css`. No build step, no bundler. The HTML uses an `importmap` to pull Three.js from a CDN and loads `script.js` as a module.
+The project is intentionally a flat, single-file Three.js app (`script.js`, ~8,600 lines) plus `index.html` and `style.css`. No build step, no bundler. The HTML uses an `importmap` to pull Three.js from a CDN and loads `script.js` as a module.
 
 ---
 
@@ -25,45 +25,49 @@ Each row maps a banner in `script.js` to its line range. After editing, re-grep 
 
 | #   | Section                       | Lines       | Responsibility                                                                                          |
 | --- | ----------------------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
-| 1   | Planet constants              | 54–98       | `BASE_RADIUS`, biome height bands, color palette, `BIOME` enum.                                         |
-| 2   | Scene                         | 99–147      | `scene`, `camera`, `renderer`, `controls`, `sun` PointLight, `sunMesh`. Mouse buttons configured here.  |
-| 3   | Palettes                      | 148–164     | `PLANET_PALETTE`, `MOON_PALETTE`.                                                                       |
-| 4   | Body framework                | 165–184     | `BODY_HEIGHT_SCALE`, `MAX/MIN_LAND_HEIGHT`, the `bodies` registry, `smoothstep`.                        |
-| 5   | Gas shader                    | 185–403     | GLSL for atmosphere + full-gas modes (`uMode = 0 \| 1`). `makeGasMaterial()` factory.                   |
-| 5b  | Plasma shader                 | —           | GLSL for the animated star photosphere ("lava ocean"). `makePlasmaMaterial()` + `makeCoronaMaterial()`; lights the Sun + corona halo here, builds `plasmaTickUniforms`. |
-| 6   | Ring shader                   | 404–557     | GLSL for planetary rings. `RING_INNER/OUTER_FACTOR`, `makeRingMaterial()`.                              |
-| 7   | Body creation                 | 558–827     | `createBody()`, vertex writers, `applyBrushToBody()`, `commitBodyChanges()`.                            |
-| 8   | Terrain generation            | 828–887     | Hash/RNG, `buildTerrainBasis`, `sampleTerrainNoise` (sum-of-sines FBM).                                 |
-| 9   | Archetypes                    | 888–972     | `ARCHETYPES`, `ARCHETYPE_MATTER`, `applyMatterToBody()`.                                                |
-| 10  | Gas / rings appliers + regen  | 973–1029    | `applyGasShell`, `applyRingsToBody`, `regenerateBody`.                                                  |
-| 11  | Planets (sun orbits)          | 1030–1067   | `planets[]`, `DEFAULT_SPIN`, `updatePlanetOrbits`, `registerPlanet`.                                    |
-| 12  | Orbit ellipse trajectories    | 1068–1119   | The visible orbit rings: `buildOrbitLineGeometry`, `refreshOrbitLine`, `disposeOrbitLine`.              |
-| 13  | Solar system bootstrap        | 1120–1183   | `SOLAR_SYSTEM_SPEC`, `spawnSolarPlanet`, initial `solarBodies[]`. Default focus = `solarBodies[2]`.     |
-| 14  | Brush                         | 1184–1226   | `brushRadius`, `brushStrength`, brush ring mesh, `updateBrushRing`.                                     |
-| 15  | Pointer handling              | 1227–1319   | Pointerdown/move/up wiring on the canvas. Raycast → `applyBrushToBody`.                                 |
-| 16  | Moons                         | 1320–1448   | `MOON_*` constants, `moons[]`, slot allocator, `addMoon`, `updateMoons`.                                |
-| 17  | Probes (satellites)           | 1449–1625   | `MAX_PROBES`, `probes[]`, `loadSatelliteTemplate` (GLB), `addSatellite`, `updateSatellites`.            |
-| 18  | Cities                        | —           | `lunar_base.glb`, `cities[]`, `addCity`, `loadCityTemplate`, `updateCityMarkers`.                      |
-| 19  | Starfield                     | 1710–1736   | 2000 background points at r ≈ 2200.                                                                     |
-| 19b | Eruptions                     | —           | Solar prominences (Sun only — planets/moons don't erupt). `eruptions[]`, `spawnEruption`, `updateEruptions`. Each is a GPU particle burst (`THREE.Points` + `ERUPT_VERT`/`ERUPT_FRAG`: ballistic droplets integrated on the GPU from a `uTime` uniform, cooling hot→cool) plus a `flameTex` vent-flash sprite, parented to the sun pseudo-body's group (`sunMesh`). |
-| 20  | Planet rotation               | 1737–1748   | `updatePlanetRotation` — spins each planet by its `rotationSpeed`.                                      |
-| 21  | Sun light for focus           | 1749–1799   | `updateSunLightForFocus` refreshes per-body `uSunDir` uniforms (atmosphere + rings).                    |
-| 22  | Focus                         | 1800–1867   | `focusedBody`, `focusedCity`, `setFocus`, `setCityFocus`, `updateFocusTracking` (chase target).         |
-| 22b | Temperature / climate         | —           | `ARCHETYPE_CLIMATE`, `sunDistanceOf`, `computeClimate`, `temperatureAtLatitude`, `tempColor`. Distance + archetype → surface temp; latitude hook for future biomes. |
-| 23  | Info panel                    | 1868–2092   | Telemetry pane on the right: composition rollup, peak, **climate (mean + equator/pole)**, day period, orbit period. |
-| 24  | Random names                  | 2093–2131   | `COSMIC_WORDS`, `generateCosmic`, `generateName('planet' \| 'moon' \| 'system')`.                       |
-| 25  | UI (tabs + sliders)           | 2132–2331   | DOM lookups; tab switching; slider → value conversions.                                                 |
-| 26  | Atmosphere sliders            | 2332–2357   | `applyAtmoSliderToFocus` (thickness, density, coverage).                                                |
-| 27  | Ring controls                 | 2358–2416   | `applyRingsSliderToFocus`.                                                                              |
-| 28  | Context-aware left panel      | 2417–2671   | `applyFocusToLeftPanel` — what tabs/sections are visible per focus kind.                                |
-| 29  | Body orbit sliders            | 2672–2729   | Distance / orbit-speed / spin / size sliders (planet vs moon).                                          |
-| 30  | Add / Remove planet           | 2730–3028   | `deployNewPlanet`, `removePlanetBody`, `renderPlanetList`, moons/probes list renderers.                 |
-| 31  | Hierarchy navigation          | 3029–3184   | Bottom-nav arrows: `navUp`, `navDown`, `navSibling`, `renderNavBodies`.                                 |
-| 32  | Surface walk                  | 3185–3424   | `enterPickMode` → click → `enterSurfaceMode` → `updateSurfaceCamera`. State in `surfaceState`.          |
-| 33  | Surface input                 | 3425–3539   | Mouse-look (Pointer Lock), scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
-| 34  | Renaming                      | 3540–3632   | `setBodyName`, `setSystemName`, `commitFocusName`. Triggers re-render fan-out.                          |
-| 35  | Init + Resize                 | 3633–3639   | Window-resize listener (and seed moons / final `setSystemFocus()` just above it).                       |
-| 36  | Animate                       | 3640–end    | The frame loop. Drives orbits, rotations, gas time, cities, lights, surface camera, render.             |
+| 1   | Planet constants              | 54–162      | `BASE_RADIUS`, biome height bands, color palette, `BIOME` enum.                                         |
+| 2   | Scene                         | 163–225     | `scene`, `camera`, `renderer`, `controls`, `sun` PointLight, `sunMesh`. Mouse buttons configured here.  |
+| 3   | Palettes                      | 226–242     | `PLANET_PALETTE`, `MOON_PALETTE`.                                                                       |
+| 4   | Body framework                | 243–281     | `BODY_HEIGHT_SCALE`, `MAX/MIN_LAND_HEIGHT`, the `bodies` registry, `smoothstep`.                        |
+| 5   | Gas shader                    | 282–727     | GLSL for atmosphere + full-gas modes (`uMode = 0 \| 1`). `makeGasMaterial()` factory.                   |
+| 5b  | Plasma shader                 | 728–1224    | GLSL for the animated star photosphere ("lava ocean"). `makePlasmaMaterial()` + `makeCoronaMaterial()`; lights the Sun + corona halo here, builds `plasmaTickUniforms`. |
+| 6   | Ring shader                   | 1225–1378   | GLSL for planetary rings. `RING_INNER/OUTER_FACTOR`, `makeRingMaterial()`.                              |
+| 7   | Body creation                 | 1379–1851   | `createBody()`, vertex writers, `applyBrushToBody()`, `commitBodyChanges()`. The body `MeshStandardMaterial`'s `onBeforeCompile` also carries the **surface-walk ground detail** (`uSurfaceDetail` / `uBodyToView`): procedural relief-normal + albedo mottle that switch on only while standing on the body (off = stock orbit render). |
+| 8   | Terrain generation            | 1852–1911   | Hash/RNG, `buildTerrainBasis`, `sampleTerrainNoise` (sum-of-sines FBM).                                 |
+| 9   | Archetypes                    | 1912–2050   | `ARCHETYPES`, `ARCHETYPE_MATTER`, `applyMatterToBody()`. The venusian palette is near-black basalt; its land paint is a dedicated branch (`venusianLandColor`, section 7): elevation picks slab flats → volcanic regolith/dark soil → gravel + angular rock → pale highland tessera, broken by a coherent slab-plate field + index-hash gravel speckle. |
+| 10  | Gas / rings appliers + regen  | 2051–2302   | `applyGasShell`, `applyRingsToBody`, `regenerateBody`.                                                  |
+| 11  | Planets (sun orbits)          | 2303–2347   | `planets[]`, `DEFAULT_SPIN`, `updatePlanetOrbits`, `registerPlanet`.                                    |
+| 12  | Orbit ellipse trajectories    | 2348–2497   | The visible orbit rings: `buildOrbitLineGeometry`, `refreshOrbitLine`, `disposeOrbitLine`.              |
+| 13  | Solar system bootstrap        | 2498–2568   | `SOLAR_SYSTEM_SPEC`, `spawnSolarPlanet`, initial `solarBodies[]`. Default focus = `solarBodies[2]`.     |
+| 14  | Brush                         | 2569–2626   | `brushRadius`, `brushStrength`, brush ring mesh, `updateBrushRing`.                                     |
+| 15  | Pointer handling              | 2627–2741   | Pointerdown/move/up wiring on the canvas. Raycast → `applyBrushToBody`.                                 |
+| 16  | Moons                         | 2742–2881   | `MOON_*` constants, `moons[]`, slot allocator, `addMoon`, `updateMoons`.                                |
+| 17  | Probes (satellites)           | 2882–3069   | `MAX_PROBES`, `probes[]`, `loadSatelliteTemplate` (GLB), `addSatellite`, `updateSatellites`.            |
+| 18  | Cities                        | 3070–3238   | `lunar_base.glb`, `cities[]`, `addCity`, `loadCityTemplate`, `updateCityMarkers`.                      |
+| 19  | Starfield                     | 3239–3265   | 2000 background points at r ≈ 2200.                                                                     |
+| 19a | Galactic band                 | 3266–3399   | Procedural Milky Way band behind the starfield.                                                          |
+| 19b | Eruptions                     | 3400–3589   | Solar prominences (Sun only — planets/moons don't erupt). `eruptions[]`, `spawnEruption`, `updateEruptions`. Each is a GPU particle burst (`THREE.Points` + `ERUPT_VERT`/`ERUPT_FRAG`: ballistic droplets integrated on the GPU from a `uTime` uniform, cooling hot→cool) plus a `flameTex` vent-flash sprite, parented to the sun pseudo-body's group (`sunMesh`). |
+| 20  | Planet rotation               | 3590–3601   | `updatePlanetRotation` — spins each planet by its `rotationSpeed`.                                      |
+| 21  | Sun light for focus           | 3602–3711   | `updateSunLightForFocus` refreshes per-body `uSunDir` uniforms (atmosphere + rings).                    |
+| 22  | Focus                         | 3712–3812   | `focusedBody`, `focusedCity`, `setFocus`, `setCityFocus`, `updateFocusTracking` (chase target).         |
+| 22b | Temperature / climate         | 3813–3971   | `ARCHETYPE_CLIMATE`, `sunDistanceOf`, `computeClimate`, `temperatureAtLatitude`, `tempColor`. Distance + archetype → surface temp; latitude hook for future biomes. |
+| 22c | Surface gravity model         | 3972–3996   | `surfaceGravityG` — per-body surface gravity (Earth = 1 g); feeds surface-walk jump + locomotion tuning. |
+| 23  | Info panel                    | 3997–4379   | Telemetry pane on the right: composition rollup, peak, **climate (mean + equator/pole)**, day period, orbit period. |
+| 24  | Random names                  | 4380–4418   | `COSMIC_WORDS`, `generateCosmic`, `generateName('planet' \| 'moon' \| 'system')`.                       |
+| 25  | UI (tabs + sliders)           | 4419–4699   | DOM lookups; tab switching; slider → value conversions.                                                 |
+| 26  | Atmosphere sliders            | 4700–4760   | `applyAtmoSliderToFocus` (thickness, density, coverage).                                                |
+| 27  | Ring controls                 | 4761–4822   | `applyRingsSliderToFocus`.                                                                              |
+| 28  | Context-aware left panel      | 4823–5185   | `applyFocusToLeftPanel` — what tabs/sections are visible per focus kind.                                |
+| 29  | Body orbit sliders            | 5186–5293   | Distance / orbit-speed / spin / size sliders (planet vs moon).                                          |
+| 30  | Add / Remove planet           | 5294–5610   | `deployNewPlanet`, `removePlanetBody`, `renderPlanetList`, moons/probes list renderers.                 |
+| 31  | Hierarchy navigation          | 5611–5846   | Bottom-nav arrows: `navUp`, `navDown`, `navSibling`, `renderNavBodies`.                                 |
+| 32  | Surface walk                  | 5847–8047   | `enterPickMode` → click → `enterSurfaceMode` → `updateSurfaceCamera`. State in `surfaceState`. Avatar = `character.glb` (clip state machine incl. swim; blob shadow); `updateSurfaceOrigin` = floating-origin shift (skinned-mesh float32 fix). Also the surface-detail systems, each `build/attach/detach/update*`: astronaut avatar, `grassField`, `flowerField` (piggybacks the grass grid), `rockField` (desert + venusian; per-archetype tint via `ROCK_GROUND_TINT`), water patch (waves + crest/shore foam + fresnel + micro-ripple glints), **`groundPatch`** (near-field micro-relief patch; also hosts the **footprint decals** — boot prints stamped on soft-soil worlds, see the Surface-walk walkthrough), the **atmospheric skylight** (`surfaceSkyLight` — thick-atmosphere diffuse daylight, ramped by sun elevation in `updateSurfaceSkyEffects`), the **aerial-perspective fog + underwater murk** (`updateSurfaceSkyEffects` — submersion judged from the CAMERA's body-local radius vs the lifted waterline; liquid-tinted `FogExp2` + the `#underwaterOverlay` full-screen tint that covers the fog-immune sky shaders), wave-riding swim buoyancy (`waveHeightAtAvatar` mirrors the patch shader's `wv()`), `stepSurfaceWalk`, `sampleGroundRadius`. |
+| 33  | Surface input                 | 8048–8248   | Mouse-look (Pointer Lock), scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
+| 34  | Renaming                      | 8249–8336   | `setBodyName`, `setSystemName`, `commitFocusName`. Triggers re-render fan-out.                          |
+| 34  | Star-system load / unload     | 8337–8616   | Save/serialize + load/rebuild + teardown of a whole star system.                                        |
+| 34b | Star-map overlays             | 8617–8929   | Galactic star-map overlay.                                                                              |
+| 35  | Init + Resize                 | 8930–8936   | Window-resize listener (and seed moons / final `setSystemFocus()` just above it).                       |
+| 36  | Animate                       | 8937–end    | The frame loop. Drives orbits, rotations, gas time, cities, lights, surface camera, render.             |
 
 ---
 
@@ -219,9 +223,19 @@ Single state variable, `viewMode`, gates everything: `'orbit' | 'pick' | 'surfac
 
 - **orbit** (default): OrbitControls drive the camera. Brush works. Click `VISIT SURFACE` button → `enterPickMode`.
 - **pick**: OrbitControls disabled. Next left-click on the focused body's mesh → `enterSurfaceMode`. Bodies fail the eligibility check if `matter.solid === false` (gas/ice giants).
-- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Mouse movement = look (Pointer Lock), scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (clamped to sea level on ocean bodies); the eye lerps to `ground + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
+- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Mouse movement = look (Pointer Lock), scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (seabeds are real basins — wading off a beach sinks below sea level); the eye lerps to `support + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
 
-Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the gas mesh's side (`DoubleSide` → `BackSide` again), and any `uOpaqueSky` override.
+**Avatar**: `character.glb` (three.js RobotExpressive — colored, rigged) loaded once by `loadAstronaut`, driven by a clip state machine `idle | walk | run | jump | swim` (`setAstronautAction`, fuzzy clip-name matching so a Mixamo GLB can be swapped in; `jump`/`wave` are `LoopOnce` one-shots, and a wave plays on each landing). A radial-gradient **blob shadow** disc under the feet does the grounding (the sun's system-scale shadow map can't resolve the figure); it stays on the ground and fades as the body leaps.
+
+**Swimming**: on a water world, when the seabed drops > ~1 eye-height below sea level (with hysteresis), `surfaceState.swimming` flips on and `standRadius` — the support radius the eye/feet/camera all ride — eases from `groundRadius` to just under the waterline. The avatar blends into a prone paddling pose (procedural tilt + bob; the walk clip slowed doubles as the stroke), movement halves, jumps are disabled, and the head stays above water so the underwater fog doesn't trigger.
+
+**Floating origin**: planets sit up to ~900 world units out while the avatar is ~0.01 units tall, and skinned-mesh bone matrices upload as float32 — at those coordinates the rig visibly trembles at idle. `updateSurfaceOrigin` (called first thing each surface frame) slides the whole scene so the walker sits at the world origin. Scene children positioned from *world-space* values must subtract `scene.position` (the avatar pivot, the milkyway skybox, the moonlight rig, and the `surfaceSkyLight` do).
+
+**Footprints** (soft-soil worlds): walking stamps boot prints into the ground. Each print is a decal evaluated in the `groundPatch` **fragment shader** (no extra meshes / no z-fighting): an oriented boot SDF (rounded sole + heel + tread bars) that darkens the soil, lightens a displaced-soil rim, and bends the shading normal into a soft depression. Prints live in the same ground-fixed treadmill coords (`grassU/grassV`) as the patch's micro-relief, so they stay put as the avatar walks away, and settle (fade) over `FOOT_LIFE` (~70 s) in a `FOOT_N`-slot ring buffer (`uFoot` vec4 array: u, v, yaw, fade). `stampFootprintsFromStep` meters alternating left/right prints every half-stride (multiple per frame are back-placed along the heading so slow frames keep even spacing); a jump landing punches both boots at once. `FOOTPRINT_GROUND` gates which archetypes print and how strongly (venusian soil full strength, its slab flats faint; desert + moon_like also print). `window.footDiag()` is the console diagnostic. GOTCHA: injected GLSL varyings are `#ifndef`-guarded because three.js can re-run `onBeforeCompile` over an already-patched string (program variants) — bare declarations land twice and fail to compile.
+
+**Surface lighting**: while walking, two adjustments keep the ground readable and seam-free. (1) `surfaceSkyLight` — a HemisphereLight tinted by the body's `skyTint` whose base strength scales with the live gas envelope (`(density × coverage)^1.5`), so a Venus-thick shell gets bright, near-shadowless overcast daylight (the near-black basalt would otherwise crush to silhouette) while Earth-like shells get a negligible fill and airless worlds none; ramped by sun elevation each frame so night still falls. (2) The visited body's mesh stops sampling the sun's shadow map (`receiveShadow = false`, restored on exit, `material.needsUpdate` both ways): one system-scale shadow texel spans the whole landscape, so at grazing sun angles the terrain self-shadowed to black while the shadow-free `groundPatch` floating above it stayed lit — a glaring circular seam. (The patch itself also never receives shadows, same reason as the water patch.)
+
+Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the gas mesh's side (`DoubleSide` → `BackSide` again), any `uOpaqueSky` override, the body's `receiveShadow`, the skylight (off), and zeroes the floating-origin shift.
 
 ### Focus → left panel
 
@@ -255,7 +269,7 @@ Anything referenced from JS by id, grouped by panel:
 | Dynamics           | `showOrbits`, `showSatelliteOrbits`, `pauseRot`                                                                                 |
 | Info panel (right) | `infoBodyName`, `infoSubtitle`, `infoComposition`, `infoClimateSection`, `infoTempMean`, `infoTempRangeRow`, `infoTempRange`, `infoTempBar`, `infoPeak`, `infoVerts`, `infoMoons`, `infoDayPeriod`, `infoDayTime`, `infoOrbit*` |
 | Bottom nav         | `navBreadcrumb`, `navFocusLevel`, `navFocusName`, `navFocusSub`, `navUp/Down/Left/Right`, `navRandomBtn`, `navVisit`            |
-| Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`                                    |
+| Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`, `underwaterOverlay` (full-screen submerged tint) |
 | Misc               | `c` (the WebGL canvas), `pickHint`, `pickToast`, `scanOverlay`                                                                  |
 
 ---

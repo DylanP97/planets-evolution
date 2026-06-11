@@ -215,6 +215,17 @@
     scene.add(moonLight);
     scene.add(moonLight.target);
 
+    // Surface-walk skylight: a thick atmosphere scatters the sun into bright,
+    // near-shadowless diffuse daylight (Venus's overcast noon — the Venera
+    // photos have no shadows). Off in orbit; enterSurfaceMode sets its tint +
+    // base strength from the body's live gas shell (density × coverage, so
+    // airless and thin-aired worlds keep their stark directional look), and
+    // updateSurfaceSkyEffects ramps it with the sun's elevation so night still
+    // falls. Its position is ONLY a direction for the hemisphere gradient —
+    // must subtract scene.position (floating origin) like the moonlight rig.
+    const surfaceSkyLight = new THREE.HemisphereLight(0xffffff, 0x202020, 0.0);
+    scene.add(surfaceSkyLight);
+
     const sunMesh = new THREE.Mesh(
       new THREE.SphereGeometry(SUN_RADIUS, 48, 24),
       new THREE.MeshBasicMaterial({ color: 0xfff0c0, fog: false })
@@ -1415,16 +1426,62 @@
       });
       // Add `aGlow * ICE_GLOW_COLOR` to the emissive output. Keeps the night side
       // of ordinary terrain black (aGlow = 0 there) while letting ice self-light.
+      //
+      // ALSO carries the surface-walk ground-detail shading (uSurfaceDetail): a
+      // high-frequency procedural relief that switches on ONLY while standing on
+      // the body (enterSurfaceMode ramps uSurfaceDetail 0→1, exitSurfaceMode 1→0).
+      // From orbit it's 0 and every branch below is skipped, so the disc renders
+      // byte-for-byte as before. Up close it perturbs the lit normal from the
+      // gradient of an OBJECT-space value-noise FBM (the same finite-difference
+      // trick the ocean swell uses) plus a faint albedo mottle, so the bare ground
+      // between grass/rocks reads as textured dirt instead of flat low-poly facets.
+      // Fully procedural — no textures, no UVs, no seams. The object→view rotation
+      // (uBodyToView) is refreshed each frame for the visited body in
+      // updateSurfaceCamera; we only override `normal` when the detail is active,
+      // so bodies seen from orbit keep their stock (correct) normal untouched.
       mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uGlowColor = { value: ICE_GLOW_COLOR };
+        shader.uniforms.uGlowColor     = { value: ICE_GLOW_COLOR };
+        shader.uniforms.uSurfaceDetail = { value: 0 };
+        shader.uniforms.uDetailFreq    = { value: 55.0 };
+        shader.uniforms.uDetailAmp     = { value: 0.18 };   // gentle relief — higher values scatter harsh dark facets
+        shader.uniforms.uDetailMottle  = { value: 0.05 };   // subtle albedo variation only
+        shader.uniforms.uBodyToView    = { value: new THREE.Matrix3() };
+        mat.userData.detailShader = shader;
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
-          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;');
+          .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;\nvarying vec3 vBodyPos;\nvarying vec3 vBodyNrm;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vGlow = aGlow;\n  vBodyPos = position;\n  vBodyNrm = normalize(normal);');
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', '#include <common>\nuniform vec3 uGlowColor;\nvarying float vGlow;')
+          .replace('#include <common>',
+            '#include <common>\n'
+          + 'uniform vec3 uGlowColor;\n'
+          + 'uniform float uSurfaceDetail;\nuniform float uDetailFreq;\nuniform float uDetailAmp;\nuniform float uDetailMottle;\nuniform mat3 uBodyToView;\n'
+          + 'varying float vGlow;\nvarying vec3 vBodyPos;\nvarying vec3 vBodyNrm;\n'
+          + 'float dHash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n'
+          + 'float dNoise(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);\n'
+          + '  return mix(mix(mix(dHash(i), dHash(i + vec3(1.0,0.0,0.0)), f.x), mix(dHash(i + vec3(0.0,1.0,0.0)), dHash(i + vec3(1.0,1.0,0.0)), f.x), f.y),\n'
+          + '             mix(mix(dHash(i + vec3(0.0,0.0,1.0)), dHash(i + vec3(1.0,0.0,1.0)), f.x), mix(dHash(i + vec3(0.0,1.0,1.0)), dHash(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z); }\n'
+          + 'float dFbm(vec3 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 4; k++){ s += a * dNoise(p); p *= 2.02; a *= 0.5; } return s; }')
+          .replace('#include <normal_fragment_maps>',
+            '#include <normal_fragment_maps>\n'
+          + '  if (uSurfaceDetail > 0.001) {\n'
+          + '    vec3 _dn = normalize(vBodyNrm);\n'
+          + '    vec3 _dref = abs(_dn.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n'
+          + '    vec3 _dt1 = normalize(cross(_dn, _dref));\n'
+          + '    vec3 _dt2 = cross(_dn, _dt1);\n'
+          + '    vec3 _dp = vBodyPos * uDetailFreq;\n'
+          + '    float _dh = dFbm(_dp);\n'
+          + '    float _de = 0.6;\n'
+          + '    float _dgx = (dFbm(_dp + _dt1 * _de) - _dh) / _de;\n'
+          + '    float _dgy = (dFbm(_dp + _dt2 * _de) - _dh) / _de;\n'
+          + '    vec3 _dpn = normalize(_dn - (_dt1 * _dgx + _dt2 * _dgy) * uDetailAmp);\n'
+          + '    normal = normalize(uBodyToView * mix(_dn, _dpn, uSurfaceDetail));\n'
+          + '  }')
+          .replace('#include <color_fragment>',
+            '#include <color_fragment>\n'
+          + '  if (uSurfaceDetail > 0.001) { diffuseColor.rgb *= 1.0 - uDetailMottle * uSurfaceDetail * (dFbm(vBodyPos * uDetailFreq * 0.5) - 0.5); }')
           .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += uGlowColor * vGlow;');
       };
-      mat.customProgramCacheKey = () => 'bodyGlow';
+      mat.customProgramCacheKey = () => 'bodyGlowDetail';
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -1449,7 +1506,7 @@
       const oceanMat = new THREE.MeshStandardMaterial({
         color: 0xffffff,            // real tint comes from per-vertex colors below
         vertexColors: true,
-        roughness: 0.30,
+        roughness: 0.18,            // glossy enough for a visible sun glint from orbit
         metalness: 0.05,
         transparent: true,
         opacity: 1.0,               // real alpha is driven per-fragment in the shader below
@@ -1600,6 +1657,44 @@
       return zones[zones.length - 1];
     }
 
+    // Venusian ground colors (see the ARCHETYPES.venusian comment). Kept as
+    // shared Color instances so the per-vertex paint loop doesn't allocate.
+    const VENUS_SLAB_A   = new THREE.Color(0x232120);  // charcoal basalt plate
+    const VENUS_SLAB_B   = new THREE.Color(0x2e2a26);  // its lighter neighbor plate
+    const VENUS_REGOLITH = new THREE.Color(0x332c24);  // fine volcanic regolith
+    const VENUS_SOIL     = new THREE.Color(0x3e352c);  // rocky dark mud/soil
+    const VENUS_GRAVEL   = new THREE.Color(0x4c453d);  // gravel clast grey
+    const VENUS_GRIT     = new THREE.Color(0x5b5349);  // angular rock litter
+    const VENUS_TESSERA  = new THREE.Color(0x7e766b);  // pale highland tessera
+    const _venusCol      = new THREE.Color();
+
+    // Land color for the venusian archetype. Elevation picks the biome family
+    // (slabs → regolith/soil → gravel → tessera); a coherent plate field built
+    // from the vertex's unit DIRECTION (so patches are spatial, not index-
+    // striped) quantizes the slab flats into a mosaic of tonal plates, and an
+    // index hash sprinkles gravel/grit speckle through the soil bands.
+    function venusianLandColor(body, i, h) {
+      const ux = body.unitDirs[3 * i], uy = body.unitDirs[3 * i + 1], uz = body.unitDirs[3 * i + 2];
+      const t = (Math.sin(ux * 37.0) + Math.sin(uy * 41.3 + 1.7) + Math.sin(uz * 43.7 + 3.1)) / 3;
+      const plate = Math.floor((t * 0.5 + 0.5) * 3.999) / 3;             // 4 tonal plate steps, 0..1
+      const grit  = (((i * 1103515245 + 12345) >>> 8) % 1000) / 999;     // per-vertex speckle hash
+      const c = _venusCol;
+      if (h < SAND_TOP) {                       // flat basaltic slab lowlands
+        c.copy(VENUS_SLAB_A).lerp(VENUS_SLAB_B, plate);
+        if (grit > 0.93) c.lerp(VENUS_GRAVEL, 0.35);                     // odd pale chip in a seam
+      } else if (h < GRASS_TOP) {               // volcanic regolith → dark soil
+        c.copy(VENUS_REGOLITH).lerp(VENUS_SOIL, smoothstep(SAND_TOP, GRASS_TOP, h));
+        c.lerp(VENUS_SLAB_B, plate * 0.25);
+        if (grit > 0.85) c.lerp(VENUS_GRAVEL, 0.45);                     // gravel speckle
+      } else if (h < ROCK_TOP) {                // gravel + small angular rocks
+        c.copy(VENUS_GRAVEL).lerp(VENUS_GRIT, smoothstep(GRASS_TOP, ROCK_TOP, h));
+        if (grit > 0.7) c.lerp(VENUS_SOIL, 0.5);                         // dark soil between clasts
+      } else {                                  // radar-bright highland tessera
+        c.copy(VENUS_GRIT).lerp(VENUS_TESSERA, smoothstep(ROCK_TOP, ROCK_TOP + SNOW_FADE, h));
+      }
+      return c;
+    }
+
     function colorBodyVertex(body, i) {
       const h = body.heights[i];
       const b = body.biomes[i];
@@ -1714,6 +1809,9 @@
             // poles where the sun grazes — written into the aGlow attribute.
             if (z.glow && body.glowArr) body.glowArr[i] = z.glow;
           }
+        } else if (body.archetype === 'venusian') {
+          // Venus-black volcanic ground: slab plates / regolith / gravel speckle.
+          c = new THREE.Color().copy(venusianLandColor(body, i, h));
         } else if (h < SAND_TOP) c = new THREE.Color(p.sand);
         else if (h < GRASS_TOP) {
           const t = smoothstep(SAND_TOP, SAND_TOP + 0.15, h);
@@ -1877,7 +1975,12 @@
       jungle: { name: 'Jungle Planet', palette: { deep: 0x002200, shore: 0x004400, sand: 0x1a3300, grass: 0x006400, rock: 0x2d5a27, snow: 0x4d994d }, hasOcean: true, oceanCol: 0x1a3300, amp: 2.5, sea: 0.4 },
       swamp: { name: 'Swamp Planet', palette: { deep: 0x1a1a00, shore: 0x333300, sand: 0x4d4d00, grass: 0x2d5a27, rock: 0x1a3300, snow: 0x4d994d }, hasOcean: true, oceanCol: 0x2d5a27, amp: 1.5, sea: 0.7 },
       toxic: { name: 'Toxic Planet', palette: { deep: 0x1a0033, shore: 0x330066, sand: 0xadff2f, grass: 0x32cd32, rock: 0x4b0082, snow: 0x7fff00 }, hasOcean: true, oceanCol: 0xadff2f, amp: 2.2, sea: 0.6 },
-      venusian: { name: 'Venusian Planet', palette: { deep: 0x4a3520, shore: 0x7a5a2e, sand: 0xc9a25b, grass: 0xd2b074, rock: 0x8f6d3a, snow: 0xf2e2b5 }, hasOcean: false, amp: 1.5, sea: 0.0 },
+      // Venus as the landers saw it: a near-black volcanic surface under an ochre
+      // sky. Bands (low→high): basalt slab flats → volcanic regolith / dark soil
+      // → gravel + angular rock litter → pale radar-bright highland tessera.
+      // colorBodyVertex has a dedicated venusian branch that breaks these bands
+      // into slab plates + gravel speckle (see venusianLandColor).
+      venusian: { name: 'Venusian Planet', palette: { deep: 0x161412, shore: 0x1d1a17, sand: 0x242019, grass: 0x363028, rock: 0x4c463e, snow: 0x7a7268 }, hasOcean: false, amp: 1.5, sea: 0.0 },
       metal: { name: 'Metal-Rich', palette: { deep: 0x1a1a1a, shore: 0x333333, sand: 0x4d4d4d, grass: 0x666666, rock: 0x1a1a1a, snow: 0xffd700 }, hasOcean: false, amp: 3.5, sea: 0.0 },
       carbon: { name: 'Carbon Planet', palette: { deep: 0x050505, shore: 0x101010, sand: 0x1a1a1a, grass: 0x252525, rock: 0x0a0a0a, snow: 0x333333 }, hasOcean: false, amp: 2.2, sea: 0.0 },
       moon_like: { name: 'Moon-Like Rocky Planet', palette: { deep: 0x322e29, shore: 0x4a4238, sand: 0x6f6357, grass: 0x8a8174, rock: 0xa49a8b, snow: 0xe2dccf }, hasOcean: false, amp: 1.8, sea: 0.0 },
@@ -3656,8 +3759,10 @@
       
       // DirectionalLight: position is the direction vector relative to the target.
       // We set target at the body center, and position at (body center + direction).
-      moonLight.target.position.copy(_bodyPosTmp);
-      moonLight.position.copy(_bodyPosTmp).add(_toSunTmp);
+      // Minus scene.position: both are scene children, and in surface mode the
+      // scene carries the floating-origin shift (see updateSurfaceOrigin).
+      moonLight.target.position.copy(_bodyPosTmp).sub(scene.position);
+      moonLight.position.copy(_bodyPosTmp).add(_toSunTmp).sub(scene.position);
       
       // Subtle cool blue moonlight.
       moonLight.intensity = 0.18;
@@ -3996,7 +4101,7 @@
       jungle:      { water: 'River',      sand: 'Bank',       grass: 'Jungle',     rock: 'Highland',   snow: 'Canopy' },
       swamp:       { water: 'Bog',        sand: 'Marsh',      grass: 'Mossland',   rock: 'Ridge',      snow: 'Mist' },
       toxic:       { water: 'Acid Sea',   sand: 'Sludge',     grass: 'Bloom',      rock: 'Spire',      snow: 'Vapor' },
-      venusian:    { water: 'Lava Plain', sand: 'Ochre Flat', grass: 'Cream Crust',rock: 'Basalt',     snow: 'Highland' },
+      venusian:    { water: 'Basalt Basin',sand: 'Basalt Slabs',grass: 'Volcanic Regolith', rock: 'Gravel Field', snow: 'Highland Tessera' },
       metal:       { water: 'Slag Pit',   sand: 'Plate',      grass: 'Sheet',      rock: 'Ridge',      snow: 'Vein' },
       carbon:      { water: 'Tar',        sand: 'Ash Flat',   grass: 'Soot Plain', rock: 'Diamond',    snow: 'Carbon Peak' },
       moon_like:   { water: 'Crater Floor',sand: 'Dust Plain', grass: 'Regolith',   rock: 'Highland',   snow: 'Frost Cap' },
@@ -5840,9 +5945,18 @@
       gravity: 0,                          // pulls the jump back down, sized per body × surface gravity
       gravityG: 1,                         // body's surface gravity (Earth = 1 g), shown in telemetry
       locoScale: 1,                        // gravity-driven locomotion rate (slows walk + animation in low-g)
-      // Astronaut animation state machine: 'idle' | 'walk' | 'run' | 'jump'.
+      // Astronaut animation state machine: 'idle' | 'walk' | 'run' | 'jump' | 'swim'.
       animName: 'idle',
       stridePhase: 0,                      // drives procedural bob/sway for unrigged models
+      // Swimming: deep water can't support the walker, so the body floats at the
+      // waterline instead of riding the seabed. standRadius is the effective
+      // support radius for the feet/eye (groundRadius on land, just under sea
+      // level while afloat); swimBlend eases the avatar between upright and the
+      // prone paddling pose; swimPhase clocks the bob/roll.
+      swimming: false,
+      standRadius: 0,
+      swimBlend: 0,
+      swimPhase: 0,
       // Grass treadmill: how far (in body-local tangent units) the walker has
       // drifted from the patch origin along localRight / localFwd. The grass
       // field wraps blades modulo the patch size against these so the lawn reads
@@ -5935,16 +6049,19 @@
     // ── Astronaut character ────────────────────────────────────────────────
     // A GLB drives the surface avatar. It loads once and is re-parented to the
     // scene for each visit (only one surface session is ever active). The model
-    // is astronaut.glb. If it carries animation clips matching ASTRO_CLIPS we
-    // play them through an AnimationMixer; if it's an UNRIGGED static mesh (no
-    // skeleton / no clips — like the current astronaut), we fall back to
-    // procedural bob + lean so it still reads as moving. To get true limb
-    // animation, supply a rigged+animated GLB whose clips match ASTRO_CLIPS.
-    const ASTRO_MODEL_URL = 'astronaut.glb';
+    // is character.glb (the three.js RobotExpressive explorer): fully colored
+    // materials and a complete clip set — Idle/Walking/Running/Jump plus emotes
+    // like Wave. Clip names are fuzzy-matched, so any rigged+animated GLB
+    // (e.g. a Mixamo export) can be dropped in as a replacement; an UNRIGGED
+    // static mesh falls back to procedural bob + lean so it still reads as
+    // moving. (astronaut.glb is the old model: textured but missing a Jump
+    // clip, which is why jumps used to freeze in the idle pose.)
+    const ASTRO_MODEL_URL = 'character.glb';
     const ASTRO_CLIPS = { idle: 'Idle', walk: 'Walking', run: 'Running', jump: 'Jump' };
     // The model's local forward axis. Flip sign if the avatar faces the camera
-    // instead of showing its back. Soldier.glb faces -Z, so we use -1.
-    const ASTRO_FACING = -1;
+    // instead of showing its back. RobotExpressive faces +Z, so we use +1
+    // (Soldier.glb-style models face -Z and would need -1).
+    const ASTRO_FACING = 1;
     const ASTRO_TURN_RATE = 10;            // how fast the avatar swivels to face its heading
     const ASTRO_FADE = 0.18;               // animation crossfade seconds
     const ASTRO_HEIGHT_FACTOR = 0.9;       // avatar height as a fraction of eye height (tune the visual size)
@@ -5983,6 +6100,17 @@
               if (m && m.emissive) { m.emissive.setHex(0x222428); m.emissiveIntensity = 1.0; }
             });
           });
+          // Arm bones for the procedural swim stroke: the clip set has no swim
+          // animation and the walk clip barely moves the arms (~0.1 quaternion
+          // range), so updateAstronaut windmills these AFTER the mixer writes
+          // each frame. Fuzzy name match ("UpperArm.L" / "UpperArmL" / "upper_arm.R"…).
+          const armBones = { L: null, R: null };
+          inner.traverse((o) => {
+            const n = (o.name || '').toLowerCase().replace(/[^a-z]/g, '');
+            if (!n.includes('upperarm')) return;
+            if (n.endsWith('l')) armBones.L = o;
+            else if (n.endsWith('r')) armBones.R = o;
+          });
           const pivot = new THREE.Group();
           pivot.add(inner);
           // Build a mixer only if the model actually ships clips. We fuzzy-match
@@ -6007,14 +6135,41 @@
               walk: pick(ASTRO_CLIPS.walk, 'walk'),
               run:  pick(ASTRO_CLIPS.run, 'run', 'sprint', 'jog'),
               jump: pick(ASTRO_CLIPS.jump, 'jump', 'leap'),
+              swim: pick('swim', 'paddle', 'tread', 'breaststroke'),
+              wave: pick('wave', 'hello', 'greet'),
             };
             for (const key in clips) {
               if (clips[key]) actions[key] = mixer.clipAction(clips[key]);
             }
+            // One-shots: a jump plays once and freezes on its last frame until
+            // landing flips the state; the landing wave plays once then settles
+            // into idle via the mixer's 'finished' event below.
+            for (const key of ['jump', 'wave']) {
+              if (actions[key]) {
+                actions[key].setLoop(THREE.LoopOnce, 1);
+                actions[key].clampWhenFinished = true;
+              }
+            }
+            mixer.addEventListener('finished', () => {
+              if (!astronaut) return;
+              astronaut.oneShot = false;
+              // Airborne: hold the jump clip clamped on its final frame; the
+              // state machine crossfades out on touchdown.
+              if (surfaceState.animName === 'jump') return;
+              crossfadeAstronautTo(resolveAstronautAction(surfaceState.animName));
+            });
           }
           // "Animated" = we have at least a stand or walk clip to drive.
           const animated = !!(actions.idle || actions.walk);
-          astronaut = { root: pivot, inner, mixer, actions, animated, current: null, footOffset, nativeHeight: size.y || 1 };
+          // Soft blob shadow at the feet: the sun's cube shadow map covers the
+          // whole system and can't resolve a centimetre-scale figure, so a
+          // radial-gradient disc does the grounding instead. Child of the pivot
+          // (which carries world placement + scale); per-frame code drops it by
+          // the jump height so it stays ON the ground while the body leaps.
+          const shadow = buildAstronautBlobShadow(size.y || 1);
+          pivot.add(shadow);
+          astronaut = { root: pivot, inner, mixer, actions, animated, current: null,
+            oneShot: false, shadow, armBones, footOffset, nativeHeight: size.y || 1 };
           if (animated) {
             console.info('[surface] astronaut clips:', Object.keys(actions).join(', '));
           } else {
@@ -6029,14 +6184,55 @@
       return astronautLoading;
     }
 
+    // Radial-gradient disc lying flat in the pivot's XZ plane (pivot Y = surface
+    // normal). MeshBasicMaterial so it's a plain dark stain, unlit and cheap.
+    function buildAstronautBlobShadow(nativeH) {
+      const cnv = document.createElement('canvas');
+      cnv.width = cnv.height = 128;
+      const ctx = cnv.getContext('2d');
+      const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+      grad.addColorStop(0.0, 'rgba(0,0,0,0.55)');
+      grad.addColorStop(0.6, 'rgba(0,0,0,0.28)');
+      grad.addColorStop(1.0, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+      const mat = new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(cnv),
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.6,
+      });
+      const mesh = new THREE.Mesh(new THREE.CircleGeometry(nativeH * 0.34, 24), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = nativeH * 0.02;    // hair above the foot plane to dodge z-fighting
+      mesh.renderOrder = 2;
+      mesh.frustumCulled = false;
+      return mesh;
+    }
+
     // Resolve a desired state to whatever clip the model actually has, with
-    // graceful fallbacks (run→walk→idle, jump→idle) so partial clip sets work.
+    // graceful fallbacks (run→walk→idle, jump→idle, swim→walk-as-paddle) so
+    // partial clip sets work.
     function resolveAstronautAction(name) {
       const A = astronaut.actions;
       if (name === 'run')  return A.run  || A.walk || A.idle || null;
       if (name === 'walk') return A.walk || A.idle || null;
       if (name === 'jump') return A.jump || A.idle || null;
+      if (name === 'swim') return A.swim || A.walk || A.idle || null;
       return A.idle || A.walk || null;
+    }
+
+    // Shared crossfade plumbing (also used by the mixer's 'finished' handler to
+    // settle one-shots back into the current looping state).
+    function crossfadeAstronautTo(next) {
+      if (!next || next === astronaut.current) return;
+      next.reset();
+      next.enabled = true;
+      next.setEffectiveWeight(1);
+      next.setEffectiveTimeScale(1.0);
+      next.play();
+      if (astronaut.current) astronaut.current.crossFadeTo(next, ASTRO_FADE, false);
+      astronaut.current = next;
     }
 
     // Crossfade to the clip for a state (clip-driven models only). For static
@@ -6045,16 +6241,13 @@
       if (!astronaut) return;
       surfaceState.animName = name;
       if (!astronaut.animated) return;
-      const next = resolveAstronautAction(name);
-      if (!next || next === astronaut.current) return;
-
-      next.reset();
-      next.enabled = true;
-      next.setEffectiveWeight(1);
-      next.setEffectiveTimeScale(1.0);
-      next.play();
-      if (astronaut.current) astronaut.current.crossFadeTo(next, ASTRO_FADE, false);
-      astronaut.current = next;
+      // A one-shot flourish (the landing wave) owns the rig while we're just
+      // standing; any real state change cancels it immediately.
+      if (astronaut.oneShot) {
+        if (name === 'idle') return;
+        astronaut.oneShot = false;
+      }
+      crossfadeAstronautTo(resolveAstronautAction(name));
     }
 
     // Mount the (already loaded) avatar into the scene for a fresh visit.
@@ -6074,15 +6267,22 @@
       if (!astronaut.root.parent) scene.add(astronaut.root);
       surfaceState.animName = 'idle';
       surfaceState.stridePhase = 0;
+      surfaceState.swimBlend = 0;
+      surfaceState.swimPhase = 0;
+      astronaut.inner.position.copy(astronaut.footOffset);
+      astronaut.inner.rotation.set(0, 0, 0);
       if (astronaut.animated) {
         // Reset to a clean idle so a previous visit's pose doesn't carry over.
         for (const k in astronaut.actions) astronaut.actions[k].stop();
         astronaut.current = null;
+        astronaut.oneShot = false;
         setAstronautAction('idle');
-      } else {
-        // Static model: clear any leftover procedural pose.
-        astronaut.inner.position.copy(astronaut.footOffset);
-        astronaut.inner.rotation.set(0, 0, 0);
+        // Landing flourish: wave hello once, then settle into idle (the mixer's
+        // 'finished' handler does the settle). Movement input cancels it.
+        if (astronaut.actions.wave) {
+          crossfadeAstronautTo(astronaut.actions.wave);
+          astronaut.oneShot = true;
+        }
       }
     }
 
@@ -6136,6 +6336,11 @@
       // on planets, they cover less absolute distance per step, but move at
       // a natural human cadence — then slowed/sped by gravity.
       surfaceState.moveSpeed = surfaceState.eyeHeight * 9.3 * locoScale;
+      // Landing spots are always dry land (pick mode rejects water), so the
+      // support radius starts on the ground; stepSurfaceWalk flips it to the
+      // waterline if the walker later wades into deep water.
+      surfaceState.swimming = false;
+      surfaceState.standRadius = surfaceState.groundRadius;
       surfaceState.localEye.copy(surfaceState.localUp).multiplyScalar(surfaceState.groundRadius + surfaceState.eyeHeight);
       surfaceState.yaw = 0;
       surfaceState.pitch = 0;
@@ -6168,6 +6373,43 @@
       attachRocks(body);
       // Lay the local high-detail water patch (waves) under the avatar.
       attachWaterPatch(body);
+      // High-res near-field ground patch (real micro-relief over the coarse mesh).
+      attachGroundPatch(body);
+      // Scattered GLB trees + rocks (terrestrial only; loads lazily on first visit).
+      attachProps(body);
+      // Switch the body material's procedural ground detail on for this visit
+      // (perturbed relief normals + albedo mottle); off again on exit. Guarded —
+      // the shader is always compiled here since the body has been on screen.
+      if (body.mesh.material.userData.detailShader) {
+        const du = body.mesh.material.userData.detailShader.uniforms;
+        du.uSurfaceDetail.value = 1;
+        // Venusian ground is coarse volcanic rubble — crank the procedural
+        // relief + albedo mottle well past the soft default so the black soil
+        // reads as rocky mud up close. Reset to defaults for everything else
+        // (the material is per-body but the archetype can be re-classified).
+        const venus = body.archetype === 'venusian';
+        du.uDetailFreq.value   = venus ? 80 : 55;
+        du.uDetailAmp.value    = venus ? 0.34 : 0.18;
+        du.uDetailMottle.value = venus ? 0.22 : 0.05;
+      }
+      // Diagnostic: confirms the new surface-detail code is live (look for this in
+      // the console after landing). If you DON'T see it, the browser is running an
+      // old/cached/deployed build, not these edits.
+      console.info('[surface-detail v3] groundDetail=%s patch=%s — on %s (%s)',
+        !!body.mesh.material.userData.detailShader, !!groundPatch || 'pending',
+        body.name, body.archetype);
+      // Auto-diagnostic 2s after landing: tells us why grass/trees may be absent
+      // (wrong archetype, not standing on a grass face, or props still loading).
+      setTimeout(() => {
+        if (viewMode !== 'surface' || surfaceState.body !== body) return;
+        const gf = grassField;
+        console.info('[surface-detail] 2s check → archetype=%s | grassReveal=%s onGrassSpot=%s | props=%s | grassWorld=%s',
+          body.archetype,
+          gf ? gf.reveal.toFixed(2) : 'n/a',
+          gf ? !!gf.targetReveal : 'n/a',
+          propField ? 'loaded' : 'loading/none',
+          (body.kind === 'planet' && body.archetype === 'terrestrial'));
+      }, 2000);
 
       // Save orbit state for clean restore.
       surfaceState.savedFov = camera.fov;
@@ -6187,6 +6429,34 @@
       surfaceState.savedSunVisible = { mesh: sunMesh.visible, corona: coronaMesh.visible };
       sunMesh.visible    = !surfaceState.paintsSunDisc;
       coronaMesh.visible = !surfaceState.paintsSunDisc;
+
+      // While walking, the visited body must NOT sample the sun's shadow map:
+      // at system scale one shadow texel spans the whole landscape, so at
+      // grazing sun angles the terrain self-shadows to pure black while the
+      // shadow-free ground patch above it stays lit — a glaring seam. Neither
+      // surface can resolve real shadows at walking scale (that's what the
+      // avatar's blob shadow is for), so both go shadow-free. Restored on exit.
+      surfaceState.savedBodyRecvShadow = body.mesh.receiveShadow;
+      body.mesh.receiveShadow = false;
+      body.mesh.material.needsUpdate = true;   // receiveShadow flips need a recompile
+
+      // Atmospheric skylight: thick gas shells flood the ground with diffuse,
+      // sky-tinted daylight (essential on the near-black venusian basalt, which
+      // crushes to pure silhouette under the point sun alone). Base strength
+      // follows the LIVE gas density × coverage; updateSurfaceSkyEffects ramps
+      // it with sun elevation each frame so the dark side still goes dark.
+      surfaceState.skyLightBase = 0;
+      if (body.gasMesh && body.gasMesh.visible && body.gasMode === 'atmosphere') {
+        // ^1.5 keeps thin shells (Earth: 0.45×0.35 → ~0.08) a subtle fill while a
+        // Venus-dense envelope (1×1) reaches full overcast-noon strength — bright
+        // enough to read the near-black basalt against the 1.5-intensity sun.
+        const envelope = (body.gasDensity ?? 0) * (body.gasCoverage ?? 0);
+        surfaceState.skyLightBase = Math.min(1.4, 1.25 * Math.pow(Math.max(0, envelope), 1.5));
+        const tint = body.gasMesh.material.uniforms.uSkyTint.value;
+        surfaceSkyLight.color.copy(tint).lerp(new THREE.Color(0xffffff), 0.25);
+        surfaceSkyLight.groundColor.copy(tint).multiplyScalar(0.45);
+      }
+      surfaceSkyLight.intensity = 0;
 
       // Atmosphere from inside — flip the shell to DoubleSide so the inside
       // faces render, and if the atmosphere is dense enough to read as a
@@ -6265,6 +6535,15 @@
       camera.position.copy(surfaceState.savedCamPos);
       controls.target.copy(surfaceState.savedTarget);
       camera.up.set(0, 1, 0);
+      // Kill the surface-walk atmospheric skylight (orbit view keeps the stock rig).
+      surfaceSkyLight.intensity = 0;
+      surfaceState.skyLightBase = 0;
+      // Restore the body's shadow sampling (hidden during the walk — see enter).
+      if (surfaceState.body && surfaceState.savedBodyRecvShadow != null) {
+        surfaceState.body.mesh.receiveShadow = surfaceState.savedBodyRecvShadow;
+        surfaceState.body.mesh.material.needsUpdate = true;
+        surfaceState.savedBodyRecvShadow = null;
+      }
       // Restore atmo shell material state (side + opaque-sky promotion).
       if (surfaceState.gasMeshAdjusted && surfaceState.savedGas) {
         const mat = surfaceState.gasMeshAdjusted.material;
@@ -6285,6 +6564,12 @@
       }
       starMat.opacity = SURFACE_STAR_OPACITY;
       scene.fog = null;            // drop any underwater fog
+      setUnderwaterOverlay(0, null);   // and the underwater screen tint
+      // Drop the surface-mode floating-origin shift (see updateSurfaceOrigin) so
+      // the orbit view — and the just-restored camera transform, which was saved
+      // unshifted — runs in plain world coordinates again.
+      scene.position.set(0, 0, 0);
+      scene.updateMatrixWorld(true);
       // Unmount the avatar (it persists in memory for the next visit).
       if (astronaut && astronaut.root.parent) {
         scene.remove(astronaut.root);
@@ -6294,6 +6579,13 @@
       detachGrass();
       detachRocks();
       detachWaterPatch();
+      detachGroundPatch();
+      detachProps();
+      // Turn the body's procedural ground detail back off so the orbit view is
+      // unchanged (uSurfaceDetail = 0 skips every detail branch in the shader).
+      if (surfaceState.body && surfaceState.body.mesh.material.userData.detailShader) {
+        surfaceState.body.mesh.material.userData.detailShader.uniforms.uSurfaceDetail.value = 0;
+      }
       // Restore the global ocean sphere we hid for the surface visit (water worlds)
       // and make sure it's back to the plain opaque sphere for the orbit view.
       if (surfaceState.body && surfaceState.body.oceanMesh) {
@@ -6317,29 +6609,92 @@
     const _surfBodyCenter = new THREE.Vector3();
     const _surfCamDir     = new THREE.Vector3();
     const SURFACE_STAR_OPACITY = 0.95;
-    // Reused single fog instance for the underwater look (a blue exponential fog
-    // that collapses visibility to a short radius). scene.fog is otherwise unused.
+    // Reused single fog instance for the underwater look (an exponential murk,
+    // tinted from the body's own liquid, that collapses visibility to a few
+    // body-heights). scene.fog is otherwise unused.
     const underwaterFog = new THREE.FogExp2(0x10566f, 0.0);
+    const _uwCamLocal = new THREE.Vector3();
+    // Full-screen underwater tint overlay: three's fog only touches fog-enabled
+    // materials, so the gas sky shell / sun / stars stay crisp through the murk
+    // without it. The overlay tints EVERYTHING toward the water colour and adds
+    // a soft vignette, which is what finally sells "you are inside the water".
+    const underwaterOverlayEl = document.getElementById('underwaterOverlay');
+    let _uwOverlayHex = -1;
+    let _uwOverlayOp  = -1;
+    function setUnderwaterOverlay(opacity, body) {
+      if (!underwaterOverlayEl) return;
+      if (opacity > 0 && body) {
+        const hex = body.oceanBaseColor || COL.water;
+        if (hex !== _uwOverlayHex) {
+          _uwOverlayHex = hex;
+          const c = new THREE.Color(hex);
+          const rgb = (m) => `${Math.round(c.r * 255 * m)}, ${Math.round(c.g * 255 * m)}, ${Math.round(c.b * 255 * m)}`;
+          underwaterOverlayEl.style.background =
+            `radial-gradient(circle at 50% 38%, rgba(${rgb(0.65)}, 0.40) 0%, rgba(${rgb(0.18)}, 0.85) 100%)`;
+        }
+      }
+      const op = Math.max(0, Math.min(1, opacity));
+      if (op !== _uwOverlayOp) {
+        _uwOverlayOp = op;
+        underwaterOverlayEl.style.opacity = op.toFixed(3);
+      }
+    }
+    // Aerial perspective: a linear haze that only switches on while standing on an
+    // ATMOSPHERE world (vacuum has none), tinting the terrain toward a horizon haze
+    // with distance. Sells the planet's scale and softly hides the rim of the
+    // surface-detail props/patch out near the skyline. near/far track eye height so
+    // it reads the same on a moon or a giant; the colour dims toward night so the
+    // haze doesn't glow on the dark side. Three's fog is GLOBAL, so we exclude the
+    // starfield + galactic band (the gas sky shell + sun are fog-less ShaderMaterials
+    // already, so the sky itself stays clear — only ground-level geometry hazes).
+    const AERIAL_FOG_COLOR = new THREE.Color(0xb8c6d4);
+    const aerialFog = new THREE.Fog(0xb8c6d4, 1, 100);
+    starMat.fog = false;
+    if (typeof milkyMat !== 'undefined' && milkyMat) milkyMat.fog = false;
     function updateSurfaceSkyEffects() {
       if (viewMode !== 'surface' || !surfaceState.body) {
         starMat.opacity = SURFACE_STAR_OPACITY;
         scene.fog = null;
+        setUnderwaterOverlay(0, null);
         return;
       }
-      // Underwater: once the eye drops below sea level on a liquid body, fill the
-      // scene with blue fog so you can only see a short distance (just the nearby
-      // seabed) and everything reads submerged. Density deepens the further under
-      // you go; cleared the moment the eye breaks the surface.
+      // Underwater: judged from the CAMERA's actual position, not the avatar's
+      // nominal head height — the third-person camera trails low behind the
+      // walker and routinely dips under the surface while the head is still dry
+      // (that mismatch is why the sea used to look completely transparent from
+      // just below the waterline). When submerged, sight collapses to a handful
+      // of body-heights of liquid-coloured murk that darkens with depth, and the
+      // full-screen overlay tints the fog-immune sky shaders to match.
+      let submerged = false;
       {
         const b = surfaceState.body;
-        const eyeR = surfaceState.groundRadius + surfaceState.eyeHeight + surfaceState.jumpOffset;
-        if (b.matter && b.matter.liquid && eyeR < b.baseRadius) {
-          const depth = b.baseRadius - eyeR;                 // local units below sea level
-          const vis   = Math.max(0.5, b.baseRadius * 0.22);  // clear sight range just under the surface
-          underwaterFog.density = (1.6 / vis) * (1.0 + 1.5 * depth / b.baseRadius);
-          scene.fog = underwaterFog;
-        } else {
+        if (b.matter && b.matter.liquid) {
+          _uwCamLocal.copy(camera.position);
+          b.mesh.worldToLocal(_uwCamLocal);
+          const camR = _uwCamLocal.length();
+          // The water-patch surface rides at baseRadius + uLift (so wave troughs
+          // clear sea level) — judge submersion against the VISIBLE waterline,
+          // not the nominal one, or a camera just under the surface stays dry.
+          let seaR = b.baseRadius;
+          if (waterPatch && waterPatch.mesh.visible && waterUniforms) seaR += waterUniforms.uLift.value;
+          if (camR < seaR) {
+            submerged = true;
+            const scale  = b.group.scale.x || 1;
+            const eh     = surfaceState.eyeHeight * scale;   // world-unit body height
+            const depthW = (seaR - camR) * scale;            // world units below the waterline
+            // Clear-ish for the first body-heights, closing in as you sink.
+            const vis = Math.max(eh * 3.0, eh * 14.0 - depthW * 5.0);
+            underwaterFog.density = 1.4 / vis;
+            const deepF = Math.min(1, depthW / (eh * 18.0));
+            underwaterFog.color.setHex(b.oceanBaseColor || COL.water)
+              .multiplyScalar(0.42 * (1 - deepF) + 0.10 * deepF);
+            scene.fog = underwaterFog;
+            setUnderwaterOverlay(0.40 + 0.40 * deepF, b);
+          }
+        }
+        if (!submerged) {
           scene.fog = null;
+          setUnderwaterOverlay(0, null);
         }
       }
       // Atmosphere worlds: shader paints the sun, so keep the real mesh hidden.
@@ -6349,7 +6704,7 @@
       // Airless worlds have no atmosphere to scatter daylight, so the sky stays
       // black and the stars never wash out — the Sun just hangs among them.
       if (!surfaceState.paintsSunDisc) {
-        starMat.opacity = SURFACE_STAR_OPACITY;
+        starMat.opacity = submerged ? 0 : SURFACE_STAR_OPACITY;
         return;
       }
       surfaceState.body.group.getWorldPosition(_surfBodyCenter);
@@ -6357,12 +6712,29 @@
       sunMesh.getWorldPosition(_sunWorldTmp);
       _toSunTmp.subVectors(_sunWorldTmp, _surfBodyCenter).normalize();
       const sunElev = _surfCamDir.dot(_toSunTmp);
+      surfaceState.sunElev = sunElev;     // cached for diagnostics (day/night side)
+      // Atmospheric skylight follows the sun: full diffuse daylight when the sun
+      // is up, fading through twilight to nothing at night. Position is only a
+      // direction (local up); subtract scene.position for the floating origin.
+      surfaceSkyLight.intensity = (surfaceState.skyLightBase || 0) * smoothstep(-0.08, 0.30, sunElev);
+      surfaceSkyLight.position.copy(_surfCamDir).multiplyScalar(10).sub(scene.position);
       if (sunElev >= 0.06) {
         starMat.opacity = 0;
       } else {
         const t = Math.min(1, Math.max(0, (0.06 - sunElev) / 0.44));
         const eased = t * t * (3 - 2 * t);
         starMat.opacity = eased * SURFACE_STAR_OPACITY;
+      }
+      if (submerged) starMat.opacity = 0;   // no stars through the murk
+      // Aerial-perspective haze (atmosphere worlds, above water). Dim the haze
+      // toward night so the dark-side horizon doesn't pick up a daytime glow.
+      if (scene.fog !== underwaterFog) {
+        const eh = surfaceState.eyeHeight;
+        const dayFactor = 1 - Math.min(1, starMat.opacity / SURFACE_STAR_OPACITY);
+        aerialFog.near = eh * 8;
+        aerialFog.far  = eh * 44;
+        aerialFog.color.copy(AERIAL_FOG_COLOR).multiplyScalar(0.15 + 0.85 * dayFactor);
+        scene.fog = aerialFog;
       }
     }
 
@@ -6385,6 +6757,34 @@
     const _astroQuat   = new THREE.Quaternion();
     const _lookAtTmp   = new THREE.Vector3();
     const _camLocalTmp = new THREE.Vector3();
+    const _detailM4    = new THREE.Matrix4();
+    const _detailM3    = new THREE.Matrix3();
+
+    // ── Floating origin (surface mode only) ───────────────────────────────
+    // Planets orbit up to ~900 world units out while the avatar is ~0.01 units
+    // tall. Skinned-mesh bone matrices are uploaded to the GPU as float32, and
+    // at those coordinates one float32 step is a visible fraction of the
+    // avatar's height — the rig trembles at idle (walking masks it). The fix:
+    // every surface frame, slide the WHOLE scene so the walker sits at the
+    // world origin. Everything (bodies, lights, stars) is a scene child, so
+    // geometry and lighting are unchanged — only the float32 magnitudes
+    // shrink. The camera isn't a scene child, but surface mode rebuilds its
+    // transform from the (shifted) body matrix every frame anyway. Cleared on
+    // exit (see exitSurfaceMode); scene children positioned from world-space
+    // values must subtract scene.position (the avatar pivot, the milkyway).
+    const _originTmp = new THREE.Vector3();
+    function updateSurfaceOrigin() {
+      const body = surfaceState.body;
+      if (!body) return;
+      // Last frame's matrixWorld carries last frame's shift — consistent with
+      // the scene.position we adjust here. Being a frame stale only means the
+      // origin lands within one frame of planet motion of zero, which is fine.
+      _originTmp.copy(surfaceState.localEye).applyMatrix4(body.mesh.matrixWorld);
+      scene.position.sub(_originTmp);
+      // Re-bake every matrix now so all the surface math this frame (raycasts,
+      // camera, avatar placement) sees the new shift coherently.
+      scene.updateMatrixWorld(true);
+    }
 
     function updateSurfaceCamera() {
       const body = surfaceState.body;
@@ -6399,8 +6799,9 @@
         .applyAxisAngle(surfaceState.localUp, surfaceState.yaw)
         .normalize();
 
-      // Eye/head sits at ground + eyeHeight, lifted by any active jump.
-      const eyeRadius = surfaceState.groundRadius + surfaceState.eyeHeight + surfaceState.jumpOffset;
+      // Eye/head sits at the support surface (ground, or the waterline while
+      // swimming) + eyeHeight, lifted by any active jump.
+      const eyeRadius = surfaceState.standRadius + surfaceState.eyeHeight + surfaceState.jumpOffset;
       _eyeLocal.copy(surfaceState.localUp).multiplyScalar(eyeRadius);
 
       // Body matrix carries the group scale, so transformed directions come out
@@ -6421,9 +6822,9 @@
         // chest (~0.6× height above the feet), then trail behind a few body-
         // heights and lifted, so we look down at it at a gentle angle.
         const ch = surfaceState.charWorldH || (surfaceState.eyeHeight * (body.group.scale.x || 1));
-        // Foot point in world (ground + any jump lift).
+        // Foot point in world (support surface + any jump lift).
         _footLocal.copy(surfaceState.localUp)
-          .multiplyScalar(surfaceState.groundRadius + surfaceState.jumpOffset);
+          .multiplyScalar(surfaceState.standRadius + surfaceState.jumpOffset);
         _footWorld.copy(_footLocal).applyMatrix4(mw);
         // Aim at the chest.
         _lookAtTmp.copy(_footWorld).addScaledVector(_worldUp, ch * 0.6);
@@ -6434,7 +6835,13 @@
           .addScaledVector(_worldUp, lift);
         // Never let the look-around drag the camera under the ground: clamp its
         // distance from planet-centre to stay a hair above the standing surface.
-        const minR = surfaceState.groundRadius + surfaceState.eyeHeight * 0.4;
+        // While SWIMMING the floor is the seabed, not the waterline — pitching
+        // the view up lets the camera dip below the surface for an underwater
+        // peek (updateSurfaceSkyEffects swaps in the murk the moment it does).
+        const minR = surfaceState.swimming
+          ? Math.max(surfaceState.groundRadius + surfaceState.eyeHeight * 0.3,
+                     surfaceState.standRadius - surfaceState.eyeHeight * 2.2)
+          : surfaceState.standRadius + surfaceState.eyeHeight * 0.4;
         _camLocalTmp.copy(camera.position);
         body.mesh.worldToLocal(_camLocalTmp);
         if (_camLocalTmp.length() < minR) {
@@ -6444,6 +6851,45 @@
         }
         camera.lookAt(_lookAtTmp);
       }
+
+      // Refresh the ground-detail object→view rotation (uBodyToView) AFTER the
+      // camera is positioned this frame, so the procedural relief lights correctly
+      // as the body spins underfoot (and there's no stale-camera flicker on entry).
+      // Only the visited body's material carries an active uSurfaceDetail.
+      const _dsh = body.mesh.material.userData.detailShader;
+      if (_dsh && _dsh.uniforms.uSurfaceDetail.value > 0.001) {
+        camera.updateMatrixWorld();
+        _detailM4.copy(camera.matrixWorld).invert().multiply(mw);   // viewMatrix · modelMatrix
+        _detailM3.setFromMatrix4(_detailM4);
+        _dsh.uniforms.uBodyToView.value.copy(_detailM3);
+      }
+    }
+
+    // ── Procedural swim stroke ─────────────────────────────────────────────
+    // Rotates an upper-arm bone in the avatar PIVOT's sagittal plane (about its
+    // lateral X axis) — a front-crawl windmill. The mixer has already written
+    // this frame's clip pose, so we premultiply on top of it. The stroke is
+    // defined in pivot space and conjugated into the bone's parent space by
+    // walking the local quaternion chain (bone matrixWorlds aren't fresh at
+    // this point in the frame, so we can't use getWorldQuaternion).
+    const _strokeAxis  = new THREE.Vector3(1, 0, 0);
+    const _qStroke     = new THREE.Quaternion();
+    const _qChain      = new THREE.Quaternion();
+    const _qApply      = new THREE.Quaternion();
+    const _qBlend      = new THREE.Quaternion();
+    const _qIdentity   = new THREE.Quaternion();
+    const _strokeChain = [];
+    function applyAstronautArmStroke(bone, angle, blend) {
+      if (!bone) return;
+      _qStroke.setFromAxisAngle(_strokeAxis, angle);
+      _qChain.identity();
+      _strokeChain.length = 0;
+      for (let n = bone.parent; n && n !== astronaut.root; n = n.parent) _strokeChain.push(n);
+      for (let i = _strokeChain.length - 1; i >= 0; i--) _qChain.multiply(_strokeChain[i].quaternion);
+      // localDelta = chain⁻¹ · stroke · chain, eased in with the prone pose.
+      _qApply.copy(_qChain).invert().multiply(_qStroke).multiply(_qChain);
+      _qBlend.copy(_qIdentity).slerp(_qApply, blend);
+      bone.quaternion.premultiply(_qBlend);
     }
 
     // Per-frame avatar update: advance its animation, plant its feet on the
@@ -6455,8 +6901,18 @@
       // cycle at the same rate the body actually translates (surfaceState.moveSpeed
       // carries the same locoScale) — keeps the feet planted instead of sliding,
       // and sells the floaty moonwalk feel alongside the lofted jump.
+      // Ease the swim pose in/out so wading into deep water reads as a lean
+      // into the stroke, not a snap. Treading water (no input) stays half-
+      // upright; an active stroke goes fully prone.
+      const swimInput = surfaceKeys.w || surfaceKeys.a || surfaceKeys.s || surfaceKeys.d;
+      const swimTarget = surfaceState.swimming ? (swimInput ? 1 : 0.5) : 0;
+      surfaceState.swimBlend += (swimTarget - surfaceState.swimBlend) * Math.min(1, dt * 4);
+      const sb = surfaceState.swimBlend;
+
       if (astronaut.mixer) {
-        astronaut.mixer.timeScale = surfaceState.locoScale;
+        // The walk clip doubles as the paddle stroke (no swim clip in the set),
+        // slowed so the limbs read as pushing water, not marching through it.
+        astronaut.mixer.timeScale = surfaceState.locoScale * (1 - 0.45 * sb);
         astronaut.mixer.update(dt);
       }
       if (!astronaut.root.parent || !surfaceState.body) return;
@@ -6466,26 +6922,72 @@
       // a forward lean while moving, and a gentle side-to-side sway. Applied to
       // `inner` about the foot origin so the feet stay planted. Stride frequency
       // is slowed by the same gravity locoScale as the rigged clips above.
+      const inner = astronaut.inner;
+      const h = astronaut.nativeHeight;
+      let baseRotX = 0, baseRotZ = 0, baseY = astronaut.footOffset.y;
       if (!astronaut.animated) {
-        const a = astronaut.animName;
-        const moving = a === 'walk' || a === 'run';
+        const a = surfaceState.animName;
+        const moving = a === 'walk' || a === 'run' || a === 'swim';
         const freq = (a === 'run' ? 9 : (moving ? 5.5 : 2.2)) * surfaceState.locoScale;
         surfaceState.stridePhase += dt * freq;
         const ph = surfaceState.stridePhase;
-        const h = astronaut.nativeHeight;
         const bobAmp  = a === 'run' ? 0.05 : (moving ? 0.03 : 0.006);
-        const lean    = a === 'run' ? 0.20 : (moving ? 0.12 : 0);
-        const swayAmp = moving ? (a === 'run' ? 0.06 : 0.04) : 0;
-        const inner = astronaut.inner;
-        inner.position.y = astronaut.footOffset.y + Math.abs(Math.sin(ph)) * bobAmp * h;
-        inner.rotation.x = lean;                       // forward tilt about the feet
-        inner.rotation.z = Math.sin(ph) * swayAmp;     // weight-shift sway
+        baseRotX = a === 'run' ? 0.20 : (moving ? 0.12 : 0);           // forward lean
+        baseRotZ = Math.sin(ph) * (moving ? (a === 'run' ? 0.06 : 0.04) : 0); // sway
+        baseY = astronaut.footOffset.y + Math.abs(Math.sin(ph)) * bobAmp * h;
       }
 
-      const footRadius = surfaceState.groundRadius + surfaceState.jumpOffset;
+      // Swim pose overlay (rigged and unrigged alike): pitch the whole model
+      // prone about the foot pivot so the head leads along the heading, lift it
+      // so the back rides the waterline, slide it back so it stays centred
+      // under the camera, and add a slow bob + roll so the water feels alive.
+      if (sb > 0.001) {
+        surfaceState.swimPhase += dt * (swimInput ? 2.6 : 1.4);
+        const swimBob = Math.sin(surfaceState.swimPhase) * 0.035 * h;
+        inner.rotation.x = baseRotX * (1 - sb) + (1.25 * ASTRO_FACING) * sb;
+        inner.rotation.z = baseRotZ * (1 - sb) + Math.sin(surfaceState.swimPhase * 0.8) * 0.1 * sb;
+        inner.position.y = baseY * (1 - sb) + (astronaut.footOffset.y + 0.5 * h + swimBob) * sb;
+        inner.position.z = astronaut.footOffset.z - 0.3 * h * sb * ASTRO_FACING;
+      } else {
+        inner.rotation.x = baseRotX;
+        inner.rotation.z = baseRotZ;
+        inner.position.y = baseY;
+        inner.position.z = astronaut.footOffset.z;
+      }
+
+      // Arm stroke while afloat: a continuous alternating windmill (front
+      // crawl) during an active stroke; a gentle scull while treading. Layered
+      // over the clip pose, faded by the same swim blend as the prone tilt.
+      if (sb > 0.01 && astronaut.armBones) {
+        const strokeAngle = swimInput
+          ? surfaceState.swimPhase * 1.3                         // full circles
+          : Math.sin(surfaceState.swimPhase * 2.0) * 0.55 - 0.5; // sculling sway
+        applyAstronautArmStroke(astronaut.armBones.L, strokeAngle, sb);
+        applyAstronautArmStroke(astronaut.armBones.R, strokeAngle + Math.PI, sb);
+      }
+
+      const footRadius = surfaceState.standRadius + surfaceState.jumpOffset;
       _footLocal.copy(surfaceState.localUp).multiplyScalar(footRadius);
       _footWorld.copy(_footLocal).applyMatrix4(mw);
-      astronaut.root.position.copy(_footWorld);
+      // The pivot is a scene child, and in surface mode the scene carries the
+      // floating-origin shift — convert the world-space foot point to scene-
+      // local so the avatar isn't displaced by the shift twice.
+      astronaut.root.position.copy(_footWorld).sub(scene.position);
+
+      // Blob shadow: stays ON the ground while the body leaps (counter-offset
+      // by the jump height, converted into the pivot's native model units),
+      // shrinking and fading with altitude; gone entirely while afloat.
+      if (astronaut.shadow) {
+        const eh = surfaceState.eyeHeight;
+        const jumpN = eh > 0 ? surfaceState.jumpOffset / (eh * 1.2) : 0;
+        const fade = Math.max(0, 1 - jumpN * 0.55) * (1 - sb);
+        const worldScale = surfaceState.body.group.scale.x || 1;
+        const s = astronaut.root.scale.x || 1;
+        astronaut.shadow.visible = fade > 0.02;
+        astronaut.shadow.material.opacity = 0.6 * fade;
+        astronaut.shadow.position.y = (-surfaceState.jumpOffset * worldScale) / s + h * 0.02;
+        astronaut.shadow.scale.setScalar(1 / (1 + jumpN * 0.8));
+      }
 
       // Orthonormal basis: Z = facing, Y = up, X = up × Z (right-handed).
       _astroZ.copy(_worldHeading).multiplyScalar(ASTRO_FACING);
@@ -6513,8 +7015,8 @@
     // individual blades back from coastlines so the lawn never spills onto beach or
     // water. Blades are clustered into dense tufts and follow real terrain height
     // via the grid so they sit on slopes and in dips, not a single sphere.
-    const GRASS_COUNT = 18000;
-    const GRASS_GN    = 8;        // height + biome grid resolution (GN×GN raycast samples)
+    const GRASS_COUNT = 52000;    // dense enough to keep the lawn solid out to the (now past-horizon) patch edge
+    const GRASS_GN    = 12;       // height + biome grid resolution (GN×GN raycast samples)
     let grassField = null;
     let grassUniforms = null;     // captured from onBeforeCompile (uTime/uWind/uReveal)
 
@@ -6642,13 +7144,16 @@
     function attachGrass(body) {
       if (!grassField) buildGrassField();
       const gf = grassField;
-      // Patch half-size reaches PAST the horizon (the eye-height horizon on these
-      // bodies is ~26 eye-heights). Grass stays full almost the whole way out and
-      // only fades over the outermost ~18% — i.e. at and beyond the skyline, where
-      // the planet's own curvature hides the transition. So the visible ground is
-      // grass everywhere; the walker never sees a bare ring sprouting grass ahead.
-      gf.PR     = surfaceState.eyeHeight * 30;
-      gf.bladeH = surfaceState.eyeHeight * 0.34;
+      // Patch half-size MUST reach past the visible horizon, or you watch grass fade
+      // in ahead of you (the old fixed eye-height multiple fell short on planets,
+      // where the character is shrunk 0.4× so the horizon sits much farther out in
+      // eye-heights). The geometric horizon on a sphere from eye height h is
+      // √(2·R·h); we draw 1.35× that so the whole fade band lands BELOW the skyline,
+      // where the planet's own curvature occludes it — the walker never sees the
+      // wrap/fade. Clamped to the old radius as a floor for tiny bodies.
+      const _horizon = Math.sqrt(2 * body.baseRadius * surfaceState.eyeHeight);
+      gf.PR     = Math.max(surfaceState.eyeHeight * 30, _horizon * 1.8);
+      gf.bladeH = surfaceState.eyeHeight * 0.55;     // taller so the lawn reads clearly from the trailing camera
       gf.reveal = 0;
       gf.targetReveal = 0;
       gf.sampleTimer = 0;
@@ -6691,6 +7196,28 @@
         visible: gf.mesh.visible, reveal: +gf.reveal.toFixed(3), targetReveal: gf.targetReveal,
         placed: gf.placed, gridValid: gf.gridValid, PR: gf.PR, bladeH: gf.bladeH,
         count: GRASS_COUNT, parented: !!gf.mesh.parent, probe,
+      };
+    };
+
+    // Console diagnostic for the footprint system: active print count + the
+    // soil softness under the avatar (0 = this ground doesn't take prints).
+    window.footDiag = () => {
+      const gp = groundPatch;
+      if (!gp) return 'ground patch not built yet (enter a surface first)';
+      let active = 0;
+      for (let i = 0; i < FOOT_N; i++) if (gp.foot[4 * i + 3] > 0.002) active++;
+      const slots = [];
+      for (let i = 0; i < Math.min(FOOT_N, 20); i++) {
+        if (gp.footAge[i] >= FOOT_LIFE && gp.foot[4 * i + 3] === 0) continue;
+        slots.push(`${i}:a${gp.footAge[i].toFixed(1)} f${gp.foot[4 * i + 3].toFixed(2)} s${gp.footStr[i].toFixed(2)}`);
+      }
+      return {
+        active, next: gp.footNext, strength: footprintStrengthHere(),
+        footLen: gp.footLen, strideAcc: +gp.strideAcc.toFixed(4),
+        archetype: surfaceState.body && surfaceState.body.archetype,
+        sunElev: surfaceState.sunElev != null ? +surfaceState.sunElev.toFixed(3) : null,
+        grassU: +surfaceState.grassU.toFixed(4), grassV: +surfaceState.grassV.toFixed(4),
+        slots,
       };
     };
 
@@ -6945,7 +7472,7 @@
     // via a raycast grid (reusing grassGroundRadius, same GN/layout) and sink
     // ~1/3 into the ground so they read as embedded. No external assets - same
     // stylized, UV-free approach as the grass.
-    const ROCK_COUNT = 280;
+    const ROCK_COUNT = 640;       // bumped so clusters still read over the larger past-horizon patch
     const ROCK_GN    = GRASS_GN;     // reuse grassGroundRadius (identical GN + grid layout)
     let rockField = null;
 
@@ -7060,7 +7587,9 @@
     function attachRocks(body) {
       if (!rockField) buildRockField();
       const rf = rockField;
-      rf.PR    = surfaceState.eyeHeight * 30;        // same horizon-reaching patch as grass
+      // Same past-the-horizon radius as grass so boulders never pop in ahead of you.
+      const _horizon = Math.sqrt(2 * body.baseRadius * surfaceState.eyeHeight);
+      rf.PR    = Math.max(surfaceState.eyeHeight * 30, _horizon * 2.5);
       rf.rockH = surfaceState.eyeHeight * 0.5;       // base boulder size (scaled per instance)
       rf.reveal = 0;
       rf.targetReveal = 0;
@@ -7075,18 +7604,26 @@
       if (rockField && rockField.mesh.parent) rockField.mesh.parent.remove(rockField.mesh);
     }
 
-    // True when terrain face `f` is dry Martian rock ground: desert archetype,
-    // unpainted, above the basin sand line and below the salt-peak snow line.
+    // Archetypes whose surface-walk ground grows the instanced boulder field,
+    // with the tint bias blended over the sampled ground colour. Desert keeps
+    // its rust-red Mars litter; venusian gets grey angular basalt clasts that
+    // sit a step lighter than the near-black soil so they read against it.
+    const ROCK_GROUND_TINT = {
+      desert:   { bias: new THREE.Color(0x9c4a2a), biasAmt: 0.45, mul: 0.9 },
+      venusian: { bias: new THREE.Color(0x5b5349), biasAmt: 0.65, mul: 1.0 },
+    };
+
+    // True when terrain face `f` is dry rocky ground on a boulder-field archetype:
+    // unpainted, above the basin/slab line and below the snow/tessera peaks.
     const ROCK_TOP_CAP = ROCK_TOP + 0.6;
     function groundIsRockFace(body, f) {
-      if (body.kind !== 'planet' || body.archetype !== 'desert') return false;
+      if (body.kind !== 'planet' || !ROCK_GROUND_TINT[body.archetype]) return false;
       if (body.biomes[f.a] !== BIOME.AUTO) return false;         // painted faces: leave bare
       const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
       return h >= SAND_TOP && h < ROCK_TOP_CAP;                  // flats -> mesa, not basins/peaks
     }
 
-    // Throttled biome probe: is the avatar on Martian rock ground, and what colour?
-    const _rkRust = new THREE.Color(0x9c4a2a);
+    // Throttled biome probe: is the avatar on rocky ground, and what colour?
     function sampleRockGround() {
       const body = surfaceState.body, rf = rockField;
       if (!body) { rf.targetReveal = 0; return; }
@@ -7109,14 +7646,15 @@
         if (f && groundIsRockFace(body, f)) { onRock = true; if (s === 0 || !tf) tf = f; }
       }
       rf.targetReveal = onRock ? 1 : 0;
-      if (tf) {                                          // tint from the ground, biased rust-red + darker
+      if (tf) {                                          // tint from the ground + archetype bias
         const ca = body.colorArr;
         _grCol.setRGB(
           (ca[3 * tf.a]     + ca[3 * tf.b]     + ca[3 * tf.c])     / 3,
           (ca[3 * tf.a + 1] + ca[3 * tf.b + 1] + ca[3 * tf.c + 1]) / 3,
           (ca[3 * tf.a + 2] + ca[3 * tf.b + 2] + ca[3 * tf.c + 2]) / 3,
         );
-        _grTint.copy(_grCol).lerp(_rkRust, 0.45).multiplyScalar(0.9);
+        const rg = ROCK_GROUND_TINT[body.archetype] || ROCK_GROUND_TINT.desert;
+        _grTint.copy(_grCol).lerp(rg.bias, rg.biasAmt).multiplyScalar(rg.mul);
         rf.mat.color.copy(_grTint);
       }
     }
@@ -7183,7 +7721,7 @@
     function resolveRockCollision(du, dv) {
       _rkOut[0] = du; _rkOut[1] = dv;
       const rf = rockField, body = surfaceState.body;
-      if (!rf || !rf.mesh.visible || rf.reveal < 0.5 || !body || body.archetype !== 'desert') return _rkOut;
+      if (!rf || !rf.mesh.visible || rf.reveal < 0.5 || !body || !ROCK_GROUND_TINT[body.archetype]) return _rkOut;
       const PR = rf.PR, period = PR * 2, rockH = rf.rockH;
       const uOff = surfaceState.grassU, vOff = surfaceState.grassV;
       const eh = surfaceState.eyeHeight;
@@ -7299,8 +7837,9 @@
         // Opaque so it reads as a clean blue sea — at 0.92 it revealed the deep,
         // dark OCEAN_DEPTH_BOOST seabed beneath and looked blotchy. (See-through
         // shallows can come back later as a depth-aware effect.) The shader still
-        // fades alpha at the rim, which needs transparent:true.
-        color: 0xffffff, roughness: 0.22, metalness: 0.04,
+        // fades alpha at the rim, which needs transparent:true. Roughness is low
+        // so the micro-ripple normals (fragment shader) throw real sun glints.
+        color: 0xffffff, roughness: 0.12, metalness: 0.04,
         transparent: true, opacity: 1.0, side: THREE.DoubleSide,
       });
       mat.polygonOffset = true;          // bias against the global ocean sphere it sits on
@@ -7333,10 +7872,15 @@
         // Stylized self-illumination floor so the water keeps its clear blue even
         // in dim / colour-tinted surface lighting instead of crushing to near-black.
         sh.uniforms.uWaterGlow  = { value: 0.28 };
+        // Micro-ripple normal strength (fragment-level sparkle between the
+        // vertex-displaced swells) and the pale sky tint the fresnel term pulls
+        // the water toward at grazing view angles.
+        sh.uniforms.uRipple     = { value: 0.35 };
+        sh.uniforms.uHorizonCol = { value: new THREE.Color(0xcfe9f5) };
         waterUniforms = sh.uniforms;
         sh.vertexShader = sh.vertexShader
           .replace('#include <common>',
-            '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\n'
+            '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n'
           + 'float wv(vec2 p){\n  float t = uWaveTime;\n  float h = 0.0;\n'
           + '  h += sin(dot(p, vec2(1.0, 0.25)) * 60.0 + t * 1.6) * 0.50;\n'
           + '  h += sin(dot(p, vec2(-0.35, 1.0)) * 85.0 - t * 1.9) * 0.32;\n'
@@ -7361,11 +7905,15 @@
           + '  vEdge = max(abs(_uv.x), abs(_uv.y));\n'
           + '  vWaveH = _h;\n'      // wave height ∈[-1,1] (crest ≈ +1) → crest foam
           + '  vW = _w;\n'          // ground-fixed coords → foam noise rides the wave
-          + '  vDir = _dir;\n');    // unit body-local dir → equirect seabed-depth lookup
+          + '  vDir = _dir;\n'      // unit body-local dir → equirect seabed-depth lookup
+          // View-space patch tangents for the fragment micro-ripples (the
+          // fragment normal is view-space, so its perturbation axes must be too).
+          + '  vTanR = normalize(normalMatrix * uPRight);\n'
+          + '  vTanF = normalize(normalMatrix * uPFwd);\n');
         // Soft rim fade so the patch edge melts into the global ocean sphere out
         // past the horizon (where curvature already hides the seam anyway).
         sh.fragmentShader = sh.fragmentShader
-          .replace('#include <common>', '#include <common>\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nuniform float uWaveTime;\nuniform vec3 uFoamColor;\nuniform float uCrestFoam;\nuniform sampler2D uSeabedTex;\nuniform vec3 uShallowCol;\nuniform vec3 uDeepCol;\nuniform float uShallowA;\nuniform float uDeepA;\nuniform float uDepthFade;\nuniform float uShoreFoam;\nuniform float uShoreW;\nuniform float uWaterGlow;\nvec3 _waterEmit = vec3(0.0);\nfloat fHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat fNoise(vec2 x){ vec2 i = floor(x); vec2 f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(mix(fHash(i), fHash(i + vec2(1.0, 0.0)), f.x), mix(fHash(i + vec2(0.0, 1.0)), fHash(i + vec2(1.0, 1.0)), f.x), f.y); }\nfloat fFbm(vec2 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 3; k++){ s += a * fNoise(p); p *= 2.03; a *= 0.5; } return s; }')
+          .replace('#include <common>', '#include <common>\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\nuniform float uWaveTime;\nuniform vec3 uFoamColor;\nuniform float uCrestFoam;\nuniform sampler2D uSeabedTex;\nuniform vec3 uShallowCol;\nuniform vec3 uDeepCol;\nuniform float uShallowA;\nuniform float uDeepA;\nuniform float uDepthFade;\nuniform float uShoreFoam;\nuniform float uShoreW;\nuniform float uWaterGlow;\nuniform float uRipple;\nuniform vec3 uHorizonCol;\nvec3 _waterEmit = vec3(0.0);\nfloat fHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat fNoise(vec2 x){ vec2 i = floor(x); vec2 f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(mix(fHash(i), fHash(i + vec2(1.0, 0.0)), f.x), mix(fHash(i + vec2(0.0, 1.0)), fHash(i + vec2(1.0, 1.0)), f.x), f.y); }\nfloat fFbm(vec2 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 3; k++){ s += a * fNoise(p); p *= 2.03; a *= 0.5; } return s; }')
           // Sea floor depth from the equirect seabed map → clearer, more
           // transparent shallows over a deeper, opaque blue; plus a shoreline
           // crash-foam band that surges in and recedes as the waves wash up.
@@ -7378,7 +7926,20 @@
           + '  float _df = smoothstep(0.0, uDepthFade, _depth);\n'
           + '  diffuseColor.rgb = mix(uShallowCol, uDeepCol, _df);\n'     // clearer shallows → deep blue
           + '  float _alpha = mix(uShallowA, uDeepA, _df);\n'
-          + '  _alpha *= 1.0 - smoothstep(0.86, 1.0, vEdge);\n'           // rim fade into the far sea
+          // Fresnel: real water mirrors at grazing angles — pull the colour
+          // toward a pale sky tint and go opaque, so the sea brightens toward
+          // the horizon instead of staying one flat blue everywhere. Uses the
+          // smooth wave normal (vNormal), not the micro-ripples, so it doesn't
+          // shimmer.
+          + '  vec3 _Vv = normalize(vViewPosition);\n'
+          + '  vec3 _Nv = normalize(vNormal) * (gl_FrontFacing ? 1.0 : -1.0);\n'
+          + '  float _fres = pow(1.0 - clamp(dot(_Nv, _Vv), 0.0, 1.0), 3.0);\n'
+          + '  diffuseColor.rgb = mix(diffuseColor.rgb, uHorizonCol, _fres * 0.55);\n'
+          + '  _alpha = mix(_alpha, 1.0, _fres * 0.85);\n'
+          // Rim fade into the far sea — LAST, so the fresnel-opaque horizon (and
+          // the foam below) still melt away at the patch edge.
+          + '  float _rim = 1.0 - smoothstep(0.86, 1.0, vEdge);\n'
+          + '  _alpha *= _rim;\n'
           // Crest foam (Step 2): white caps on the upper part of each wave crest.
           + '  float _crest = smoothstep(0.45, 0.92, vWaveH);\n'
           + '  float _ctex = fFbm(vW * 240.0 + vec2(uWaveTime * 0.5, -uWaveTime * 0.4));\n'
@@ -7392,8 +7953,22 @@
           + '  float _shoreFoam = uShoreFoam * _band * smoothstep(0.25, 0.8, _stex);\n'
           + '  float _foam = clamp(max(_crestFoam, _shoreFoam), 0.0, 1.0);\n'
           + '  diffuseColor.rgb = mix(diffuseColor.rgb, uFoamColor, _foam);\n'
-          + '  diffuseColor.a = max(_alpha, _foam * 0.9);\n'
+          + '  diffuseColor.a = max(_alpha, _foam * 0.9 * _rim);\n'
           + '  _waterEmit = diffuseColor.rgb;\n')   // feed the self-illumination floor below
+          // Micro-ripples: fine animated noise bends the shading normal between
+          // the big vertex swells, so the low roughness throws moving sun
+          // glints/sparkle instead of one glassy sheet. View-space perturbation
+          // along the patch tangents (vTanR/vTanF) computed in the vertex stage.
+          .replace('#include <normal_fragment_begin>',
+            '#include <normal_fragment_begin>\n'
+          + '  {\n'
+          + '    vec2 _rw = vW * 420.0 + vec2(uWaveTime * 0.45, -uWaveTime * 0.35);\n'
+          + '    float _re = 0.35;\n'
+          + '    float _r0 = fFbm(_rw);\n'
+          + '    float _rgx = (fFbm(_rw + vec2(_re, 0.0)) - _r0) / _re;\n'
+          + '    float _rgy = (fFbm(_rw + vec2(0.0, _re)) - _r0) / _re;\n'
+          + '    normal = normalize(normal + (vTanR * _rgx + vTanF * _rgy) * uRipple);\n'
+          + '  }\n')
           // Stylized glow floor: lift the water toward its own colour so it stays a
           // clear blue (and foam stays white) even where the scene light is dim.
           .replace('#include <emissivemap_fragment>',
@@ -7436,6 +8011,9 @@
         const base = new THREE.Color(body.oceanBaseColor || COL.water);
         waterUniforms.uShallowCol.value.copy(base).lerp(new THREE.Color(0xffffff), 0.45);
         waterUniforms.uDeepCol.value.copy(base);   // keep deep water a bright clear blue, not near-black
+        // Grazing-angle fresnel tint: the body's water colour pushed well toward
+        // white, so the horizon reads as pale sky-mirror on any liquid colour.
+        waterUniforms.uHorizonCol.value.copy(base).lerp(new THREE.Color(0xffffff), 0.65);
       }
       body.mesh.add(wp.mesh);
       wp.mesh.visible = true;
@@ -7456,6 +8034,642 @@
       waterUniforms.uPFwd.value.copy(surfaceState.localFwd);
       waterUniforms.uDrift.value.set(surfaceState.grassU, surfaceState.grassV);
       if (!paused) waterUniforms.uWaveTime.value += dt;
+    }
+
+    // JS mirror of the water-patch vertex shader's wv() evaluated at the avatar.
+    // The avatar sits at the patch centre, so its wave coords are exactly the
+    // drift (grassU, grassV) — keep the three sine terms in lockstep with the
+    // shader or the buoyancy bob will detach from the visible swell.
+    function waveHeightAtAvatar() {
+      if (!waterUniforms) return 0;
+      const t = waterUniforms.uWaveTime.value;
+      const x = surfaceState.grassU, y = surfaceState.grassV;
+      return Math.sin((x + y * 0.25) * 60 + t * 1.6) * 0.50
+           + Math.sin((y - x * 0.35) * 85 - t * 1.9) * 0.32
+           + Math.sin((x * 0.80 + y * 0.60) * 130 + t * 2.6) * 0.18;
+    }
+
+    // ── Near-field ground detail patch ──────────────────────────────────────
+    // The base body mesh is one coarse icosphere (detail 7); up close its triangles
+    // are large relative to the walker, so the bare ground reads smooth/low-poly.
+    // This is a high-res tessellated patch (GROUND_PATCH_N²) that floats over the
+    // near field and ADDS real geometric micro-relief, mirroring the working water
+    // patch almost exactly (sphere projection + displacement + normal-from-gradient
+    // + rim fade). The differences:
+    //   • Base radius + colour come from a small GP_GN×GP_GN grid sampled off the
+    //     REAL mesh by downward raycasts (same trick sampleGrassGround uses), passed
+    //     to the shader as a vec4[] uniform (radius in .x, terrain colour in .yzw) —
+    //     so the patch follows the coarse terrain and is painted the same colour,
+    //     no data-textures (avoids float-texture-filtering pitfalls).
+    //   • A ground-fixed FBM adds the fine relief on top; its amplitude fades to 0
+    //     at the rim (just like the alpha) so the patch meets the coarse mesh
+    //     seamlessly out near the skyline, where aerial fog + curvature hide it.
+    // polygonOffset biases it just in front of the coarse mesh it sits on. It rides
+    // the same grassU/grassV treadmill as the other fields, parented to body.mesh.
+    const GROUND_PATCH_N = 96;          // patch grid resolution (verts per side)
+    const GP_GN          = 12;          // height/colour sample grid (GP_GN² raycasts on re-anchor)
+    let groundPatch = null;
+    let groundPatchUniforms = null;
+
+    // ── Footprints (soft-soil worlds) ──
+    // Walking on soft ground leaves boot prints. Each print is a decal evaluated
+    // in the ground patch's FRAGMENT shader (no extra meshes, no z-fighting):
+    // an oriented boot shape (rounded sole + heel + tread bars) that darkens the
+    // soil, throws up a pale rim of displaced regolith, and perturbs the shading
+    // normal into a soft depression — so the soil visibly takes the print. The
+    // prints live in the same ground-fixed treadmill coords (grassU/grassV) the
+    // patch's micro-relief uses, so they stay put as the avatar walks away, and
+    // they "settle" (fade) over about a minute. Ring buffer: oldest slot reused.
+    const FOOT_N    = 48;               // live print slots (vec4 uniform array)
+    const FOOT_LIFE = 70;               // seconds before a print fully settles away
+    // Archetypes soft enough to print, with strength per band: `low` applies
+    // below SAND_TOP (venusian slab flats barely dust over; the regolith and
+    // dark soil above take a full print).
+    const FOOTPRINT_GROUND = {
+      venusian:  { strength: 1.0,  low: 0.4 },
+      desert:    { strength: 0.75, low: 0.75 },
+      moon_like: { strength: 0.9,  low: 0.9 },
+    };
+
+    function buildGroundPatch() {
+      const N = GROUND_PATCH_N;
+      // ONE cell array, shared by the shader uniform AND refreshGroundGrid — so the
+      // raycast samples we write actually reach the GPU (a separate uniform array
+      // would stay all-zero → patch collapses to the body centre / invisible).
+      const cell = new Float32Array(4 * GP_GN * GP_GN);
+      // Footprint slots, shared with the uFoot uniform the same way: per print
+      // vec4(u, v, yaw, fade) in ground-fixed tangent coords. fade==0 = empty.
+      const foot = new Float32Array(4 * FOOT_N);
+      const geo = new THREE.PlaneGeometry(2, 2, N - 1, N - 1);
+      geo.rotateX(-Math.PI / 2);        // lie flat in XZ; position.xz ∈ [-1,1] are the tangent coords
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.96, metalness: 0.0,
+        transparent: true, opacity: 1.0, side: THREE.DoubleSide,
+      });
+      mat.polygonOffset = true;         // bias in front of the coarse mesh it overlays
+      mat.polygonOffsetFactor = -1;
+      mat.polygonOffsetUnits = -1;
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uPUp       = { value: new THREE.Vector3(0, 1, 0) };
+        sh.uniforms.uPRight    = { value: new THREE.Vector3(1, 0, 0) };
+        sh.uniforms.uPFwd      = { value: new THREE.Vector3(0, 0, 1) };
+        sh.uniforms.uPR        = { value: 0.4 };                       // patch half-size (body-local units)
+        sh.uniforms.uRef       = { value: 12 };                        // reference radius for tangent curvature
+        sh.uniforms.uGridHalf  = { value: 0.5 };                       // half-extent the cell grid covers
+        sh.uniforms.uGridDrift = { value: new THREE.Vector2(0, 0) };   // current-frame → snapshot-frame offset
+        sh.uniforms.uDrift     = { value: new THREE.Vector2(0, 0) };   // ground-fixed detail offset
+        sh.uniforms.uDetailAmp = { value: 0.004 };                     // micro-relief height (body-local units)
+        sh.uniforms.uDetailFreq= { value: 40.0 };                      // micro-relief frequency
+        sh.uniforms.uEps       = { value: 0.01 };                      // finite-difference step for normals
+        sh.uniforms.uReveal    = { value: 0 };                         // fade-in on attach
+        sh.uniforms.uCell      = { value: cell };
+        sh.uniforms.uFoot      = { value: foot };                      // footprint decals (see above)
+        sh.uniforms.uFootLen   = { value: 0.05 };                      // boot length, body-local units
+        groundPatchUniforms = sh.uniforms;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>',
+            '#include <common>\n'
+          + 'uniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\n'
+          + 'uniform float uPR;\nuniform float uRef;\nuniform float uGridHalf;\n'
+          + 'uniform vec2 uGridDrift;\nuniform vec2 uDrift;\n'
+          + 'uniform float uDetailAmp;\nuniform float uDetailFreq;\nuniform float uEps;\n'
+          + 'uniform vec4 uCell[' + (GP_GN * GP_GN) + '];\n'
+          + 'varying float vEdge;\nvarying vec3 vGCol;\nvarying float vDet;\n'
+          // #ifndef-guarded: three.js can invoke onBeforeCompile more than once
+          // over an already-patched string (program variants), so bare varying
+          // declarations here would land twice → "redefinition" compile errors.
+          + '#ifndef FP_VARYINGS\n#define FP_VARYINGS\nvarying vec2 vWd;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n#endif\n'
+          + 'float gHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n'
+          + 'float gNoise(vec2 x){ vec2 i = floor(x); vec2 f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(mix(gHash(i), gHash(i + vec2(1.0,0.0)), f.x), mix(gHash(i + vec2(0.0,1.0)), gHash(i + vec2(1.0,1.0)), f.x), f.y); }\n'
+          + 'float gFbm(vec2 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 4; k++){ s += a * gNoise(p); p *= 2.03; a *= 0.5; } return s; }\n'
+          + 'vec4 cellAt(vec2 w){ const float GN = ' + GP_GN + '.0; float fx = (w.x / uGridHalf * 0.5 + 0.5) * (GN - 1.0); float fy = (w.y / uGridHalf * 0.5 + 0.5) * (GN - 1.0); fx = clamp(fx, 0.0, GN - 1.0); fy = clamp(fy, 0.0, GN - 1.0); float x0 = floor(fx); float y0 = floor(fy); float x1 = min(x0 + 1.0, GN - 1.0); float y1 = min(y0 + 1.0, GN - 1.0); float tx = fx - x0; float ty = fy - y0; vec4 a = mix(uCell[int(y0 * GN + x0)], uCell[int(y0 * GN + x1)], tx); vec4 b = mix(uCell[int(y1 * GN + x0)], uCell[int(y1 * GN + x1)], tx); return mix(a, b, ty); }')
+          .replace('#include <beginnormal_vertex>',
+            '#include <beginnormal_vertex>\n'
+          + '  vec2 _puv = position.xz;\n'
+          + '  float _pu = _puv.x * uPR;\n  float _pv = _puv.y * uPR;\n'
+          + '  vec2 _wc = vec2(_pu, _pv) + uGridDrift;\n'
+          + '  vec2 _wd = vec2(_pu, _pv) + uDrift;\n'
+          + '  float _ef = 1.0 - smoothstep(0.80, 1.0, max(abs(_puv.x), abs(_puv.y)));\n'  // detail → 0 at rim (seamless seam)
+          + '  vec4 _cell = cellAt(_wc);\n'
+          + '  vGCol = _cell.yzw;\n'
+          + '  float _g0 = gFbm(_wd * uDetailFreq);\n'
+          + '  vDet = (_g0 - 0.5) * 2.0;\n'
+          + '  float _ph = _cell.x + _g0 * uDetailAmp * _ef;\n'   // one-sided: relief only rises above the coarse mesh (no poke-through)
+          + '  vec3 _pdir = normalize(uPUp * uRef + uPRight * _pu + uPFwd * _pv);\n'
+          + '  float _e = uEps;\n'
+          + '  float _hx = cellAt(_wc + vec2(_e, 0.0)).x + gFbm((_wd + vec2(_e, 0.0)) * uDetailFreq) * uDetailAmp * _ef;\n'
+          + '  float _hy = cellAt(_wc + vec2(0.0, _e)).x + gFbm((_wd + vec2(0.0, _e)) * uDetailFreq) * uDetailAmp * _ef;\n'
+          + '  float _sx = (_hx - _ph) / _e;\n  float _sy = (_hy - _ph) / _e;\n'
+          + '  objectNormal = normalize(_pdir - (uPRight * _sx + uPFwd * _sy));\n'
+          + '  vEdge = max(abs(_puv.x), abs(_puv.y));')
+          .replace('#include <begin_vertex>',
+            '#include <begin_vertex>\n  transformed = _pdir * _ph;\n'
+          // Footprint plumbing: the ground-fixed coords for the decal lookup and
+          // the view-space patch tangents the depression normal is bent along.
+          + '  vWd = _wd;\n'
+          + '  vTanR = normalize(normalMatrix * uPRight);\n'
+          + '  vTanF = normalize(normalMatrix * uPFwd);\n');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>',
+            '#include <common>\nvarying float vEdge;\nvarying vec3 vGCol;\nvarying float vDet;\nuniform float uReveal;\n'
+          + '#ifndef FP_VARYINGS\n#define FP_VARYINGS\nvarying vec2 vWd;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n#endif\n'
+          + 'uniform vec4 uFoot[' + FOOT_N + '];\nuniform float uFootLen;\n'
+          // Footprint accumulators, filled in color_fragment (which runs before
+          // normal_fragment_begin) and consumed there for the depression normal.
+          + 'float _fpDark = 0.0;\nfloat _fpRim = 0.0;\nvec2 _fpGrad = vec2(0.0);\n'
+          // Boot-print SDF in print-local coords (units of boot length, +y = direction
+          // of travel): a rounded-box sole up front and a round heel behind.
+          + 'float fpBox(vec2 p, vec2 b, float r){ vec2 d = abs(p) - b + r; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }\n'
+          + 'float fpSD(vec2 q){ return min(fpBox(q - vec2(0.0, 0.16), vec2(0.17, 0.30), 0.13), length(q - vec2(0.0, -0.33)) - 0.15); }\n')
+          .replace('#include <color_fragment>',
+            '#include <color_fragment>\n'
+          + '  diffuseColor.rgb = vGCol * (0.96 + 0.06 * vDet);\n'           // terrain colour + faint relief mottle
+          // Footprint decals: per print, rotate into its frame, evaluate the boot
+          // SDF, darken the tread, lighten the displaced-soil rim, and build the
+          // depression gradient for the normal bend below. Cheap bounding-circle
+          // early-outs keep the loop ~free for fragments away from any print.
+          + '  for (int i = 0; i < ' + FOOT_N + '; i++) {\n'
+          + '    vec4 fp = uFoot[i];\n'
+          + '    if (fp.w <= 0.002) continue;\n'
+          + '    vec2 off = vWd - fp.xy;\n'
+          + '    if (dot(off, off) > uFootLen * uFootLen * 1.4) continue;\n'
+          + '    float cy = cos(fp.z), sy = sin(fp.z);\n'
+          + '    vec2 q = vec2(cy * off.x - sy * off.y, sy * off.x + cy * off.y) / uFootLen;\n'
+          + '    float d = fpSD(q);\n'
+          + '    float inside = smoothstep(0.03, -0.04, d);\n'
+          + '    float tread = 0.7 + 0.3 * smoothstep(0.22, 0.45, abs(fract(q.y * 5.0) - 0.5));\n'
+          + '    _fpDark += fp.w * inside * tread;\n'
+          + '    _fpRim  += fp.w * (smoothstep(0.13, 0.02, d) - smoothstep(0.02, -0.03, d));\n'
+          + '    float fe = 0.08;\n'
+          + '    float b0 = smoothstep(0.12, -0.10, d);\n'
+          + '    float gx = (smoothstep(0.12, -0.10, fpSD(q + vec2(fe, 0.0))) - b0) / fe;\n'
+          + '    float gy = (smoothstep(0.12, -0.10, fpSD(q + vec2(0.0, fe))) - b0) / fe;\n'
+          + '    _fpGrad += vec2(cy * gx + sy * gy, -sy * gx + cy * gy) * fp.w;\n'
+          + '  }\n'
+          + '  _fpDark = clamp(_fpDark, 0.0, 1.0);\n'
+          + '  _fpRim  = clamp(_fpRim, 0.0, 1.0);\n'
+          + '  diffuseColor.rgb *= 1.0 - 0.5 * _fpDark;\n'
+          + '  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.9 + vec3(0.015), _fpRim * 0.7);\n'
+          + '  diffuseColor.a = (1.0 - smoothstep(0.80, 1.0, vEdge)) * uReveal;')
+          // Bend the shading normal into each print's depression so the soil
+          // visibly takes the boot (lit wall on the sun side, shaded floor).
+          .replace('#include <normal_fragment_begin>',
+            '#include <normal_fragment_begin>\n'
+          + '  if (abs(_fpGrad.x) + abs(_fpGrad.y) > 1e-4) {\n'
+          + '    normal = normalize(normal + (vTanR * _fpGrad.x + vTanF * _fpGrad.y) * 0.45);\n'
+          + '  }\n');
+      };
+      mat.customProgramCacheKey = () => 'groundPatch';
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 1;             // after the coarse mesh (0), before the water patch (2)
+      mesh.castShadow = false;
+      // NO receiveShadow: the patch floats a hair above the planet mesh — a
+      // system-scale shadow caster — so sampling the sun's shadow map here is
+      // pure acne and renders the whole patch black. (The water patch skips
+      // shadows for the same reason.)
+      mesh.receiveShadow = false;
+      mesh.visible = false;
+      groundPatch = {
+        mesh, mat, cell,
+        PR: 1, gridHalf: 1, gridValid: false, gridU: 0, gridV: 0,
+        gridUp: new THREE.Vector3(), gridRight: new THREE.Vector3(), gridFwd: new THREE.Vector3(),
+        reveal: 0,
+        // Per-visit shader params, pushed every frame by updateGroundPatch (so the
+        // very first visit — whose shader only compiles AFTER attach — still gets
+        // the right values once the uniforms exist).
+        detailAmp: 0.004, detailFreq: 40, eps: 0.01, footLen: 0.05,
+        // Footprint state: foot is the shared uniform array (u, v, yaw, fade per
+        // print); age/str are JS-side, fades recomputed each frame from them.
+        foot, footAge: new Float32Array(FOOT_N).fill(FOOT_LIFE), footStr: new Float32Array(FOOT_N),
+        footNext: 0, strideAcc: 0, strideSide: 1,
+      };
+    }
+
+    function attachGroundPatch(body) {
+      if (!groundPatch) buildGroundPatch();
+      const gp = groundPatch;
+      gp.PR = surfaceState.eyeHeight * 14;
+      gp.gridValid = false;
+      gp.reveal = 0;
+      // Per-archetype micro-relief: venusian ground is coarse volcanic rubble, so
+      // its bumps run taller and chunkier than the soft default ("rocky mud").
+      const venus = body.archetype === 'venusian';
+      gp.detailAmp  = surfaceState.eyeHeight * (venus ? 0.09 : 0.05);  // softer default avoids self-shadow speckle
+      gp.detailFreq = 1 / (surfaceState.eyeHeight * (venus ? 0.6 : 0.9));
+      gp.eps        = surfaceState.eyeHeight * 0.45;                   // wider sample → gentler normals
+      gp.footLen    = surfaceState.eyeHeight * 0.26;                   // boot print length
+      // Fresh visit → no leftover prints from the previous world.
+      gp.foot.fill(0);
+      gp.footAge.fill(FOOT_LIFE);
+      gp.footNext = 0; gp.strideAcc = 0; gp.strideSide = 1;
+      if (groundPatchUniforms) {
+        groundPatchUniforms.uPR.value        = gp.PR;
+        groundPatchUniforms.uRef.value       = surfaceState.groundRadius;
+        groundPatchUniforms.uDetailAmp.value = gp.detailAmp;
+        groundPatchUniforms.uDetailFreq.value= gp.detailFreq;
+        groundPatchUniforms.uEps.value       = gp.eps;
+        groundPatchUniforms.uReveal.value    = 0;
+        // Share the live cell/foot arrays with the uniforms so refreshGroundGrid
+        // and the footprint stamps mutate them in place.
+        groundPatchUniforms.uCell.value      = gp.cell;
+        groundPatchUniforms.uFoot.value      = gp.foot;
+        groundPatchUniforms.uFootLen.value   = gp.footLen;
+      }
+      gp.mesh.visible = false;
+      if (gp.mesh.parent) gp.mesh.parent.remove(gp.mesh);
+      body.mesh.add(gp.mesh);
+    }
+
+    function detachGroundPatch() {
+      if (groundPatch && groundPatch.mesh.parent) groundPatch.mesh.parent.remove(groundPatch.mesh);
+    }
+
+    // Re-sample the base-radius + terrain-colour grid in the avatar's current tangent
+    // frame (GP_GN² downward raycasts), snapshotting that frame. Stores radius in .x
+    // and the hit face's colour in .yzw of each cell. Reuses the grass raycaster +
+    // scratch (runs after updateGrass in the loop, so the share is sequential/safe).
+    function refreshGroundGrid() {
+      const gp = groundPatch, body = surfaceState.body;
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      gp.gridUp.copy(surfaceState.localUp);
+      gp.gridRight.copy(surfaceState.localRight);
+      gp.gridFwd.copy(surfaceState.localFwd);
+      gp.gridU = surfaceState.grassU;
+      gp.gridV = surfaceState.grassV;
+      gp.gridHalf = gp.PR * 1.3;
+      const footR = surfaceState.groundRadius, GH = gp.gridHalf, GN = GP_GN, cell = gp.cell, ca = body.colorArr;
+      for (let iy = 0; iy < GN; iy++) {
+        for (let ix = 0; ix < GN; ix++) {
+          const gu = (ix / (GN - 1) * 2 - 1) * GH;
+          const gv = (iy / (GN - 1) * 2 - 1) * GH;
+          _gP.copy(gp.gridUp).multiplyScalar(footR).addScaledVector(gp.gridRight, gu).addScaledVector(gp.gridFwd, gv);
+          _gUp.copy(_gP).normalize();
+          _grOrigin.copy(_gUp).multiplyScalar(high).applyMatrix4(mw);
+          _grDir.copy(_gUp).multiplyScalar(-1).transformDirection(mw).normalize();
+          grassRaycaster.set(_grOrigin, _grDir);
+          const hits = grassRaycaster.intersectObject(body.mesh, false);
+          let r = footR, cr = 0.4, cg = 0.4, cb = 0.4;
+          if (hits.length) {
+            _grHit.copy(hits[0].point); body.mesh.worldToLocal(_grHit); r = _grHit.length();
+            const f = hits[0].face;
+            cr = (ca[3 * f.a]     + ca[3 * f.b]     + ca[3 * f.c])     / 3;
+            cg = (ca[3 * f.a + 1] + ca[3 * f.b + 1] + ca[3 * f.c + 1]) / 3;
+            cb = (ca[3 * f.a + 2] + ca[3 * f.b + 2] + ca[3 * f.c + 2]) / 3;
+          }
+          const o = (iy * GN + ix) * 4;
+          cell[o] = r; cell[o + 1] = cr; cell[o + 2] = cg; cell[o + 3] = cb;
+        }
+      }
+      gp.gridValid = true;
+    }
+
+    // Per-frame: re-anchor the grid when the walker drifts, fade in, and push the
+    // current tangent frame + drifts into the shader. The mesh itself never changes —
+    // the GPU projects + displaces it from the uniforms.
+    function updateGroundPatch(dt) {
+      if (!groundPatch || viewMode !== 'surface' || !surfaceState.body) return;
+      const gp = groundPatch, PR = gp.PR;
+      if (!gp.gridValid ||
+          Math.abs(surfaceState.grassU - gp.gridU) > PR * 0.4 ||
+          Math.abs(surfaceState.grassV - gp.gridV) > PR * 0.4) {
+        refreshGroundGrid();
+      }
+      gp.reveal += (1 - gp.reveal) * Math.min(1, dt * 4);
+      // Age the footprints: a quick press-in, then a long settle-out. Fades are
+      // written straight into the shared uniform array, premultiplied by each
+      // print's soil softness (footStr). JS state — runs even before the shader
+      // has compiled.
+      for (let i = 0; i < FOOT_N; i++) {
+        const a = (gp.footAge[i] += dt);
+        if (a >= FOOT_LIFE) { gp.foot[4 * i + 3] = 0; continue; }
+        gp.foot[4 * i + 3] = Math.min(1, a / 0.12)
+          * (1 - smoothstep(FOOT_LIFE * 0.55, FOOT_LIFE, a)) * gp.footStr[i];
+      }
+      // Show the mesh BEFORE the uniforms guard: the shader only compiles (and
+      // groundPatchUniforms only appears) once the mesh first renders, so gating
+      // visibility on the uniforms would deadlock the very first visit. The one
+      // pre-compile frame renders at uReveal 0 → fully transparent.
+      gp.mesh.visible = true;
+      if (!groundPatchUniforms) return;
+      const u = groundPatchUniforms;
+      u.uPUp.value.copy(surfaceState.localUp);
+      u.uPRight.value.copy(surfaceState.localRight);
+      u.uPFwd.value.copy(surfaceState.localFwd);
+      u.uGridHalf.value = gp.gridHalf;
+      u.uGridDrift.value.set(surfaceState.grassU - gp.gridU, surfaceState.grassV - gp.gridV);
+      u.uDrift.value.set(surfaceState.grassU, surfaceState.grassV);
+      u.uRef.value = surfaceState.groundRadius;
+      u.uReveal.value = gp.reveal;
+      // Per-visit params, pushed here (not just on attach) because the very first
+      // visit compiles the shader AFTER attachGroundPatch ran — see buildGroundPatch.
+      u.uPR.value         = gp.PR;
+      u.uDetailAmp.value  = gp.detailAmp;
+      u.uDetailFreq.value = gp.detailFreq;
+      u.uEps.value        = gp.eps;
+      u.uFootLen.value    = gp.footLen;
+      u.uFoot.value       = gp.foot;
+    }
+
+    // Stamp one boot print at ground-fixed tangent coords (u, v), oriented to a
+    // heading yaw (radians; the angle of the movement direction in the
+    // localRight/localFwd basis). strength scales the whole decal.
+    function stampFootprint(u, v, yaw, strength) {
+      const gp = groundPatch;
+      if (!gp) return;
+      const i = gp.footNext;
+      gp.footNext = (i + 1) % FOOT_N;
+      gp.foot[4 * i]     = u;
+      gp.foot[4 * i + 1] = v;
+      gp.foot[4 * i + 2] = yaw;
+      gp.foot[4 * i + 3] = 0;            // updateGroundPatch fades it in from age 0
+      gp.footAge[i] = 0;
+      gp.footStr[i] = strength;
+    }
+
+    // How strongly the ground under the avatar takes a print (0 = hard ground or
+    // not a soft-soil archetype). Venusian slab flats (below SAND_TOP) only dust
+    // over; the regolith/soil bands above take a full print.
+    function footprintStrengthHere() {
+      const body = surfaceState.body;
+      const cfg = body && FOOTPRINT_GROUND[body.archetype];
+      if (!cfg || !groundPatch) return 0;
+      const h = (surfaceState.groundRadius / body.baseRadius - 1) / BODY_HEIGHT_SCALE;
+      return h < SAND_TOP ? cfg.low : cfg.strength;
+    }
+
+    // Called from stepSurfaceWalk with this frame's tangent step (du, dv): meter
+    // out alternating left/right boot prints every half-stride along the path.
+    function stampFootprintsFromStep(du, dv) {
+      const gp = groundPatch;
+      if (!gp || !surfaceState.grounded || surfaceState.swimming) return;
+      const str = footprintStrengthHere();
+      if (str <= 0) return;
+      const stepLen = Math.hypot(du, dv);
+      if (stepLen <= 1e-9) return;
+      gp.strideAcc += stepLen;
+      const stride = surfaceState.eyeHeight * 0.55;
+      let n = Math.floor(gp.strideAcc / stride);
+      if (n <= 0) return;
+      gp.strideAcc -= n * stride;
+      if (n > 4) n = 4;                              // a hitch frame doesn't dump the whole ring
+      const yaw = Math.atan2(du, dv);
+      const hu = du / stepLen, hv = dv / stepLen;    // unit heading
+      // Place each crossed stride BACK along this frame's heading so prints stay
+      // evenly spaced even when one slow frame covers several strides.
+      for (let k = n - 1; k >= 0; k--) {
+        const back = gp.strideAcc + k * stride;
+        const w = surfaceState.eyeHeight * 0.07 * gp.strideSide;
+        gp.strideSide = -gp.strideSide;
+        stampFootprint(
+          surfaceState.grassU - hu * back + hv * w,
+          surfaceState.grassV - hv * back - hu * w,
+          yaw, str);
+      }
+    }
+
+    // ── Surface props (real GLB trees + rocks) ──────────────────────────────
+    // CC0 low-poly models (Quaternius, via poly.pizza) loaded once, normalized to
+    // unit height + grounded (bottom at y=0) like the satellite/astronaut loaders,
+    // then InstancedMesh-scattered with the SAME past-horizon treadmill + raycast
+    // height grid as grass/rocks — so props sit on the terrain and never pop in
+    // (their fade edge is below the skyline). One InstancedMesh per GLB sub-mesh
+    // (trunk + foliage share one transform array). Trees gate to grass faces; rocks
+    // to any land. Whole field shows only on terrestrial planets.
+    const PROP_GN = 10;            // height/mask grid resolution (raycasts on re-anchor)
+    const PROP_SPECS = [
+      { url: 'assets/tree.glb', kind: 'tree', count: 110, targetH: 7.0, gate: 'grass', sink: 0.0,  jitter: 0.45 },
+      { url: 'assets/pine.glb', kind: 'tree', count: 85,  targetH: 9.0, gate: 'grass', sink: 0.0,  jitter: 0.45 },
+      { url: 'assets/rock.glb', kind: 'rock', count: 240, targetH: 1.5, gate: 'land',  sink: 0.28, jitter: 0.7  },
+    ];
+    const propTemplateCache = {};
+    let propField = null, propBuilding = false, propPendingBody = null;
+
+    // Load + normalize a GLB into a list of {geo, mat} sub-meshes: every mesh's node
+    // transform is baked into a cloned geometry, then the whole model is scaled to
+    // height 1 and translated so its base sits at y=0, centred on X/Z. The per-
+    // instance matrix later applies the real world height, yaw, and ground position.
+    function loadPropTemplate(url) {
+      if (propTemplateCache[url]) return propTemplateCache[url];
+      const loader = new GLTFLoader();
+      const p = new Promise((resolve, reject) => {
+        loader.load(url, (g) => {
+          g.scene.updateMatrixWorld(true);
+          const subs = [];
+          const bbox = new THREE.Box3();
+          g.scene.traverse((o) => {
+            if (!o.isMesh) return;
+            const geo = o.geometry.clone();
+            geo.applyMatrix4(o.matrixWorld);
+            geo.computeBoundingBox();
+            bbox.union(geo.boundingBox);
+            const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+            if (mat && mat.emissive) { mat.emissive.setHex(0x0c0f0a); mat.emissiveIntensity = 1.0; }  // faint night-side fill
+            subs.push({ geo, mat });
+          });
+          const size = bbox.getSize(new THREE.Vector3());
+          const center = bbox.getCenter(new THREE.Vector3());
+          const s = 1 / (size.y || 1);
+          const m = new THREE.Matrix4().makeScale(s, s, s)
+            .multiply(new THREE.Matrix4().makeTranslation(-center.x, -bbox.min.y, -center.z));
+          subs.forEach((sub) => { sub.geo.applyMatrix4(m); sub.geo.computeVertexNormals(); });
+          resolve({ subs });
+        }, undefined, reject);
+      });
+      propTemplateCache[url] = p;
+      return p;
+    }
+
+    function buildPropField() {
+      Promise.all(PROP_SPECS.map((sp) => loadPropTemplate(sp.url))).then((templates) => {
+        const groups = PROP_SPECS.map((spec, gi) => {
+          const tpl = templates[gi];
+          // Shared per-instance distance fade (1 = solid, 0 = gone), applied as DITHERED
+          // alpha (alphaHash) so distant props dissolve into the haze near the skyline
+          // instead of standing as a hard silhouette band. Dithering needs no transparency
+          // sorting, so instanced foliage stays artifact-free — and it works at night too
+          // (unlike fog, which we dim on the dark side).
+          const fadeArr = new Float32Array(spec.count).fill(1);
+          const meshes = tpl.subs.map((sub) => {
+            sub.geo.setAttribute('aFade', new THREE.InstancedBufferAttribute(fadeArr, 1).setUsage(THREE.DynamicDrawUsage));
+            sub.mat.alphaHash = true;
+            sub.mat.onBeforeCompile = (sh) => {
+              sh.vertexShader = sh.vertexShader
+                .replace('#include <common>', '#include <common>\nattribute float aFade;\nvarying float vFade;')
+                .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vFade = aFade;');
+              sh.fragmentShader = sh.fragmentShader
+                .replace('#include <common>', '#include <common>\nvarying float vFade;')
+                .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.a *= vFade;');
+            };
+            sub.mat.customProgramCacheKey = () => 'propFade:' + spec.url;
+            const mesh = new THREE.InstancedMesh(sub.geo, sub.mat, spec.count);
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            mesh.frustumCulled = false;
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
+            mesh.visible = false;
+            return mesh;
+          });
+          const baseUV = new Float32Array(spec.count * 2);
+          const yaw = new Float32Array(spec.count);
+          const sizeJit = new Float32Array(spec.count);
+          // Cluster scatter (copses of trees, rock piles) with open ground between.
+          let i = 0;
+          while (i < spec.count) {
+            const cx = Math.random() * 2 - 1, cy = Math.random() * 2 - 1;
+            const n  = spec.kind === 'tree' ? 1 + (Math.random() * 4 | 0) : 2 + (Math.random() * 8 | 0);
+            const cr = spec.kind === 'tree' ? 0.03 + Math.random() * 0.06 : 0.02 + Math.random() * 0.05;
+            for (let k = 0; k < n && i < spec.count; k++, i++) {
+              const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * cr;
+              baseUV[2 * i]     = Math.max(-1, Math.min(1, cx + Math.cos(a) * rr));
+              baseUV[2 * i + 1] = Math.max(-1, Math.min(1, cy + Math.sin(a) * rr));
+              yaw[i]     = Math.random() * Math.PI * 2;
+              sizeJit[i] = 1 - spec.jitter * Math.random();
+            }
+          }
+          return { spec, meshes, baseUV, yaw, sizeJit, fadeArr };
+        });
+        propField = {
+          groups, PR: 1, gridHalf: 1, gridValid: false, gridU: 0, gridV: 0,
+          gridUp: new THREE.Vector3(), gridRight: new THREE.Vector3(), gridFwd: new THREE.Vector3(),
+          grid: new Float32Array(PROP_GN * PROP_GN),
+          gridGrass: new Float32Array(PROP_GN * PROP_GN),
+          gridLand: new Float32Array(PROP_GN * PROP_GN),
+        };
+        console.info('[surface-detail] prop GLBs loaded — groups:', groups.map(g => g.spec.url + '×' + g.spec.count).join(', '));
+        if (propPendingBody && viewMode === 'surface') attachProps(propPendingBody);
+        propPendingBody = null;
+      }).catch((err) => { console.error('[surface] prop GLB load failed', err); propBuilding = false; });
+    }
+
+    function attachProps(body) {
+      if (!propField) {
+        if (!propBuilding) { propBuilding = true; buildPropField(); }
+        propPendingBody = body;
+        return;
+      }
+      const pf = propField;
+      const horizon = Math.sqrt(2 * body.baseRadius * surfaceState.eyeHeight);
+      pf.PR = Math.max(surfaceState.eyeHeight * 30, horizon * 1.35);
+      pf.fadeNear = horizon * 0.75;   // props fully solid within this tangent distance
+      pf.fadeFar  = horizon * 1.12;   // ...dithered to nothing by here (just past the skyline)
+      pf.gridValid = false;
+      for (const g of pf.groups) for (const m of g.meshes) {
+        m.visible = false;
+        if (m.parent) m.parent.remove(m);
+        body.mesh.add(m);
+      }
+    }
+
+    function detachProps() {
+      if (!propField) return;
+      for (const g of propField.groups) for (const m of g.meshes) if (m.parent) m.parent.remove(m);
+    }
+
+    function refreshPropGrid() {
+      const pf = propField, body = surfaceState.body;
+      body.mesh.updateMatrixWorld();
+      const mw = body.mesh.matrixWorld;
+      const high = body.baseRadius * (1 + MAX_LAND_HEIGHT * BODY_HEIGHT_SCALE) + 1;
+      pf.gridUp.copy(surfaceState.localUp);
+      pf.gridRight.copy(surfaceState.localRight);
+      pf.gridFwd.copy(surfaceState.localFwd);
+      pf.gridU = surfaceState.grassU;
+      pf.gridV = surfaceState.grassV;
+      pf.gridHalf = pf.PR * 1.3;
+      const footR = surfaceState.groundRadius, GH = pf.gridHalf, GN = PROP_GN;
+      const liquid = !!(body.matter && body.matter.liquid);
+      for (let iy = 0; iy < GN; iy++) {
+        for (let ix = 0; ix < GN; ix++) {
+          const gu = (ix / (GN - 1) * 2 - 1) * GH;
+          const gv = (iy / (GN - 1) * 2 - 1) * GH;
+          _gP.copy(pf.gridUp).multiplyScalar(footR).addScaledVector(pf.gridRight, gu).addScaledVector(pf.gridFwd, gv);
+          _gUp.copy(_gP).normalize();
+          _grOrigin.copy(_gUp).multiplyScalar(high).applyMatrix4(mw);
+          _grDir.copy(_gUp).multiplyScalar(-1).transformDirection(mw).normalize();
+          grassRaycaster.set(_grOrigin, _grDir);
+          const hits = grassRaycaster.intersectObject(body.mesh, false);
+          let r = footR, isGrass = 0, isLand = 0;
+          if (hits.length) {
+            _grHit.copy(hits[0].point); body.mesh.worldToLocal(_grHit); r = _grHit.length();
+            isGrass = groundIsGrassFace(body, hits[0].face) ? 1 : 0;
+            isLand  = (!liquid || r >= body.baseRadius) ? 1 : 0;   // above sea level = plantable land
+          }
+          const o = iy * GN + ix;
+          pf.grid[o] = r; pf.gridGrass[o] = isGrass; pf.gridLand[o] = isLand;
+        }
+      }
+      pf.gridValid = true;
+    }
+
+    function propBilinear(arr, gridHalf, su, sv) {
+      const GN = PROP_GN, GH = gridHalf;
+      let fx = (su / GH * 0.5 + 0.5) * (GN - 1);
+      let fy = (sv / GH * 0.5 + 0.5) * (GN - 1);
+      fx = fx < 0 ? 0 : fx > GN - 1 ? GN - 1 : fx;
+      fy = fy < 0 ? 0 : fy > GN - 1 ? GN - 1 : fy;
+      const x0 = fx | 0, y0 = fy | 0;
+      const x1 = x0 < GN - 1 ? x0 + 1 : x0, y1 = y0 < GN - 1 ? y0 + 1 : y0;
+      const tx = fx - x0, ty = fy - y0;
+      const a = arr[y0 * GN + x0] + (arr[y0 * GN + x1] - arr[y0 * GN + x0]) * tx;
+      const b = arr[y1 * GN + x0] + (arr[y1 * GN + x1] - arr[y1 * GN + x0]) * tx;
+      return a + (b - a) * ty;
+    }
+
+    // Per-frame: place every prop instance against the shared grid. Trees stand on
+    // grass, rocks on any land; both follow terrain height and only appear on
+    // terrestrial planets. No reveal-scaling here — the past-horizon radius means
+    // the edge fade is occluded by the planet's curvature, so nothing visibly grows.
+    function updateProps(dt) {
+      if (!propField || viewMode !== 'surface' || !surfaceState.body) return;
+      const body = surfaceState.body, pf = propField;
+      const show = body.kind === 'planet' && body.archetype === 'terrestrial';
+      if (!show) { for (const g of pf.groups) for (const m of g.meshes) m.visible = false; return; }
+      const PR = pf.PR;
+      if (!pf.gridValid ||
+          Math.abs(surfaceState.grassU - pf.gridU) > PR * 0.4 ||
+          Math.abs(surfaceState.grassV - pf.gridV) > PR * 0.4) {
+        refreshPropGrid();
+      }
+      const period = PR * 2, eh = surfaceState.eyeHeight;
+      const up = surfaceState.localUp, right = surfaceState.localRight, fwd = surfaceState.localFwd;
+      const footR = surfaceState.groundRadius;
+      const uOff = surfaceState.grassU, vOff = surfaceState.grassV;
+      const driftU = surfaceState.grassU - pf.gridU, driftV = surfaceState.grassV - pf.gridV;
+      for (const g of pf.groups) {
+        const spec = g.spec, targetH = spec.targetH * eh, sink = spec.sink;
+        const maskArr = spec.gate === 'grass' ? pf.gridGrass : pf.gridLand;
+        for (let i = 0; i < spec.count; i++) {
+          let u = g.baseUV[2 * i]     * PR - uOff;
+          let v = g.baseUV[2 * i + 1] * PR - vOff;
+          u -= period * Math.floor((u + PR) / period);
+          v -= period * Math.floor((v + PR) / period);
+          const present = propBilinear(maskArr, pf.gridHalf, driftU + u, driftV + v) > 0.4 ? 1 : 0;
+          // Horizon haze: dissolve toward the skyline via dithered alpha (not scale),
+          // so props never stand as a hard band and nothing visibly "grows" as you walk.
+          const dist = Math.sqrt(u * u + v * v);
+          let a = (pf.fadeFar - dist) / (pf.fadeFar - pf.fadeNear);
+          a = a < 0 ? 0 : a > 1 ? 1 : a;
+          a = a * a * (3 - 2 * a);
+          const fade = present ? a : 0;
+          if (fade <= 0.01) { g.fadeArr[i] = 0; _gMat.makeScale(0, 0, 0); for (const m of g.meshes) m.setMatrixAt(i, _gMat); continue; }
+          g.fadeArr[i] = fade;
+          _gP.copy(up).multiplyScalar(footR).addScaledVector(right, u).addScaledVector(fwd, v);
+          _gUp.copy(_gP).normalize();
+          const r = propBilinear(pf.grid, pf.gridHalf, driftU + u, driftV + v) - sink * targetH * g.sizeJit[i];
+          _gP.copy(_gUp).multiplyScalar(r);
+          _gQuat.setFromUnitVectors(_gAxisY, _gUp);
+          _gRot.setFromAxisAngle(_gUp, g.yaw[i]);
+          _gQuat.premultiply(_gRot);
+          const sc = targetH * g.sizeJit[i];
+          _gScale.set(sc, sc, sc);
+          _gMat.compose(_gP, _gQuat, _gScale);
+          for (const m of g.meshes) { m.visible = true; m.setMatrixAt(i, _gMat); }
+        }
+        for (const m of g.meshes) { m.instanceMatrix.needsUpdate = true; m.geometry.getAttribute('aFade').needsUpdate = true; }
+      }
     }
 
     // WASD walking. Movement happens in body-local space along the tangent
@@ -7517,16 +8731,60 @@
           surfaceState.jumpOffset = 0;
           surfaceState.vertVel = 0;
           surfaceState.grounded = true;
+          // Landing from a leap punches BOTH boot prints into soft soil at once.
+          const landStr = footprintStrengthHere();
+          if (landStr > 0 && !surfaceState.swimming) {
+            const fy = Math.atan2(
+              surfaceState.faceLocal.dot(surfaceState.localRight),
+              surfaceState.faceLocal.dot(surfaceState.localFwd));
+            const lw = surfaceState.eyeHeight * 0.08;
+            const lpu = Math.cos(fy), lpv = -Math.sin(fy);   // perpendicular of the facing
+            stampFootprint(surfaceState.grassU + lpu * lw, surfaceState.grassV + lpv * lw, fy, Math.min(1, landStr * 1.2));
+            stampFootprint(surfaceState.grassU - lpu * lw, surfaceState.grassV - lpv * lw, fy, Math.min(1, landStr * 1.2));
+          }
         }
+      }
+
+      // ── Swim state ──────────────────────────────────────────────────────
+      // Deep water on a water world can't support the walker: once the seabed
+      // drops more than ~a body height below sea level, switch to swimming and
+      // float at the waterline (head out) instead of riding the seabed.
+      // Hysteresis (enter 1.05·eh, exit 0.9·eh) stops the flag flickering on a
+      // noisy seabed sample; standRadius eases between the two supports so the
+      // hand-off reads as buoyancy, not a teleport.
+      {
+        const b = surfaceState.body;
+        const eh = surfaceState.eyeHeight;
+        const inWaterBody = !!(b.matter && b.matter.liquid && b.oceanIsWater);
+        const depth = inWaterBody ? (b.baseRadius - surfaceState.groundRadius) : 0;
+        if (!surfaceState.swimming && depth > eh * 1.05)    surfaceState.swimming = true;
+        else if (surfaceState.swimming && depth < eh * 0.9) surfaceState.swimming = false;
+        let standTarget;
+        if (surfaceState.swimming) {
+          // Buoyancy: float on the ACTUAL swell, not a flat waterline — sample
+          // the same wave field the water patch displaces (at the avatar's spot)
+          // so the body, and the camera riding standRadius, bob with the waves.
+          let waterR = b.baseRadius;
+          if (waterPatch && waterPatch.mesh.visible && waterUniforms) {
+            waterR = b.baseRadius + waterUniforms.uLift.value
+                   + waveHeightAtAvatar() * waterUniforms.uWaveAmp.value;
+          }
+          standTarget = waterR - eh * 0.32;   // body mostly submerged, head + back above water
+        } else {
+          standTarget = surfaceState.groundRadius;
+        }
+        surfaceState.standRadius += (standTarget - surfaceState.standRadius) * Math.min(1, dt * 8);
       }
 
       const fwdInput    = (surfaceKeys.w ? 1 : 0) + (surfaceKeys.s ? -1 : 0);
       const strafeInput = (surfaceKeys.d ? 1 : 0) + (surfaceKeys.a ? -1 : 0);
       const moving = fwdInput !== 0 || strafeInput !== 0;
 
-      // Drive the animation state machine: airborne → jump; on the ground →
-      // run (sprint) / walk / idle depending on input.
-      if (!surfaceState.grounded)      setAstronautAction('jump');
+      // Drive the animation state machine: afloat → swim (covers the splash-
+      // down out of a leap too — the prone blend doubles as a dive); airborne →
+      // jump; on the ground → run (sprint) / walk / idle depending on input.
+      if (surfaceState.swimming)       setAstronautAction('swim');
+      else if (!surfaceState.grounded) setAstronautAction('jump');
       else if (moving)                 setAstronautAction(surfaceKeys.shift ? 'run' : 'walk');
       else                             setAstronautAction('idle');
 
@@ -7549,11 +8807,14 @@
         return;
       }
 
-      // Wading drag: moving below sea level on an ocean body is slower, so
-      // stepping into water feels heavier than striding on land.
+      // Water drag: swimming is half walking pace (with a gentler sprint), and
+      // wading below sea level is slower than striding on land, so stepping
+      // into water feels heavier.
       const submerged = surfaceState.body.matter && surfaceState.body.matter.liquid &&
         (surfaceState.groundRadius + surfaceState.eyeHeight) < surfaceState.body.baseRadius;
-      const speed = surfaceState.moveSpeed * (surfaceKeys.shift ? SURFACE_SPRINT_MULT : 1) * (submerged ? 0.55 : 1);
+      const sprintMult = surfaceKeys.shift ? (surfaceState.swimming ? 1.5 : SURFACE_SPRINT_MULT) : 1;
+      const dragMult   = surfaceState.swimming ? 0.5 : (submerged ? 0.55 : 1);
+      const speed = surfaceState.moveSpeed * sprintMult * dragMult;
       const step  = speed * dt;
       _walkDelta.set(0, 0, 0)
         .addScaledVector(_walkHeading, fwdInput * step)
@@ -7574,6 +8835,9 @@
       surfaceState.grassU += _walkDelta.dot(surfaceState.localRight);
       surfaceState.grassV += _walkDelta.dot(surfaceState.localFwd);
 
+      // Soft-soil worlds: meter boot prints along the path just walked.
+      stampFootprintsFromStep(_rkDu, _rkDv);
+
       // new up = normalized eye position after the tangent step.
       _walkNewUp.copy(surfaceState.localEye).normalize();
 
@@ -7582,7 +8846,9 @@
       // them. Smooth toward it so the faceted icosphere doesn't jolt the eye.
       const sampled = sampleGroundRadius(surfaceState.body, _walkNewUp);
       if (sampled != null) surfaceState.groundRadius = sampled;
-      const targetRadius = surfaceState.groundRadius + surfaceState.eyeHeight;
+      // The eye rides the support surface: the seabed/terrain on foot, the
+      // waterline while swimming (standRadius eases between the two).
+      const targetRadius = surfaceState.standRadius + surfaceState.eyeHeight;
       const curRadius = surfaceState.localEye.length();
       const lerp = Math.min(1, dt * 10);
       surfaceState.localEye.copy(_walkNewUp)
@@ -7605,9 +8871,10 @@
     }
 
     // Launch a jump if we're standing on the ground. Mid-air presses are
-    // ignored (no double-jump) so the arc stays predictable.
+    // ignored (no double-jump) so the arc stays predictable, and water gives
+    // nothing to push off — no jumping while swimming.
     function tryJump() {
-      if (viewMode !== 'surface' || !surfaceState.grounded) return;
+      if (viewMode !== 'surface' || !surfaceState.grounded || surfaceState.swimming) return;
       surfaceState.vertVel = surfaceState.jumpSpeed;
       surfaceState.grounded = false;
     }
@@ -7671,7 +8938,10 @@
         surfaceDragging = true;
         surfaceDragLastX = e.clientX;
         surfaceDragLastY = e.clientY;
-        renderer.domElement.setPointerCapture(e.pointerId);
+        // Capture can throw (InvalidStateError) if the pointer is already gone
+        // — e.g. synthetic input or a tap that lifted mid-handler. The drag
+        // still works off pointermove, so a failed capture is non-fatal.
+        try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
       }
     });
 
@@ -8577,12 +9847,15 @@
       // transform from the body's current world matrix every frame so spin
       // and orbit naturally wheel the sky overhead. Cheap no-op otherwise.
       if (viewMode === 'surface') {
+        updateSurfaceOrigin();
         stepSurfaceWalk(dt);
         updateSurfaceCamera();
         updateAstronaut(dt);
         updateGrass(dt);
         updateRocks(dt);
         updateWaterPatch(dt);
+        updateGroundPatch(dt);
+        updateProps(dt);
         updateSurfaceSkyEffects();
       }
       if (isPainting && isBrushTool() && lastHitLocal && activeBrushBody) {
@@ -8592,7 +9865,9 @@
       // starfield's daylight fade so it washes out under a daytime atmosphere
       // and blazes on the night side / in space. SURFACE_STAR_OPACITY is the
       // full-brightness reference, so this is 1.0 everywhere but surface-daytime.
-      milkyway.position.copy(camera.position);
+      // (minus scene.position: the skybox is a scene child, so the surface-mode
+      // floating-origin shift would otherwise displace it off the camera.)
+      milkyway.position.copy(camera.position).sub(scene.position);
       milkyMat.uniforms.uBrightness.value = starMat.opacity / SURFACE_STAR_OPACITY;
       liveInfoAccum += dt;
       if (liveInfoAccum >= 0.1) { liveInfoAccum = 0; updateLiveInfo(); }

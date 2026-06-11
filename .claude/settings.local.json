@@ -60,7 +60,27 @@
       "Bash(echo \"SYNTAX FAIL \\(exit $?\\)\")",
       "Bash(NODE_PATH=\"C:/Users/dylan/AppData/Local/npm-cache/_npx/31e32ef8478fbf80/node_modules\" node _watertest.cjs)",
       "Bash(git checkout *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "WebFetch(domain:poly.pizza)",
+      "Bash(sed -n '5888,5896p' script.js)",
+      "Bash(grep -n '^\\\\s*\\\\\\\\' script.js)",
+      "Bash(awk '/function updateSunLightForFocus/,/^    }/' script.js)",
+      "Bash(awk '/function updateFocusTracking/,/^    }/' script.js)",
+      "Bash(awk '/function updateMoonLight/,/^    }$/' script.js)",
+      "Bash(npx --no-install playwright --version)",
+      "Bash(NODE_PATH=\"C:\\\\\\\\Users\\\\\\\\dylan\\\\\\\\AppData\\\\\\\\Local\\\\\\\\npm-cache\\\\\\\\_npx\\\\\\\\31e32ef8478fbf80\\\\\\\\node_modules\" node .claude/verify-character.cjs)",
+      "Bash(NODE_PATH=\"C:\\\\\\\\Users\\\\\\\\dylan\\\\\\\\AppData\\\\\\\\Local\\\\\\\\npm-cache\\\\\\\\_npx\\\\\\\\31e32ef8478fbf80\\\\\\\\node_modules\" node .claude/verify-swim.cjs)",
+      "PowerShell(node --check \"C:\\\\Users\\\\dylan\\\\Code\\\\planet tiles\\\\script.js\"; if \\($?\\) { \"SYNTAX OK\" })",
+      "Bash(NODE_PATH=\"C:\\\\Users\\\\dylan\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\31e32ef8478fbf80\\\\node_modules\" node .claude/verify-water.cjs)",
+      "Bash(grep -n \"const fade = ef \\\\* present\\\\|let ef = \\(1 - \\(au\\\\|const sc = targetH\\\\|for \\(const m of g.meshes\\) { m.visible = true\\\\|const present = propBilinear\\\\|return { spec, meshes, baseUV, yaw, sizeJit };\\\\|pf.PR = Math.max\\(surfaceState.eyeHeight \\\\* 30, horizon \\\\* 2.5\\);\" script.js)",
+      "Bash(NODE_PATH=\"C:\\\\Users\\\\dylan\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\31e32ef8478fbf80\\\\node_modules\" node .claude/verify-venus.cjs)",
+      "Bash(grep -n \"varying vec2 vWd;\\\\\\\\\\\\\\\\nvarying vec3 vTanR\" script.js)",
+      "Bash(NODE_PATH=\"C:\\\\Users\\\\dylan\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\31e32ef8478fbf80\\\\node_modules\" node .claude/verify-character.cjs)",
+      "Bash(NODE_PATH=\"C:\\\\Users\\\\dylan\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\31e32ef8478fbf80\\\\node_modules\" node .claude/probe-patch.cjs)",
+      "Bash(grep -n \"ARCHETYPES\\\\`, \\\\`ARCHETYPE_MATTER\\\\|Archetypes \" ARCHITECTURE.md)",
+      "Bash(grep -n \"colorBodyVertex\\\\`            | 671\" ARCHITECTURE.md)",
+      "PowerShell(Get-ChildItem src -Recurse -File | Select-Object FullName, LastWriteTime; Write-Output '---'; \\(Get-Item script.js\\).LastWriteTime)",
+      "PowerShell(git add *)"
     ]
   }
 }
