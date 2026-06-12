@@ -1,3 +1,5 @@
+// Procedural swim stroke for the avatar arms + the per-frame avatar pose,
+// facing, and animation update.
 import * as THREE from 'three';
 import { scene } from '../../core/scene.js';
 import { ASTRO_FACING, ASTRO_TURN_RATE, astronaut } from './avatar.js';

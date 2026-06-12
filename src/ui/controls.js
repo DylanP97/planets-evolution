@@ -1,3 +1,5 @@
+// Left-panel tab switching, sculpt/biome/gas-paint controls, and most of the
+// left panel’s DOM element refs.
 import { setCurrentTool, setPaused } from '../framework/state.js';
 
 import {

@@ -1,3 +1,5 @@
+// Surface-mode sky effects: aerial-perspective fog, underwater murk + the
+// full-screen overlay, and the thick-atmosphere skylight ramp.
 import * as THREE from 'three';
 import { milkyMat } from '../../background/galaxy.js';
 import { starMat } from '../../background/starfield.js';

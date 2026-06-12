@@ -1,3 +1,5 @@
+// onBeforeCompile patches for the body and ocean materials: ice self-glow,
+// surface-walk ground detail, ocean waves, shoreline foam.
 import * as THREE from 'three';
 import { ICE_GLOW_COLOR } from '../core/constants.js';
 

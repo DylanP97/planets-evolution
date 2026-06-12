@@ -1,3 +1,5 @@
+// Sol-system spec, the planet orbit registry, per-frame orbit advance and
+// spin, and spawnSolarPlanet.
 import { scene } from '../core/scene.js';
 import { BASE_RADIUS, ICO_DETAIL } from '../core/constants.js';
 import { ARCHETYPES } from '../framework/archetypes.js';

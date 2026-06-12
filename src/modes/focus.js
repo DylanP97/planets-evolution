@@ -1,3 +1,5 @@
+// Focus switching (body / city / probe) and the per-frame camera tracking
+// that keeps OrbitControls glued to the focused entity.
 import { setFocusedBody } from '../framework/state.js';
 
 import * as THREE from 'three';

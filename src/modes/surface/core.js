@@ -1,3 +1,5 @@
+// Surface-walk shared state (surfaceState), visit-button state, pick mode,
+// and the body-local frame builder.
 import { setViewMode } from '../../framework/state.js';
 
 import * as THREE from 'three';

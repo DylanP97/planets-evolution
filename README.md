@@ -4,11 +4,11 @@ Browser-based 3D planet builder and solar-system sandbox. Procedural worlds, orb
 
 ## What it is
 
-A flat **HTML + CSS + JavaScript** app centered on a single Three.js module (`script.js`). You classify and regenerate bodies, sculpt terrain with a brush, paint biomes, place colonies, and manage a multi-body system: **planets orbit the sun**, **moons and probes orbit planets**. Custom GLSL handles gas atmospheres, plasma stars, and rings; terrain comes from seeded procedural noise.
+A plain **HTML + CSS + JavaScript** app built on Three.js ES modules (`src/`). You classify and regenerate bodies, sculpt terrain with a brush, paint biomes, place colonies, and manage a multi-body system: **planets orbit the sun**, **moons and probes orbit planets** — and you can travel between procedurally generated star systems on a galaxy map. Custom GLSL handles gas atmospheres, plasma stars, and rings; terrain comes from seeded procedural noise.
 
-**Focus modes:** orbital camera (OrbitControls), per-body editing, and first-person surface walk on solid land.
+**Focus modes:** orbital camera (OrbitControls), per-body editing, and third/first-person surface walk on solid land — with grass, rocks, trees, rolling water you can swim in, and footprints in soft soil.
 
-For code layout and section map, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+For the code layout (module map, data model, frame lifecycle), see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Tech stack
 
@@ -17,12 +17,12 @@ For code layout and section map, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 | Runtime | Vanilla **ES modules** (no npm / no bundler) |
 | 3D | **[Three.js](https://threejs.org/)** `0.160.0` via CDN **import map** (`index.html`) |
 | Controls | `OrbitControls` (three/addons) |
-| Assets | `GLTFLoader` — probe `3d_objects/satellite.glb`, cities `lunar_base.glb` |
-| Shaders | Custom GLSL (gas, plasma/corona, rings) |
-| UI | Plain DOM + tabbed left panel, info panel, bottom nav |
+| Assets | `GLTFLoader` — probes (`3d_objects/satellite.glb`), cities (`lunar_base.glb`), avatar (`character.glb`), surface props (`assets/*.glb`) |
+| Shaders | Custom GLSL (gas, plasma/corona, rings, water, ground decals) |
+| UI | Plain DOM + tabbed left panel, info panel, bottom nav, star-map overlays |
 | Styling | `style.css` (CSS variables, HUD theme) |
 
-**Languages:** HTML, CSS, JavaScript (WebGL / GLSL inline in `script.js`).
+**Languages:** HTML, CSS, JavaScript (WebGL / GLSL inline in the shader modules).
 
 ## Run locally
 
@@ -40,12 +40,20 @@ Any static server on the project root works (e.g. `python -m http.server`).
 
 | Path | Role |
 | ---- | ---- |
-| `index.html` | Canvas, UI shell, Three.js import map |
+| `index.html` | Canvas, UI shell, Three.js import map — loads `src/main.js` |
 | `style.css` | All styling |
-| `script.js` | Scene, bodies, shaders, brush, UI, animation loop |
-| `3d_objects/` | Satellite GLB (+ unused OBJ/MTL source) |
-| `lunar_base.glb` | Colony / city marker mesh |
-| `ARCHITECTURE.md` | Maintainer map of `script.js` sections |
+| `src/main.js` | Entry point: imports every module, boots Sol, runs the frame loop |
+| `src/core/` | Scene, sun, constants, palettes, names, utils |
+| `src/shaders/` | Gas, plasma, corona, ring GLSL |
+| `src/framework/` | Body factory, terrain, climate, archetypes, shared state |
+| `src/system/` | Orbits, Sol spec, lighting, star-system load/unload |
+| `src/entities/` | Moons, probes, cities |
+| `src/background/` | Starfield, Milky Way band, solar eruptions |
+| `src/modes/` | Focus + the surface-walk feature (`surface/*`) |
+| `src/ui/` | Panels, sliders, roster, nav, naming, star map |
+| `assets/`, `*.glb`, `3d_objects/` | GLB models (props, avatar, colony, satellite) |
+| `ARCHITECTURE.md` | Maintainer map: modules, data model, frame lifecycle |
+| `CLAUDE.md` | Quick-start + conventions for AI coding agents |
 
 ## Status
 

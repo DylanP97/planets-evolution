@@ -1,3 +1,4 @@
+// Inline renaming of bodies / the system, with the re-render fan-out.
 import { setSystemNameValue } from '../core/names.js';
 
 import { generateName, systemName } from '../core/names.js';

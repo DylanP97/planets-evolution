@@ -1,3 +1,5 @@
+// Instanced grass + flower fields on vegetated worlds — treadmill grid that
+// wraps around the walker, ground sampling, wind sway.
 import * as THREE from 'three';
 import {
   BIOME, BODY_HEIGHT_SCALE, COL, GRASS_FLOOR, GRASS_TOP, MAX_LAND_HEIGHT, ROCK_TOP

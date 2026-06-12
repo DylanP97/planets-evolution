@@ -1,3 +1,5 @@
+// Floating-origin shift (skinned-mesh float32 fix) and the per-frame surface
+// camera transform (first/third person).
 import * as THREE from 'three';
 import { camera, scene } from '../../core/scene.js';
 import { surfaceState } from './core.js';

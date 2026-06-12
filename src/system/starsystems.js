@@ -1,3 +1,5 @@
+// Galaxy catalog (constellations → star systems), procedural system
+// generation, and star-system load / unload / bootstrap.
 import { setSystemNameValue } from '../core/names.js';
 import { setClimateReady, setFocusedBody, setPlanet } from '../framework/state.js';
 import { setFocusedCity, setFocusedProbe } from '../modes/focus.js';

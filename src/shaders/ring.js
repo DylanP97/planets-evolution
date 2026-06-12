@@ -1,3 +1,4 @@
+// Planetary ring shader + material factory (RING_INNER/OUTER_FACTOR).
 import * as THREE from 'three';
 
 export const RING_VERT = /* glsl */ `

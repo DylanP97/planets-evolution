@@ -1,3 +1,5 @@
+// Bottom-nav hierarchy navigation: up/down/sibling across system → planet →
+// moon/city, breadcrumb rendering, setSystemFocus.
 import { setFocusedBody } from '../framework/state.js';
 import { setFocusedCity, setFocusedProbe } from '../modes/focus.js';
 

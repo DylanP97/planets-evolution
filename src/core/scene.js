@@ -1,3 +1,5 @@
+// Three.js bootstrap: scene, camera, renderer, OrbitControls, the sun point
+// light (+shadow map), ambient fill, moonlight rig, and the surface skylight.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 

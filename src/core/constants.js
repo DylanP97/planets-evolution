@@ -1,3 +1,5 @@
+// Planet-wide tuning constants: biome height bands, sea ice/steam thresholds,
+// shared colors, the BIOME enum, terrain octaves, and water-foam parameters.
 import * as THREE from 'three';
 
 export const BASE_RADIUS = 12;

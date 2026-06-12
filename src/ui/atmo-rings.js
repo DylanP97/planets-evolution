@@ -1,3 +1,5 @@
+// Atmosphere sliders, ring controls, the Generate World button handler, and
+// slider→value conversions.
 import { setPlanetCurrentSeed } from './info-panel.js';
 
 import { setBrushStrength } from '../framework/state.js';

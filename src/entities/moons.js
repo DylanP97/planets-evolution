@@ -1,3 +1,5 @@
+// Moons — full editable bodies orbiting a parent planet: creation, slot
+// allocation (orbit planes), per-frame orbit advance.
 import { scene } from '../core/scene.js';
 import { createBody, regenerateBody } from '../framework/body.js';
 import { bodies, focusedBody, moons, planet } from '../framework/state.js';

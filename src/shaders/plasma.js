@@ -1,3 +1,5 @@
+// Animated star-photosphere shader: domain-warped FBM convection, sunspot
+// lanes, lava-burst flares, distance whitening.
 import * as THREE from 'three';
 
 export const PLASMA_VERT = /* glsl */ `

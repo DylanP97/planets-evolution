@@ -1,3 +1,4 @@
+// Default color palettes for planets and moons.
 import { COL } from './constants.js';
 
 export const PLANET_PALETTE = {

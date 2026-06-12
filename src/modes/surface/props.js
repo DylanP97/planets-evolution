@@ -1,3 +1,5 @@
+// Real GLB surface props (trees, pines, rocks) scattered over grass worlds
+// on the same treadmill grid as the grass.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT } from '../../core/constants.js';

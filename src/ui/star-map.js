@@ -1,3 +1,5 @@
+// Galaxy + constellation map overlays: render, drag, create/delete systems,
+// travel transitions.
 import { setViewLevel, setViewedConstellationId } from '../system/starsystems.js';
 
 import { SOLAR_SYSTEM_SPEC } from '../system/planets.js';

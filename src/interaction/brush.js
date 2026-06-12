@@ -1,3 +1,4 @@
+// The brush cursor ring, the shared pointer raycaster, and isBrushTool.
 import * as THREE from 'three';
 import { scene } from '../core/scene.js';
 import { brushRadius, currentTool } from '../framework/state.js';

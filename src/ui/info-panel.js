@@ -1,3 +1,5 @@
+// Right-hand telemetry panel: composition rollup, climate section, rotation
+// and orbit readouts (updateInfoPanel + throttled updateLiveInfo).
 import {
   BIOME, BODY_HEIGHT_SCALE, COL, GRASS_TOP, ROCK_TOP, SAND_TOP, SEA_ICE_C, SEA_LEVEL, SEA_VAPOR_C
 } from '../core/constants.js';

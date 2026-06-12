@@ -1,3 +1,5 @@
+// Per-frame lighting refresh: per-body uSunDir uniforms, shadow-map framing,
+// and the moonlight rig that lights night-side surface walks.
 import * as THREE from 'three';
 import { moonLight, scene } from '../core/scene.js';
 import { sunMesh } from '../core/sun.js';

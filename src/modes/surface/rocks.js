@@ -1,3 +1,4 @@
+// Instanced rock field for desert/venusian worlds + rock collision push-out.
 import * as THREE from 'three';
 import {
   BIOME, BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, ROCK_TOP, SAND_TOP

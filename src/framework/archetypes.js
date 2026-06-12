@@ -1,3 +1,5 @@
+// Planet archetype catalog: ARCHETYPES (palette/amplitude/sea per type) and
+// ARCHETYPE_MATTER (solid/liquid/gas/plasma composition + atmosphere tuning).
 import { PLANET_PALETTE, MOON_PALETTE } from '../core/palettes.js';
 
 export const ARCHETYPES = {

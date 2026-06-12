@@ -1,3 +1,5 @@
+// The character.glb avatar: loading/normalizing, the clip state machine
+// (idle/walk/run/jump/swim), crossfades, and the blob shadow.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { scene } from '../../core/scene.js';

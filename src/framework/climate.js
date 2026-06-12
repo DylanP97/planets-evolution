@@ -1,3 +1,6 @@
+// Toy climate model: orbital distance + archetype + live atmosphere → cached
+// body.climate temps; ocean climate coloring (sea ice / steam); temperature
+// HUD colors; the surface gravity model.
 import * as THREE from 'three';
 import {
   KELVIN_ZERO_C, COL, SEA_ICE_COLOR, SEA_STEAM_COLOR, SEA_VAPOR_C, SEA_BOIL_C,

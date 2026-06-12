@@ -1,3 +1,5 @@
+// Deploy/remove planets (cascade teardown) and the roster, moons, probes
+// list renderers.
 import { setFocusedCity } from '../modes/focus.js';
 
 import { setCurrentArchetype } from '../framework/state.js';

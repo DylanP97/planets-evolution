@@ -1,3 +1,5 @@
+// The local water patch ridden during surface walks: rolling waves, depth
+// shading from the seabed texture, crest/shore foam, fresnel, micro-ripples.
 import * as THREE from 'three';
 import { COL, FOAM_COLOR } from '../../core/constants.js';
 import { bakeOceanShore } from '../../framework/body.js';

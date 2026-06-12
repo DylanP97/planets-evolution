@@ -1,3 +1,5 @@
+// Near-field ground micro-relief patch + footprint decals (boot SDF stamped
+// in the fragment shader, ring buffer of FOOT_N prints).
 import * as THREE from 'three';
 import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, SAND_TOP } from '../../core/constants.js';
 import { smoothstep } from '../../core/utils.js';

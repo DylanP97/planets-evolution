@@ -1,3 +1,5 @@
+// Canvas pointer handlers: raycast bodies → start/continue brush strokes,
+// place cities, drop gas whirlpools.
 import {
   setActiveBrushBody, setActiveVortex, setIsPainting, setLastHitLocal
 } from '../framework/state.js';

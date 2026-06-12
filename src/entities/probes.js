@@ -1,3 +1,5 @@
+// Probes — GLB satellites orbiting planets (no editable surface): template
+// loading, slots, per-frame orbit + self-spin.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { scene } from '../core/scene.js';

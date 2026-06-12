@@ -1,3 +1,4 @@
+// Visible orbit ellipse lines for planets and satellites (moons + probes).
 import * as THREE from 'three';
 import { scene } from '../core/scene.js';
 import { planets, moons, probes } from '../framework/state.js';

@@ -1,3 +1,4 @@
+// Solar prominences: GPU particle bursts + vent-flash sprite off the Sun.
 import * as THREE from 'three';
 import { SUN_RADIUS, renderer } from '../core/scene.js';
 import { sunMesh } from '../core/sun.js';

@@ -1,3 +1,5 @@
+// Surface-mode input wiring: drag/pointer-lock look, scroll zoom, key
+// handling, and the moon/probe deploy buttons.
 import { camera, renderer } from '../../core/scene.js';
 import { addMoon } from '../../entities/moons.js';
 import { addSatellite } from '../../entities/probes.js';

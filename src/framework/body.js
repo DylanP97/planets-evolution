@@ -1,3 +1,6 @@
+// The body factory and everything that paints/reshapes a body: per-vertex
+// terrain writes, height/biome/climate coloring (incl. the venusian branch),
+// matter/gas/ring appliers, regeneration, the sculpt brush, ocean shore bake.
 import * as THREE from 'three';
 import { 
   BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, MIN_LAND_HEIGHT, 

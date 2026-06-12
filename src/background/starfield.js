@@ -1,3 +1,4 @@
+// Background starfield points (fades during surface daylight).
 import * as THREE from 'three';
 import { scene } from '../core/scene.js';
 

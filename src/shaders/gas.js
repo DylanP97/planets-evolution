@@ -1,3 +1,5 @@
+// Atmosphere + full-gas-giant shader (GLSL), the latitudinal band-paint LUT,
+// gas biome catalog, and whirlpool/vortex feature stamping.
 import * as THREE from 'three';
 import { 
   brushRadius, brushStrength, currentArchetype, 

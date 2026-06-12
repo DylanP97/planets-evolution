@@ -1,3 +1,6 @@
+// enterSurfaceMode / exitSurfaceMode: camera snap + restore, atmosphere
+// reconfiguration, sun-disc handling, and attaching/detaching every surface
+// field (grass, rocks, water, ground patch, props).
 import { setViewMode } from '../../framework/state.js';
 import { setPickTargetBody } from './core.js';
 

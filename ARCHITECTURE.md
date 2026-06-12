@@ -1,79 +1,146 @@
 # Architecture
 
-> Map for navigating this project. Optimized for greppability — every section here matches a `// ====== Section ======` banner in `script.js`, so you can jump from a topic to the code in one search.
+> Map for navigating this project. The runtime is split into ES modules under `src/` — every module starts with a header comment saying what it owns, so `Grep` for a concept or skim the module map below and jump straight to the file.
 
-The project is intentionally a flat, single-file Three.js app (`script.js`, ~8,600 lines) plus `index.html` and `style.css`. No build step, no bundler. The HTML uses an `importmap` to pull Three.js from a CDN and loads `script.js` as a module.
+The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a CDN via an `importmap` and loads `src/main.js` as a module. Edits take effect on browser reload — no bundler, no transpile, no npm install.
 
 ---
 
 ## Files
 
-| File              | What it holds                                                                 |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `index.html`      | Canvas, tabbed left panel, info panel (right), bottom nav, surface overlay.   |
-| `style.css`       | All styling. CSS variables drive the sci-fi HUD theme.                        |
-| `script.js`       | The whole runtime: scene, bodies, shaders, brush, UI wiring, animation loop.  |
-| `3d_objects/`     | `satellite.glb` is loaded for probe meshes (other formats are unused source). |
-| `ARCHITECTURE.md` | This file. Updated when sections move.                                        |
-| `README.md`       | Project intro (French, original).                                             |
+| Path              | What it holds                                                                  |
+| ----------------- | ------------------------------------------------------------------------------ |
+| `index.html`      | Canvas, tabbed left panel, info panel (right), bottom nav, surface overlay, importmap. |
+| `style.css`       | All styling. CSS variables drive the sci-fi HUD theme.                         |
+| `src/`            | The whole runtime, ~50 ES modules (map below).                                 |
+| `assets/`         | `tree.glb`, `pine.glb`, `rock.glb` — surface-walk props.                       |
+| `3d_objects/`     | `satellite.glb` for probe meshes (other formats are unused source).            |
+| `character.glb`   | The surface-walk avatar (three.js RobotExpressive).                            |
+| `lunar_base.glb`  | Colony / city marker mesh.                                                     |
+| `ARCHITECTURE.md` | This file. Update the module map when modules move.                            |
 
 ---
 
-## Section map (`script.js`)
+## Module map (`src/`)
 
-Each row maps a banner in `script.js` to its line range. After editing, re-grep `// ======` and update.
+`main.js` is the entry point: it imports every module in dependency-safe order, issues the initial `loadStarSystem(findStarSystem('sol'))`, and runs the animate loop.
 
-| #   | Section                       | Lines       | Responsibility                                                                                          |
-| --- | ----------------------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
-| 1   | Planet constants              | 54–162      | `BASE_RADIUS`, biome height bands, color palette, `BIOME` enum.                                         |
-| 2   | Scene                         | 163–225     | `scene`, `camera`, `renderer`, `controls`, `sun` PointLight, `sunMesh`. Mouse buttons configured here.  |
-| 3   | Palettes                      | 226–242     | `PLANET_PALETTE`, `MOON_PALETTE`.                                                                       |
-| 4   | Body framework                | 243–281     | `BODY_HEIGHT_SCALE`, `MAX/MIN_LAND_HEIGHT`, the `bodies` registry, `smoothstep`.                        |
-| 5   | Gas shader                    | 282–727     | GLSL for atmosphere + full-gas modes (`uMode = 0 \| 1`). `makeGasMaterial()` factory.                   |
-| 5b  | Plasma shader                 | 728–1224    | GLSL for the animated star photosphere ("lava ocean"). `makePlasmaMaterial()` + `makeCoronaMaterial()`; lights the Sun + corona halo here, builds `plasmaTickUniforms`. |
-| 6   | Ring shader                   | 1225–1378   | GLSL for planetary rings. `RING_INNER/OUTER_FACTOR`, `makeRingMaterial()`.                              |
-| 7   | Body creation                 | 1379–1851   | `createBody()`, vertex writers, `applyBrushToBody()`, `commitBodyChanges()`. The body `MeshStandardMaterial`'s `onBeforeCompile` also carries the **surface-walk ground detail** (`uSurfaceDetail` / `uBodyToView`): procedural relief-normal + albedo mottle that switch on only while standing on the body (off = stock orbit render). |
-| 8   | Terrain generation            | 1852–1911   | Hash/RNG, `buildTerrainBasis`, `sampleTerrainNoise` (sum-of-sines FBM).                                 |
-| 9   | Archetypes                    | 1912–2050   | `ARCHETYPES`, `ARCHETYPE_MATTER`, `applyMatterToBody()`. The venusian palette is near-black basalt; its land paint is a dedicated branch (`venusianLandColor`, section 7): elevation picks slab flats → volcanic regolith/dark soil → gravel + angular rock → pale highland tessera, broken by a coherent slab-plate field + index-hash gravel speckle. |
-| 10  | Gas / rings appliers + regen  | 2051–2302   | `applyGasShell`, `applyRingsToBody`, `regenerateBody`.                                                  |
-| 11  | Planets (sun orbits)          | 2303–2347   | `planets[]`, `DEFAULT_SPIN`, `updatePlanetOrbits`, `registerPlanet`.                                    |
-| 12  | Orbit ellipse trajectories    | 2348–2497   | The visible orbit rings: `buildOrbitLineGeometry`, `refreshOrbitLine`, `disposeOrbitLine`.              |
-| 13  | Solar system bootstrap        | 2498–2568   | `SOLAR_SYSTEM_SPEC`, `spawnSolarPlanet`, initial `solarBodies[]`. Default focus = `solarBodies[2]`.     |
-| 14  | Brush                         | 2569–2626   | `brushRadius`, `brushStrength`, brush ring mesh, `updateBrushRing`.                                     |
-| 15  | Pointer handling              | 2627–2741   | Pointerdown/move/up wiring on the canvas. Raycast → `applyBrushToBody`.                                 |
-| 16  | Moons                         | 2742–2881   | `MOON_*` constants, `moons[]`, slot allocator, `addMoon`, `updateMoons`.                                |
-| 17  | Probes (satellites)           | 2882–3069   | `MAX_PROBES`, `probes[]`, `loadSatelliteTemplate` (GLB), `addSatellite`, `updateSatellites`.            |
-| 18  | Cities                        | 3070–3238   | `lunar_base.glb`, `cities[]`, `addCity`, `loadCityTemplate`, `updateCityMarkers`.                      |
-| 19  | Starfield                     | 3239–3265   | 2000 background points at r ≈ 2200.                                                                     |
-| 19a | Galactic band                 | 3266–3399   | Procedural Milky Way band behind the starfield.                                                          |
-| 19b | Eruptions                     | 3400–3589   | Solar prominences (Sun only — planets/moons don't erupt). `eruptions[]`, `spawnEruption`, `updateEruptions`. Each is a GPU particle burst (`THREE.Points` + `ERUPT_VERT`/`ERUPT_FRAG`: ballistic droplets integrated on the GPU from a `uTime` uniform, cooling hot→cool) plus a `flameTex` vent-flash sprite, parented to the sun pseudo-body's group (`sunMesh`). |
-| 20  | Planet rotation               | 3590–3601   | `updatePlanetRotation` — spins each planet by its `rotationSpeed`.                                      |
-| 21  | Sun light for focus           | 3602–3711   | `updateSunLightForFocus` refreshes per-body `uSunDir` uniforms (atmosphere + rings).                    |
-| 22  | Focus                         | 3712–3812   | `focusedBody`, `focusedCity`, `setFocus`, `setCityFocus`, `updateFocusTracking` (chase target).         |
-| 22b | Temperature / climate         | 3813–3971   | `ARCHETYPE_CLIMATE`, `sunDistanceOf`, `computeClimate`, `temperatureAtLatitude`, `tempColor`. Distance + archetype → surface temp; latitude hook for future biomes. |
-| 22c | Surface gravity model         | 3972–3996   | `surfaceGravityG` — per-body surface gravity (Earth = 1 g); feeds surface-walk jump + locomotion tuning. |
-| 23  | Info panel                    | 3997–4379   | Telemetry pane on the right: composition rollup, peak, **climate (mean + equator/pole)**, day period, orbit period. |
-| 24  | Random names                  | 4380–4418   | `COSMIC_WORDS`, `generateCosmic`, `generateName('planet' \| 'moon' \| 'system')`.                       |
-| 25  | UI (tabs + sliders)           | 4419–4699   | DOM lookups; tab switching; slider → value conversions.                                                 |
-| 26  | Atmosphere sliders            | 4700–4760   | `applyAtmoSliderToFocus` (thickness, density, coverage).                                                |
-| 27  | Ring controls                 | 4761–4822   | `applyRingsSliderToFocus`.                                                                              |
-| 28  | Context-aware left panel      | 4823–5185   | `applyFocusToLeftPanel` — what tabs/sections are visible per focus kind.                                |
-| 29  | Body orbit sliders            | 5186–5293   | Distance / orbit-speed / spin / size sliders (planet vs moon).                                          |
-| 30  | Add / Remove planet           | 5294–5610   | `deployNewPlanet`, `removePlanetBody`, `renderPlanetList`, moons/probes list renderers.                 |
-| 31  | Hierarchy navigation          | 5611–5846   | Bottom-nav arrows: `navUp`, `navDown`, `navSibling`, `renderNavBodies`.                                 |
-| 32  | Surface walk                  | 5847–8047   | `enterPickMode` → click → `enterSurfaceMode` → `updateSurfaceCamera`. State in `surfaceState`. Avatar = `character.glb` (clip state machine incl. swim; blob shadow); `updateSurfaceOrigin` = floating-origin shift (skinned-mesh float32 fix). Also the surface-detail systems, each `build/attach/detach/update*`: astronaut avatar, `grassField`, `flowerField` (piggybacks the grass grid), `rockField` (desert + venusian; per-archetype tint via `ROCK_GROUND_TINT`), water patch (waves + crest/shore foam + fresnel + micro-ripple glints), **`groundPatch`** (near-field micro-relief patch; also hosts the **footprint decals** — boot prints stamped on soft-soil worlds, see the Surface-walk walkthrough), the **atmospheric skylight** (`surfaceSkyLight` — thick-atmosphere diffuse daylight, ramped by sun elevation in `updateSurfaceSkyEffects`), the **aerial-perspective fog + underwater murk** (`updateSurfaceSkyEffects` — submersion judged from the CAMERA's body-local radius vs the lifted waterline; liquid-tinted `FogExp2` + the `#underwaterOverlay` full-screen tint that covers the fog-immune sky shaders), wave-riding swim buoyancy (`waveHeightAtAvatar` mirrors the patch shader's `wv()`), `stepSurfaceWalk`, `sampleGroundRadius`. |
-| 33  | Surface input                 | 8048–8248   | Mouse-look (Pointer Lock), scroll-zoom, WASD/arrow walking (`stepSurfaceWalk`), the satellite/moon "deploy" buttons.    |
-| 34  | Renaming                      | 8249–8336   | `setBodyName`, `setSystemName`, `commitFocusName`. Triggers re-render fan-out.                          |
-| 34  | Star-system load / unload     | 8337–8616   | Save/serialize + load/rebuild + teardown of a whole star system.                                        |
-| 34b | Star-map overlays             | 8617–8929   | Galactic star-map overlay.                                                                              |
-| 35  | Init + Resize                 | 8930–8936   | Window-resize listener (and seed moons / final `setSystemFocus()` just above it).                       |
-| 36  | Animate                       | 8937–end    | The frame loop. Drives orbits, rotations, gas time, cities, lights, surface camera, render.             |
+### `core/` — scene + shared primitives
+
+| Module         | Responsibility |
+| -------------- | -------------- |
+| `constants.js` | Biome height bands, sea ice/steam thresholds, shared colors, `BIOME` enum, `TERRAIN_OCTAVES`, foam params. |
+| `palettes.js`  | `PLANET_PALETTE`, `MOON_PALETTE`. |
+| `utils.js`     | `smoothstep` and friends. |
+| `scene.js`     | `scene`, `camera`, `renderer`, `controls` (OrbitControls), `sun` point light + shadow map, ambient/moon/sky lights. |
+| `sun.js`       | `sunMesh` (plasma photosphere), `coronaMesh`, `plasmaTickUniforms` (ticked every frame, even paused). |
+| `names.js`     | Random cosmic name generator; `systemName`. |
+
+### `shaders/` — GLSL + material factories
+
+| Module      | Responsibility |
+| ----------- | -------------- |
+| `gas.js`    | Atmosphere + full-gas shader (`uMode` 0/1), band-paint LUT (`GAS_BAND_COUNT = 16`), gas biomes, whirlpool features. |
+| `plasma.js` | Star photosphere: domain-warped FBM, flares, distance whitening. |
+| `corona.js` | Additive glow dome (impact-parameter falloff). |
+| `ring.js`   | Planetary rings + `RING_INNER/OUTER_FACTOR`. |
+
+### `framework/` — the body pipeline
+
+| Module          | Responsibility |
+| --------------- | -------------- |
+| `state.js`      | **Central shared mutable state** (`bodies`, `planets`, `moons`, `probes`, `cities`, `focusedBody`, `viewMode`, brush/tool state, …) behind `set*` functions. See Conventions. |
+| `archetypes.js` | `ARCHETYPES` (palette/amp/sea) + `ARCHETYPE_MATTER` (solid/liquid/gas/plasma + atmosphere tuning). |
+| `terrain.js`    | `hashSeed`, `makeRNG`, sum-of-sines FBM basis (`buildTerrainBasis` / `sampleTerrainNoise`). |
+| `materials.js`  | `onBeforeCompile` patches: ice self-glow, surface-walk ground detail, ocean waves + shoreline foam. |
+| `climate.js`    | Climate model (`computeClimate`, `temperatureAtLatitude`), ocean climate coloring, `tempColor`/`fmtTemp`, `surfaceGravityG`. |
+| `body.js`       | `createBody`, per-vertex write/color (incl. venusian branch + `CLIMATE_LAND_ZONES`), `applyMatterToBody`, `applyGasShell`, `applyRingsToBody`, `regenerateBody`, `recolorBody`, `refreshClimateColoring`, `applyBrushToBody`, `bakeOceanShore` (incl. the seabed texture the water patch samples). |
+
+### `system/` — orbital mechanics + star systems
+
+| Module           | Responsibility |
+| ---------------- | -------------- |
+| `orbits.js`      | Visible orbit ellipse lines (planets + satellites), `showSatelliteOrbits`. |
+| `planets.js`     | `SOLAR_SYSTEM_SPEC`, planet registry, orbit advance, `updatePlanetRotation`, `spawnSolarPlanet`. |
+| `lighting.js`    | `updateSunLightForFocus` (per-body `uSunDir`, shadow framing), `updateMoonLight`. |
+| `starsystems.js` | `galaxy` catalog, procedural system generation, `loadStarSystem` / `unloadStarSystem` / `bootstrapSolSystem`, `viewLevel`. |
+
+### `interaction/` — canvas input (orbit mode)
+
+| Module       | Responsibility |
+| ------------ | -------------- |
+| `brush.js`   | Brush cursor ring, shared `raycaster`/`pointer`, `isBrushTool`. |
+| `pointer.js` | Canvas pointerdown/move/up: raycast → brush strokes, city placement, gas whirlpools. |
+
+### `entities/` — satellites + colonies
+
+| Module      | Responsibility |
+| ----------- | -------------- |
+| `moons.js`  | Moons (full editable bodies): slots/orbit planes, `addMoon`, `updateMoons`. |
+| `probes.js` | GLB satellites: template cache, `addSatellite`, `updateSatellites`. |
+| `cities.js` | `lunar_base.glb` colonies pinned by unit-direction, day-side dimming. |
+
+### `background/` — sky dressing
+
+| Module         | Responsibility |
+| -------------- | -------------- |
+| `starfield.js` | 2000 background points (`starMat` opacity drives daylight fade). |
+| `galaxy.js`    | Procedural Milky Way band, recentered on the camera each frame. |
+| `eruptions.js` | Solar prominences: GPU particle bursts off the Sun. |
+
+### `modes/` — focus + surface walk
+
+| Module               | Responsibility |
+| -------------------- | -------------- |
+| `focus.js`           | `setFocus`/`setCityFocus`/`setProbeFocus`, `focusedCity`/`focusedProbe`, `updateFocusTracking`. |
+| `surface/core.js`    | `surfaceState` (the big shared state object), pick mode, visit button, `buildLocalFrame`. |
+| `surface/avatar.js`  | `character.glb` loading, clip state machine, blob shadow. |
+| `surface/mode.js`    | `enterSurfaceMode`/`exitSurfaceMode` — camera snap/restore, atmosphere reconfig, attach/detach all fields. |
+| `surface/sky.js`     | Aerial fog, underwater murk + `#underwaterOverlay`, atmospheric skylight ramp. |
+| `surface/camera.js`  | Floating-origin shift (`updateSurfaceOrigin`), surface camera transform. |
+| `surface/swim.js`    | Procedural swim stroke, `updateAstronaut` (pose/facing/animation per frame). |
+| `surface/grass.js`   | Instanced grass + flowers, treadmill grid, ground sampling (`sampleGrassGround`, shared `_gr*`/`_g*` scratch). |
+| `surface/rocks.js`   | Instanced rocks (desert/venusian), `resolveRockCollision`. |
+| `surface/water.js`   | Local water patch: waves, depth shading, crest/shore foam, `waveHeightAtAvatar`. |
+| `surface/ground.js`  | Ground micro-relief patch + footprint decals (`stampFootprint*`, `FOOTPRINT_GROUND`). |
+| `surface/props.js`   | Real GLB props (trees/pines/rocks) on grass worlds. |
+| `surface/walk.js`    | `stepSurfaceWalk` (WASD/sprint/jump/swim buoyancy), `sampleGroundRadius`, `tryJump`. |
+| `surface/input.js`   | Surface-mode listeners: drag/pointer-lock look, wheel zoom, key handling, deploy buttons. |
+
+### `ui/` — panels + HUD
+
+| Module             | Responsibility |
+| ------------------ | -------------- |
+| `info-panel.js`    | Right telemetry panel: composition rollup, climate section, `updateInfoPanel` + throttled `updateLiveInfo`. |
+| `controls.js`      | Tab switching, sculpt/biome/gas-paint controls, most left-panel DOM refs. |
+| `atmo-rings.js`    | Atmosphere sliders, ring controls, `onRegenClick`, `sliderTo*` conversions. |
+| `left-panel.js`    | `applyFocusToLeftPanel` — context-aware section visibility + slider sync. |
+| `orbit-sliders.js` | Distance/speed/spin/size + satellite orbit-plane slider handlers. |
+| `roster.js`        | `deployNewPlanet`, `removePlanetBody` (cascade), roster/moons/probes list renderers. |
+| `nav.js`           | Bottom-nav hierarchy (`navUp`/`navDown`/`navSibling`), `setSystemFocus`, breadcrumb. |
+| `naming.js`        | Inline rename for bodies/system, re-render fan-out. |
+| `star-map.js`      | Galaxy/constellation overlays, drag, create/delete/travel. |
+| `wire-up.js`       | **Deferred wiring** — see the TDZ note in Conventions. Imported last by `main.js`. |
+
+---
+
+## Module conventions
+
+- **Shared mutable state lives in `framework/state.js`.** ES-module live bindings mean any module can *read* `focusedBody` directly via import, but assigning to an import is a TypeError — so every reassignable variable has a `set*` function (`setFocusedBody(b)`, `setViewMode('pick')`, …). A few module-local ones follow the same pattern (`setFocusedCity` in `modes/focus.js`, `setViewLevel` in `system/starsystems.js`, `setPlanetCurrentSeed` in `ui/info-panel.js`). Arrays/objects (`bodies`, `surfaceState`, `gasPaintColor`) are mutated in place and need no setters.
+- **The ui/ modules form import cycles** (controls ↔ atmo-rings ↔ left-panel ↔ roster ↔ nav ↔ star-map ↔ starsystems …). A module evaluated mid-cycle must NOT touch another cycle member's `const`s at its own module scope — they are still in their temporal dead zone (TDZ) and throw `Cannot access 'x' before initialization`, which kills the whole app. Function *calls inside handlers* are always fine (they run later). Wiring that genuinely needs cross-cycle consts at init time lives in `ui/wire-up.js`, which `main.js` imports last. If you add module-scope statements to a ui/ module, prefer `document.getElementById(...)` over importing another module's element const.
+- **`main.js` import order mirrors the original monolith's section order** — keep new modules in a sensible spot and keep `wire-up.js` last, followed only by the `loadStarSystem` bootstrap call.
+- **`commitBodyChanges(body)`** — always call after mutating `heights` / `colorArr`, otherwise the GPU sees stale data and normals.
+- **Reusable scratch vectors**: modules keep `_xxx` `THREE.Vector3` instances at module scope to avoid allocation in the frame loop (some are exported and shared across the surface modules — e.g. `grass.js`'s `_gr*` sampler outputs are read by rocks/ground/props). Reuse them; don't allocate per-frame in hot code.
+- **`body.kind`**: `'planet'` or `'moon'`. Many UI branches gate on this.
+- **Sea level**: `SEA_LEVEL = 0`. Heights below 0 are submerged (and invisible if `matter.liquid`).
+- **GLSL injection**: injected varyings in `onBeforeCompile` patches are `#ifndef`-guarded because three.js can re-run the patch over an already-patched string (program variants) — bare declarations land twice and fail to compile.
+- **No build step**: reload the browser to see changes. ES modules need HTTP — serve the project root (`npx serve . -l 3000`).
 
 ---
 
 ## Data model
 
-In-memory state is held in plain object literals (no classes). Five collection arrays own the world:
+In-memory state is held in plain object literals (no classes). Five collection arrays (all in `framework/state.js`) own the world:
 
 ```
 bodies[]   // every renderable rock/gas/ice sphere (planets + moons). Index in this array is used by raycasting.
@@ -85,7 +152,7 @@ cities[]   // markers pinned to a body via a unit-direction localPos
 
 ### Body — the core unit (planets and moons)
 
-Created by `createBody({ kind, name, baseRadius, detail, palette, hasOcean })`. Returned object's shape:
+Created by `createBody({ kind, name, baseRadius, detail, palette, hasOcean })` in `framework/body.js`. Returned object's shape:
 
 ```
 {
@@ -100,29 +167,27 @@ Created by `createBody({ kind, name, baseRadius, detail, palette, hasOcean })`. 
   heights,      // Float32Array(N)   — signed height in body-relative units
   biomes,       // Uint8Array(N)     — BIOME.* enum tag per vertex
   colorArr,     // Float32Array(N*3) — vertex colors written by colorBodyVertex
+  glowArr,      // Float32Array(N)   — per-vertex emissive (ice self-glow)
   oceanMesh,    // SphereGeometry at baseRadius; hidden when matter.liquid === false
   gasMesh,      // SphereGeometry at baseRadius * gasThickness; uses gas shader
-  plasmaMesh,   // SphereGeometry at baseRadius; animated star photosphere (plasma shader); hidden unless matter.plasma
+  plasmaMesh,   // SphereGeometry at baseRadius; animated star photosphere; hidden unless matter.plasma
   ringMesh,     // RingGeometry; planet-only feature
-  matter: { solid, liquid, gas, plasma },  // gas: false | 'atmosphere' | 'full'; plasma: true on stars
+  matter: { solid, liquid, gas, plasma },  // gas: false | 'atmosphere' | 'full'
   gasMode: 'none' | 'atmosphere' | 'full',
   gasThickness, gasDensity, gasCoverage,
   rings:  { enabled, intensity },
   archetype,    // 'terrestrial' | 'gas_giant' | … (planets only)
   rotationSpeed,
-  climate,      // { meanK, equatorK, poleK, equilibriumK, spread, distance } — cached by computeClimate(); see Temperature model
+  climate,      // { meanK, equatorK, poleK, spread, … } — cached by computeClimate()
+  seabedTex,    // equirect DataTexture of seabed heights — sampled by the surface water patch
 }
 ```
 
-World radius at vertex `i` is `baseRadius * (1 + heights[i] * BODY_HEIGHT_SCALE)`. So heights are *relative* — a peak of `MAX_LAND_HEIGHT = 2.5` is ~6% of the body's radius regardless of scale.
+World radius at vertex `i` is `baseRadius * (1 + heights[i] * BODY_HEIGHT_SCALE)`. Heights are *relative* — a peak of `MAX_LAND_HEIGHT = 2.5` is ~6% of the body's radius regardless of scale.
 
-### Planet entry — wraps a body with an orbit
+### Planet entry — `{ body, orbit: { distance, angle, speed, inclination, line } }`
 
-```
-{ body, orbit: { distance, angle, speed, inclination, line } }
-```
-
-`line` is the visible orbit ellipse (`THREE.Line`). Toggled via the System tab's "Show Orbits".
+`line` is the visible orbit ellipse. Toggled via the System tab's "Show Orbits".
 
 ### Moon entry
 
@@ -138,118 +203,110 @@ Moons are built at `MOON_BASE_RADIUS = 1` and scaled via `group.scale` so the si
 ### Probe entry
 
 ```
-{ mesh, parent, name, seed,
-  angle, inclination, node,
-  size, distance, speed, slot,
-  spin }                       // per-frame self-rotation
+{ mesh, parent, name, seed, angle, inclination, node, size, distance, speed, slot, spin }
 ```
 
-`mesh` is a clone of the loaded GLB (or a tiny fallback box if the GLB hasn't finished loading).
+`mesh` is a clone of the loaded GLB (or a tiny fallback box until the GLB resolves).
 
-### City entry
+### City entry — `{ body, name, localPos, mesh }`
 
-```
-{ body, name, localPos, mesh }   // mesh is a Group; lunar_base.glb clone, Y-up along localPos at baseRadius + CITY_SURFACE_LIFT
-```
+`mesh` is a `lunar_base.glb` clone, Y-up along `localPos` at `baseRadius + CITY_SURFACE_LIFT`.
 
 ---
 
 ## How a frame runs
 
-The loop is the bottom of `script.js`. Read it top to bottom for the canonical lifecycle:
+The loop is the bottom of `src/main.js`. Read it top to bottom for the canonical lifecycle:
 
-1. `dt = clock.getDelta()`.
-2. If not `paused`: advance planet orbits, rotations, and `gasTime` (cloud drift).
-3. Always: `updateMoons`, `updateSatellites` (probes), `updateCityMarkers` (day-side dimming), `updateSunLightForFocus`.
+1. `dt = clock.getDelta()`; `plasmaTime` always advances (stars never freeze).
+2. If not `paused`: advance planet orbits, rotations, `gasTime` (cloud drift + ocean waves).
+3. Always: `updateMoons`, `updateSatellites`, `updateEruptions`, `updateCityMarkers`, `updateSunLightForFocus`, `updateMoonLight`.
 4. `updateFocusTracking` keeps the camera chasing the focused body's world position.
 5. `controls.update()` (OrbitControls).
-6. If `viewMode === 'surface'`, `updateSurfaceCamera()` overrides the camera transform.
+6. If `viewMode === 'surface'`: `updateSurfaceOrigin` → `stepSurfaceWalk` → `updateSurfaceCamera` → `updateAstronaut` → grass/rocks/water/ground/props updates → `updateSurfaceSkyEffects`.
 7. If a brush stroke is active, `applyBrushToBody(activeBrushBody, lastHitLocal, dt)`.
-8. Throttled (~10 Hz): `updateLiveInfo()` writes the info panel.
-9. `renderer.render(scene, camera)`.
+8. Galactic band recentered on the camera; brightness follows the starfield fade.
+9. Throttled (~10 Hz): `updateLiveInfo()`.
+10. `renderer.render(scene, camera)`.
 
-Pausing freezes orbits, spin, and cloud drift; moons + probes + brush keep going (intentional — that's how the user can sculpt without the world spinning out from under them).
+Pausing freezes orbits, spin, cloud drift, and waves; moons + probes + brush keep going (intentional — the user can sculpt without the world spinning out from under them).
 
 ---
 
 ## Subsystem walkthroughs
 
-### Terrain — `regenerateBody` and the brush
+### Terrain — `regenerateBody` and the brush (`framework/body.js`, `framework/terrain.js`)
 
-- `buildTerrainBasis(seedNum, count)` returns an array of `count` direction-vector + frequency + amplitude tuples — a sum-of-sines noise basis on the sphere. Seeded by `hashSeed(seedStr)`.
+- `buildTerrainBasis(seedNum, count)` returns `count` direction + frequency + amplitude tuples — a sum-of-sines noise basis on the sphere. Seeded by `hashSeed(seedStr)`.
 - `sampleTerrainNoise(basis, ux, uy, uz)` evaluates the basis at a unit direction. O(`TERRAIN_OCTAVES` = 24) per vertex.
-- `regenerateBody(body, seedStr, amplitude, seaCoverage)` resamples noise per vertex, then *biases* the heights so that `seaCoverage` of them sit below 0 (the sea level). Without the percentile bias, sea coverage would drift with seed.
-- `applyBrushToBody(body, centerLocal, dt)` mutates heights in a spherical cap (angular radius = `brushRadius` in radians). Falloff = `(1 - t²)²` where `t` is angular distance / brush radius. Per-vertex height is clamped to `[MIN_LAND_HEIGHT, MAX_LAND_HEIGHT]`.
+- `regenerateBody(body, seedStr, amplitude, seaCoverage)` resamples noise per vertex, then *biases* heights so `seaCoverage` of them sit below 0. Submerged terrain is deepened by `OCEAN_DEPTH_BOOST` on liquid worlds (coastline unchanged).
+- `applyBrushToBody(body, centerLocal, dt)` mutates heights in a spherical cap (angular radius = `brushRadius` radians). Falloff `(1 - t²)²`; clamped to `[MIN_LAND_HEIGHT, MAX_LAND_HEIGHT]`.
 
-### Shaders — gas + rings
+### Shaders — gas + rings (`shaders/gas.js`, `shaders/ring.js`)
 
-- Both are `THREE.ShaderMaterial`. Per-body materials, so each can have its own `uSunDir`.
-- `GAS_FRAG` branches on `uMode`:
-  - `0` = atmosphere: noise-thresholded clouds, soft fresnel edge, wind drift via `uTime` × `uWindSpeed`.
-  - `1` = full gas (gas giants): latitudinal banding + fresnel falloff so the silhouette stems out into space.
-- `uOpaqueSky` is flipped on during surface mode for dense atmospheres so the sky reads as solid, not see-through.
-- Rings (`RING_*`): one body-aligned thin disk; alpha falls off radially and is darkened in the planet's shadow cone.
+- Per-body `ShaderMaterial`s, so each can have its own `uSunDir`.
+- `GAS_FRAG` branches on `uMode`: `0` = atmosphere (noise-thresholded clouds, fresnel edge, wind drift), `1` = full gas (latitudinal banding + churn).
+- `uOpaqueSky` is flipped on during surface mode for dense atmospheres so the sky reads as solid.
+- Rings: one body-aligned thin disk; alpha falls off radially, darkened in the planet's shadow cone.
 
-### Shaders — plasma (the fourth matter type)
+### Shaders — plasma (`shaders/plasma.js`, `shaders/corona.js`, `core/sun.js`)
 
-- `makePlasmaMaterial()` builds the emissive, self-lit star surface used by the Sun (`sunMesh.material` is swapped to it after the factory exists) and by any body with `matter.plasma` (the `star` archetype). It's opaque, casts/receives no shadows, and ignores `uSunDir` — a star lights itself.
-- The frag shader is a domain-warped value-noise FBM sampled on the local unit direction (so the pattern is radius-independent): a slow swirling convection layer plus a faster bubbling layer, a time-shifting threshold that lifts and pulses bright white-hot cells, dark sunspot lanes in the troughs, random **lava-burst flares** (`flares()` — `NFLARES` slots that swell at a random spot then pop into an expanding shock ring), and a faint fresnel limb term. Colors ramp deep-orange → orange → yellow → white-hot; `uBright` and `uFlares` scale emission and flare strength. The Sun overrides the colors toward yellow-white and bumps `uBright`.
-- **Distance whitening** (`uWhiten`/`uWhitenNear`/`uWhitenFar`, on for the Sun only): the surface bleaches toward white as the camera recedes (`distance(cameraPosition, vCenter)`), so from system view the disc reads as a bright white star and the orange convection detail only shows up close.
-- The Sun also gets `makeCoronaMaterial()` — an additive back-faced shell (`coronaMesh`) whose alpha is driven by the view ray's **impact parameter** (perpendicular distance from the star center), so it's a soft glow *dome* fading outward, not a hard fresnel "bubble". It's a **restless red-orange** glow: a per-direction phase + layered sines make it writhe/pulse unevenly around the limb rather than breathing as one steady ring. Fakes bloom without a postprocessing pass.
-- The gas-giant (`uMode=1`) path reuses the same flowing-noise trick: a small time-scrolling turbulent domain warp churns the bands so gas planets animate too (kept subtle so the latitudinal banding still reads).
-- `uTime` for the Sun, corona, and every visible plasma body is advanced by `plasmaTime` in the animate loop **every frame, paused or not** — a star never freezes (unlike `gasTime`, which stops on pause). The Sun + corona uniforms are collected in `plasmaTickUniforms`.
+- `makePlasmaMaterial()` is the emissive star surface used by `sunMesh` and any body with `matter.plasma`. Domain-warped value-noise FBM on the local unit direction: slow convection + fast bubbling, pulsing white-hot cells, sunspot lanes, random lava-burst flares, fresnel limb.
+- **Distance whitening** (Sun only): bleaches toward white as the camera recedes, so the system view reads a bright white star.
+- `makeCoronaMaterial()` — additive back-faced dome whose alpha is driven by the view ray's impact parameter; a restless red-orange glow, faking bloom without postprocessing.
+- `plasmaTime` advances **every frame, paused or not**; the Sun + corona uniforms live in `plasmaTickUniforms` (`core/sun.js`).
 
-### Temperature / climate model
+### Temperature / climate model (`framework/climate.js`)
 
-A body's surface temperature is derived, not stored as input — recompute it whenever distance, archetype, **or atmosphere** changes (orbit-distance slider, regen, atmosphere sliders). Three inputs drive it: orbital distance, archetype, and the live atmosphere.
+Derived, not stored — recompute whenever distance, archetype, or atmosphere changes. Three inputs: orbital distance, archetype, live atmosphere.
 
-- `sunDistanceOf(body)` resolves the body's effective distance from the star: a planet uses its own `orbit.distance`; a moon inherits its parent planet's orbital distance (its small local orbit is ignored).
-- `atmosphereFactor(body)` reads the body's *live* gas state → `0` (airless) … `1` (thick/dense). A full-gas giant is `1`; an `'atmosphere'` shell grades by `gasDensity` plus the reach of `gasThickness` above the surface. This is what makes the Atmosphere sliders move the climate.
-- `computeClimate(body)` starts from the **airless** equilibrium `TEMP_REF_KELVIN * sqrt(TEMP_REF_DISTANCE / d)` (anchored at Earth's orbit ≈ −18°C — Earth *without* its greenhouse; flux ∝ 1/d², blackbody re-radiates at T ∝ flux^¼). Each archetype in `ARCHETYPE_CLIMATE` then adds a fixed `base` (albedo/intrinsic) plus `greenhouse × atmosphereFactor` warming, or an internal-heat `override` (stars, lava, sunless rogues). The equator-to-pole `airSpread` is *shrunk* by the atmosphere (`× (1 − HEAT_REDISTRIBUTION·atmo)`) — so airless worlds keep a brutal gap and thick envelopes nearly erase it. **This is why Earth (atmosphere) and its Moon (none) at the same distance differ in both mean and range.** Cached on `body.climate` as `{ meanK, equatorK, poleK, atmosphere, … }`. Moons with no archetype default to `moon_like`.
-- `temperatureAtLatitude(body, latRad)` returns temperature at a latitude: `cos(lat)^1.6` blends pole → equator so the tropics stay broad and the cold collapses onto the caps. Latitude on the icosphere is `asin(unitDir.y)`.
-- `tempColor(k)` / `fmtTemp(k)` drive the Info panel's Climate section (mean readout + equator/pole row + a pole→equator gradient bar). `renderClimateSection` is hidden for probes and the system view; the distance and atmosphere slider handlers call it directly for a live update without a full panel re-render.
+- `sunDistanceOf(body)`: planet uses its own `orbit.distance`; a moon inherits its parent's.
+- `atmosphereFactor(body)`: live gas state → 0 (airless) … 1 (thick). Makes the Atmosphere sliders move the climate.
+- `computeClimate(body)`: airless equilibrium `TEMP_REF_KELVIN * sqrt(TEMP_REF_DISTANCE / d)` (Earth-anchored), plus per-archetype `base` + `greenhouse × atmosphereFactor` (or internal-heat override for stars/lava/rogues). Equator-to-pole `airSpread` shrinks with atmosphere (`× (1 − HEAT_REDISTRIBUTION·atmo)`) — why Earth and its airless Moon differ in both mean and range. Cached on `body.climate`.
+- `temperatureAtLatitude(body, latRad)`: `cos(lat)^1.6` pole→equator blend.
+- `tempColor(k)` / `fmtTemp(k)` drive the info panel's climate section.
 
-**Latitude biomes (climate coloring).** On diverse archetypes the *vegetated land* band isn't one color — it shifts with latitude. `CLIMATE_LAND_ZONES` (section 1) lists, per archetype, ordered land zones (warmest first) with a `minTempC` floor, a color, a composition label, and `beach`/`relief` flags. Only archetypes listed there vary; everything else (desert, lava, …) keeps its plain palette bands **unchanged**. Today only `terrestrial` is populated: jungle → grass → tundra → ice. `grass` reuses the palette green so temperate land is identical to before; ice/tundra/jungle are the new biomes.
+**Latitude biomes.** `CLIMATE_LAND_ZONES` (`framework/body.js`) lists per-archetype ordered land zones (warmest first) with `minTempC`, color, label, `beach`/`relief` flags. Only listed archetypes vary (today: `terrestrial` — jungle → grass → tundra → ice). `colorBodyVertex` computes per-vertex temp via `vertexTempC` (latitude gradient − elevation lapse), `pickLandZone` selects the zone; beach/relief/snow cues layer on top. Hand-painted biomes and non-listed archetypes are untouched.
 
-  `colorBodyVertex` (and `computeBodyStats`, so the composition panel always agrees) computes a per-vertex surface temperature via `vertexTempC(body, i)` — `cos(lat)^1.6` between `body.climate.poleK`/`equatorK`, minus `CLIMATE_LAPSE_C` × elevation so peaks run colder — then `pickLandZone` selects the zone. The usual elevation cues still layer on top: a sandy shore at the waterline (`beach`), rock relief on high ground (`relief`), and a snow cap above `ROCK_TOP`. The result is a believable Earth zonation (~jungle 0–30°, grass 30–50°, tundra 50–65°, ice poleward) and altitude zonation on equatorial mountains. Untouched: ocean color, hand-painted biomes (those take their own `colorBodyVertex` branch), and non-listed archetypes.
+**Ice self-glow.** The body material is patched (`framework/materials.js`) with a per-vertex emissive `uGlowColor * aGlow`; `colorBodyVertex` writes `body.glowArr` (= `zone.glow` for ice, 0 elsewhere), so only ice self-lights and night sides stay black.
 
-  **Ice self-glow.** Ice sits at the poles, where the sun only ever grazes, so pure diffuse shading crushes any ice color to grey. To fix that, the body's `MeshStandardMaterial` is patched in `onBeforeCompile` to add a per-vertex emissive term `uGlowColor * aGlow`. `aGlow` is a geometry attribute (`body.glowArr`) written by `colorBodyVertex` (= `zone.glow` for ice, 0 elsewhere, cleared each repaint and flagged dirty in `commitBodyChanges`); `uGlowColor` is `ICE_GLOW_COLOR` (section 1). Ordinary terrain keeps `aGlow = 0`, so the night side stays black — only ice self-lights, reading as bright crystal even unlit.
+**Bootstrap ordering.** The first paint runs with `climate` still null (plain bands); after init, `setClimateReady(true)` + a repaint pass gives every body its zones. `regenerateBody` refreshes climate before its color loop; `refreshClimateColoring(body)` runs from the distance/atmosphere sliders and after `deployNewPlanet`.
 
-  Ordering matters: `colorBodyVertex` only *reads* `body.climate` (a plain object) and the section-1 `CLIMATE_LAND_ZONES` — it never calls the climate *functions* in section 22b, which would be in their temporal dead zone during the bootstrap paint. So the bootstrap paints plain bands (climate still null), then a module-scope `climateReady` flag is flipped by the post-init pass (end of init), which computes every body's climate and repaints the solid planets with their zones. After that, `regenerateBody` refreshes climate before its color loop; `refreshClimateColoring(body)` (= recompute + `recolorBody`) runs from the distance/atmosphere slider `onchange` and after `deployNewPlanet` registers a planet's real orbit.
+### Surface walk (`modes/surface/*`)
 
-### Surface walk — the three modes
+Single state variable, `viewMode` (`framework/state.js`): `'orbit' | 'pick' | 'surface'`.
 
-Single state variable, `viewMode`, gates everything: `'orbit' | 'pick' | 'surface'`.
+- **orbit** (default): OrbitControls. Brush works. `VISIT SURFACE` → `enterPickMode` (`surface/core.js`).
+- **pick**: OrbitControls disabled; next left-click on the focused body → `enterSurfaceMode` (`surface/mode.js`). Bodies with `matter.solid === false` fail eligibility.
+- **surface**: camera rides the body in body-local coords (`surfaceState`). Mouse-look (Pointer Lock), scroll = FOV zoom, WASD walks (Shift sprints). `stepSurfaceWalk` (`surface/walk.js`) moves along the tangent plane; `sampleGroundRadius` raycasts the real terrain height; the local frame is parallel-transported so yaw stays consistent. `updateSurfaceCamera` re-reads the body's world matrix every frame, so spin/orbit wheel the sky overhead.
 
-- **orbit** (default): OrbitControls drive the camera. Brush works. Click `VISIT SURFACE` button → `enterPickMode`.
-- **pick**: OrbitControls disabled. Next left-click on the focused body's mesh → `enterSurfaceMode`. Bodies fail the eligibility check if `matter.solid === false` (gas/ice giants).
-- **surface**: Camera attached to the body's surface in body-local coords (`surfaceState.localEye`, etc.). Mouse movement = look (Pointer Lock), scroll = FOV zoom, **WASD / arrow keys walk** (Shift sprints). `stepSurfaceWalk` moves `localEye` along the tangent plane, then `sampleGroundRadius` casts a ray straight down at the mesh to find the real terrain height under the new spot (seabeds are real basins — wading off a beach sinks below sea level); the eye lerps to `support + eyeHeight` so it rises over mountains instead of clipping through them. The local frame is parallel-transported across the surface so yaw stays consistent. `updateSurfaceCamera` then reads the body's *current* world matrix every frame, so spin and orbit naturally wheel the sky overhead.
+**Avatar** (`surface/avatar.js`): `character.glb`, clip state machine `idle | walk | run | jump | swim` with fuzzy clip-name matching; blob shadow disc does the grounding.
 
-**Avatar**: `character.glb` (three.js RobotExpressive — colored, rigged) loaded once by `loadAstronaut`, driven by a clip state machine `idle | walk | run | jump | swim` (`setAstronautAction`, fuzzy clip-name matching so a Mixamo GLB can be swapped in; `jump`/`wave` are `LoopOnce` one-shots, and a wave plays on each landing). A radial-gradient **blob shadow** disc under the feet does the grounding (the sun's system-scale shadow map can't resolve the figure); it stays on the ground and fades as the body leaps.
+**Swimming** (`surface/walk.js` + `surface/swim.js`): when the seabed drops > ~1 eye-height below sea level (hysteresis), `surfaceState.swimming` flips; `standRadius` eases to just under the waterline and rides `waveHeightAtAvatar` (`surface/water.js`) so the swimmer bobs with the rolling waves. Prone paddling pose; jumps disabled.
 
-**Swimming**: on a water world, when the seabed drops > ~1 eye-height below sea level (with hysteresis), `surfaceState.swimming` flips on and `standRadius` — the support radius the eye/feet/camera all ride — eases from `groundRadius` to just under the waterline. The avatar blends into a prone paddling pose (procedural tilt + bob; the walk clip slowed doubles as the stroke), movement halves, jumps are disabled, and the head stays above water so the underwater fog doesn't trigger.
+**Floating origin** (`surface/camera.js`): planets sit ~900 units out while the avatar is ~0.01 units tall; skinned-mesh bones upload as float32 and tremble at those coordinates. `updateSurfaceOrigin` slides the whole scene so the walker sits at the world origin. Scene children positioned from world-space values must subtract `scene.position` (avatar pivot, milkyway, moonlight rig, skylight do).
 
-**Floating origin**: planets sit up to ~900 world units out while the avatar is ~0.01 units tall, and skinned-mesh bone matrices upload as float32 — at those coordinates the rig visibly trembles at idle. `updateSurfaceOrigin` (called first thing each surface frame) slides the whole scene so the walker sits at the world origin. Scene children positioned from *world-space* values must subtract `scene.position` (the avatar pivot, the milkyway skybox, the moonlight rig, and the `surfaceSkyLight` do).
+**Water patch** (`surface/water.js`): a local high-res grid replacing the global ocean sphere during the visit — rolling waves (`wv()` mirrored by `waveHeightAtAvatar` for buoyancy), per-fragment depth shading from `body.seabedTex` (baked in `bakeOceanShore`), crest + shoreline crash foam, fresnel, micro-ripple glints.
 
-**Footprints** (soft-soil worlds): walking stamps boot prints into the ground. Each print is a decal evaluated in the `groundPatch` **fragment shader** (no extra meshes / no z-fighting): an oriented boot SDF (rounded sole + heel + tread bars) that darkens the soil, lightens a displaced-soil rim, and bends the shading normal into a soft depression. Prints live in the same ground-fixed treadmill coords (`grassU/grassV`) as the patch's micro-relief, so they stay put as the avatar walks away, and settle (fade) over `FOOT_LIFE` (~70 s) in a `FOOT_N`-slot ring buffer (`uFoot` vec4 array: u, v, yaw, fade). `stampFootprintsFromStep` meters alternating left/right prints every half-stride (multiple per frame are back-placed along the heading so slow frames keep even spacing); a jump landing punches both boots at once. `FOOTPRINT_GROUND` gates which archetypes print and how strongly (venusian soil full strength, its slab flats faint; desert + moon_like also print). `window.footDiag()` is the console diagnostic. GOTCHA: injected GLSL varyings are `#ifndef`-guarded because three.js can re-run `onBeforeCompile` over an already-patched string (program variants) — bare declarations land twice and fail to compile.
+**Footprints** (`surface/ground.js`): boot-print decals evaluated in the `groundPatch` fragment shader — an oriented boot SDF that darkens soil, lightens a displaced rim, and bends the shading normal. Prints live in the ground-fixed treadmill coords (`grassU/grassV`), settle over `FOOT_LIFE` (~70 s) in a `FOOT_N`-slot ring buffer. `stampFootprintsFromStep` meters alternating prints every half-stride; a jump landing punches both boots. `FOOTPRINT_GROUND` gates which archetypes print. `window.footDiag()` is the console diagnostic.
 
-**Surface lighting**: while walking, two adjustments keep the ground readable and seam-free. (1) `surfaceSkyLight` — a HemisphereLight tinted by the body's `skyTint` whose base strength scales with the live gas envelope (`(density × coverage)^1.5`), so a Venus-thick shell gets bright, near-shadowless overcast daylight (the near-black basalt would otherwise crush to silhouette) while Earth-like shells get a negligible fill and airless worlds none; ramped by sun elevation each frame so night still falls. (2) The visited body's mesh stops sampling the sun's shadow map (`receiveShadow = false`, restored on exit, `material.needsUpdate` both ways): one system-scale shadow texel spans the whole landscape, so at grazing sun angles the terrain self-shadowed to black while the shadow-free `groundPatch` floating above it stayed lit — a glaring circular seam. (The patch itself also never receives shadows, same reason as the water patch.)
+**Sky / underwater** (`surface/sky.js`): aerial-perspective `FogExp2` tinted by the archetype sky; submersion is judged from the **camera's** body-local radius vs the lifted waterline — underwater swaps fog to a liquid tint and raises the `#underwaterOverlay` full-screen tint (covers the fog-immune sky shaders). The atmospheric skylight (HemisphereLight in `core/scene.js`) scales with `(density × coverage)^1.5` and sun elevation, so Venus-thick shells get overcast daylight while airless worlds get none.
 
-Returning to orbit (`exitSurfaceMode`) restores: camera `fov`/`near`/`far`, the gas mesh's side (`DoubleSide` → `BackSide` again), any `uOpaqueSky` override, the body's `receiveShadow`, the skylight (off), and zeroes the floating-origin shift.
+**Surface lighting gotchas**: the visited body stops sampling the sun's shadow map (`receiveShadow = false`, restored on exit) — one system-scale shadow texel spans the whole landscape and self-shadows it black at grazing angles. `window.grassDiag()` dumps grass-field state.
 
-### Focus → left panel
+`exitSurfaceMode` restores: camera fov/near/far, gas mesh side + `uOpaqueSky`, the body's `receiveShadow`, skylight off, floating origin zeroed.
 
-`focusedBody` (and `focusedCity`) drive everything visible:
+### Focus → left panel (`modes/focus.js`, `ui/left-panel.js`)
 
-- `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute (in `index.html`).
-- Per kind: planets get Classify + Sats; moons share Sculpt + Envir + Colony with planets; both kinds and "no focus" (system view) show the System tab.
-- When the focused body changes, `setFocus`/`setCityFocus` retarget OrbitControls toward the new world position, re-render every list, and refresh the visit-button state.
+`focusedBody` (+ `focusedCity`/`focusedProbe`) drive everything visible. `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute in `index.html`. `setFocus`/`setCityFocus`/`setProbeFocus` retarget OrbitControls and re-render the lists.
 
-### Probes — GLB loading
+### Star systems + maps (`system/starsystems.js`, `ui/star-map.js`)
 
-The satellite GLB at `3d_objects/satellite.glb` is loaded *lazily, once*. `loadSatelliteTemplate()` caches a normalized template (scaled so its longest dimension = `PROBE_BASE_SIZE`). Each new probe `.clone(true)`s the template. Before the GLB resolves, probes get a fallback box mesh.
+The scene holds one star system at a time. `galaxy` is a constellations → star-systems catalog (session-only); Sol is the immutable preset rebuilt from `SOLAR_SYSTEM_SPEC`, procedural systems cache their generated `planetSpecs`. `loadStarSystem` = unload (dispose every planet/moon/probe/city) + bootstrap + `finalizeSystemLoad`. The maps are DOM overlays; `viewLevel` (`'system' | 'constellation' | 'galaxy'`) tracks where the user is; Esc steps down a level.
 
-`lunar_base.glb` (project root) follows the same pattern for cities: `loadCityTemplate()` grounds the model (bottom at local y=0), scales to `CITY_BASE_SIZE`, and each colony `.clone(true)`s into its group. A small gold cube shows until load completes.
+### GLB loading
+
+`3d_objects/satellite.glb` (probes), `lunar_base.glb` (cities), `character.glb` (avatar), `assets/*.glb` (props) — all lazily loaded once, normalized/grounded, then `.clone(true)`d per instance. Fallback primitives show until the load resolves.
 
 ---
 
@@ -262,139 +319,53 @@ Anything referenced from JS by id, grouped by panel:
 | Tabs (left)        | `tab-classify`, `tab-sculpt`, `tab-environment`, `tab-colonies`, `tab-satellites`, `tab-system`                                 |
 | Classify           | `archetypeSelect`, `seedInput`, `randomSeedBtn`, `genAmp`, `genSea`, `regenBtn`                                                  |
 | Sculpt             | `sculptRaise`, `sculptLower`, `brushRadius`, `brushStrength`                                                                    |
-| Environment        | `biomeSelect`, `brushRadiusB`, `atmoThick`, `atmoDensity`, `atmoCoverage`, `ringsEnabled`, `ringsIntensity`                     |
+| Environment        | `biomeSelect`, `brushRadiusB`, `atmoThick`, `atmoDensity`, `atmoCoverage`, `atmoComplexWinds`, `atmoCloudDrift`, `ringsEnabled`, `ringsIntensity` |
 | Colonies           | `cityNameInput`, `cityList`                                                                                                     |
 | Satellites         | `moonsList`, `addMoon`, `probesList`, `addProbe`                                                                                |
-| System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`      |
+| System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`, `bodyInclInput`, `bodyNodeInput`, `bodyRetrogradeInput` |
 | Dynamics           | `showOrbits`, `showSatelliteOrbits`, `pauseRot`                                                                                 |
 | Info panel (right) | `infoBodyName`, `infoSubtitle`, `infoComposition`, `infoClimateSection`, `infoTempMean`, `infoTempRangeRow`, `infoTempRange`, `infoTempBar`, `infoPeak`, `infoVerts`, `infoMoons`, `infoDayPeriod`, `infoDayTime`, `infoOrbit*` |
 | Bottom nav         | `navBreadcrumb`, `navFocusLevel`, `navFocusName`, `navFocusSub`, `navUp/Down/Left/Right`, `navRandomBtn`, `navVisit`            |
-| Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`, `underwaterOverlay` (full-screen submerged tint) |
+| Surface overlay    | `surfaceOverlay`, `surfaceLocationName`, `surfaceExitBtn`, `surfaceCrosshair`, `surfaceHint`, `underwaterOverlay`               |
+| Star map           | `mapOverlay`, `mapGalaxyArt`, `mapField`, `mapTitle`, `mapEyebrow`, `mapNewBtn`, `mapHint`, `systemTransition`                  |
 | Misc               | `c` (the WebGL canvas), `pickHint`, `pickToast`, `scanOverlay`                                                                  |
 
 ---
 
-## Function index
+## Where things are — function quick-reference
 
-Grouped by section. Line numbers will drift — re-grep `^\s+function\s+\w+` after edits.
-
-| Function                 | Line  | What it does                                                                          |
-| ------------------------ | ----- | ------------------------------------------------------------------------------------- |
-| `smoothstep`             | 180   | Hermite step `[a..b] → [0..1]`. Used everywhere bands need soft transitions.          |
-| `makeGasMaterial`        | 383   | Builds a per-body `ShaderMaterial` for atmosphere/gas-giant rendering.                |
-| `makeRingMaterial`       | 533   | Builds a per-body `ShaderMaterial` for planetary rings.                               |
-| `createBody`             | 561   | The factory. Returns a Body (see Data model). Caller adds `group` to scene.           |
-| `writeBodyVertex`        | 664   | Writes vertex `i`'s position from `unitDirs[i] * (baseRadius * (1 + heights[i]*…))`.  |
-| `colorBodyVertex`        | 671   | Writes vertex `i`'s color from height + biome + palette + climate land zone.          |
-| `vertexTempC`            | —     | Surface temp (°C) at a vertex: climate latitude gradient − elevation lapse.            |
-| `pickLandZone`           | —     | Choose the `CLIMATE_LAND_ZONES` biome for a temperature (shared by color + stats).     |
-| `commitBodyChanges`      | 782   | Marks `position` and `color` attributes dirty + recomputes bounds/normals.            |
-| `applyBrushToBody`       | 790   | Single brush stroke (one frame). Spherical-cap falloff, height-clamped.               |
-| `hashSeed`               | 834   | FNV-ish string → uint32 hash. Deterministic across runs.                              |
-| `makeRNG`                | 842   | Mulberry32-style PRNG from a seed int.                                                |
-| `buildTerrainBasis`      | 855   | Builds a noise basis (direction + freq + amp tuples).                                 |
-| `sampleTerrainNoise`     | 879   | Sums the basis at a unit direction.                                                   |
-| `applyMatterToBody`      | 942   | Switches solid/liquid/gas meshes for a body per archetype matter spec.                |
-| `applyGasShell`          | 976   | Pushes `body.gas*` fields into the gas mesh's uniforms + thickness scale.             |
-| `applyRingsToBody`       | 987   | Pushes `body.rings.{enabled,intensity}` into the ring mesh.                           |
-| `regenerateBody`         | 998   | Reseed terrain. Resamples noise → biases → writes vertices + colors (frost-aware).    |
-| `recolorBody`            | —     | Repaint all vertices without touching terrain (used when climate shifts the ice).     |
-| `refreshClimateColoring` | —     | Recompute a body's climate and repaint it (distance/atmosphere change, new planet).   |
-| `updatePlanetOrbitPosition` | 1041 | Position one planet on its orbit from `angle/distance/inclination`.                  |
-| `updatePlanetOrbits`     | 1050  | Per-frame advance of every planet's `angle` and reposition.                           |
-| `registerPlanet`         | 1057  | Push a planet entry + draw its orbit line.                                            |
-| `buildOrbitLineGeometry` | 1077  | Float32Array of points on an inclined circle.                                         |
-| `refreshOrbitLine`       | 1094  | Rebuild a planet's orbit line geometry (after distance/inclination changes).          |
-| `disposeOrbitLine`       | 1112  | Tear down the orbit line when a planet is removed.                                    |
-| `spawnSolarPlanet`       | 1145  | Builds a Sol-system planet from a `SOLAR_SYSTEM_SPEC` entry; calls `regenerateBody`.  |
-| `updateBrushRing`        | 1214  | Positions/orients the on-surface brush preview disc.                                  |
-| `brushArcWorldRadius`    | 1223  | Brush angular radius (radians) → world-distance radius for the preview ring.          |
-| `setPointerFromEvent`    | 1228  | Mouse client coords → NDC `pointer`.                                                  |
-| `raycastBodies`          | 1235  | Raycast against every visible body mesh. Returns `{ body, hit }` or `null`.           |
-| `worldToBodyLocal`       | 1249  | Worldspace point → body's mesh-local space.                                           |
-| `endPaint`               | 1304  | Pointerup/cancel: clear painting state, release pointer capture.                      |
-| `moonOrbitPlane`         | 1337  | Slot index → `{ inclination, node, phase }` so concurrent moons don't overlap.        |
-| `allocateMoonSlot`       | 1345  | Lowest free slot (per parent), up to `MAX_MOONS`.                                     |
-| `freeMoonSlot`           | 1354  | Release a slot.                                                                       |
-| `updateMoonPosition`     | 1359  | Place a moon in worldspace from its orbit params + parent position.                   |
-| `addMoon`                | 1375  | Create + register a moon. Builds a new body via `createBody`.                         |
-| `removeMoonAt`           | 1412  | Tear down a moon (geometry, slot, focus fallback).                                    |
-| `setMoonSize` / `…Distance` | 1426 | Mutate one moon and refresh.                                                       |
-| `updateMoons`            | 1440  | Per-frame orbit advance (Kepler-ish: `ω ∝ d^-1.5`).                                   |
-| `loadSatelliteTemplate`  | 1466  | GLB loader, cached. Normalizes scale.                                                 |
-| `probeOrbitPlane` / `allocateProbeSlot` / `freeProbeSlot` | 1497 | Same idea as moons.                                            |
-| `updateProbePosition`    | 1521  | Place a probe.                                                                        |
-| `addSatellite`           | 1534  | Create + register a probe.                                                            |
-| `removeSatelliteAt`      | 1586  | Tear down a probe, including disposing cloned GLB materials/geometries.               |
-| `setSatelliteSize` / `…Distance` | 1603 |                                                                                |
-| `updateSatellites`       | 1617  | Per-frame orbit + self-spin.                                                          |
-| `addCity`                | 1632  | Pin a city to a body at a unit-local direction.                                       |
-| `loadCityTemplate`       | —     | Lazy-load `lunar_base.glb` once; bottom-grounded, scaled to `CITY_BASE_SIZE`.         |
-| `createCityMarker`       | —     | Placeholder group until the GLB resolves.                                             |
-| `updateCityMarkers`      | 1652  | Visibility per day-side (dot of surface normal with toSun).                           |
-| `renderCityList`         | 1675  | DOM render for the Colony tab.                                                        |
-| `removeCityAt`           | 1696  | Detach + dispose.                                                                     |
-| `updatePlanetRotation`   | 1742  | Spin every planet by its `rotationSpeed`.                                             |
-| `updateSunLightForFocus` | 1757  | Refresh per-body `uSunDir` uniforms (atmosphere + rings).                             |
-| `setFocus`               | 1810  | Change focused body. Retargets controls and resets dolly distance.                    |
-| `setCityFocus`           | 1829  | Focus a city (subtler dolly, oriented by city's surface normal).                      |
-| `updateFocusTracking`    | 1855  | Each frame, slide `controls.target` to follow the focused body's worldpos.            |
-| `sunDistanceOf`          | —     | Effective distance from the star (planet's orbit, or its parent's for a moon).        |
-| `computeClimate`         | —     | Distance + archetype → cached `body.climate` (mean / equator / pole temps).           |
-| `temperatureAtLatitude`  | —     | Temp (K) at a latitude — per-vertex hook for future biome painting.                   |
-| `tempColor` / `fmtTemp`  | —     | Temperature → HUD color / display string for the Climate section.                     |
-| `renderClimateSection`   | —     | Fill the Info panel's Climate section from `computeClimate`.                           |
-| `hexFromNumber`          | 1917  | `0xff00aa` → `"#ff00aa"`. Used by the composition swatches.                           |
-| `bandMeta`               | 1923  | Resolve `(body, key)` → display label + swatch color for the info panel.              |
-| `computeBodyStats`       | 1943  | Aggregate per-vertex bands and find peak. Source of the composition rollup.           |
-| `fmtPct`, `fmtSeconds`   | 1976  | Number formatters for the info panel.                                                 |
-| `peakWorldHeight`        | 1990  | `peak` (height units) → world-space height above sea level.                           |
-| `updateInfoPanel`        | 2012  | Full re-render of the right info panel.                                               |
-| `updateLiveInfo`         | 2067  | ~10 Hz tick. Updates only the values that change continuously (day time, orbit).      |
-| `generateCosmic`         | 2107  | Random sci-fi-flavored name root.                                                     |
-| `generateName`           | 2128  | `generateCosmic(kind)` + numeral/suffix appropriate to `'planet' \| 'moon' \| 'system'`. |
-| `updateBiomeTools`       | 2197  | Rebuild the biome select per focused body (moon vs planet have different palettes).   |
-| `syncBrushRadius`        | 2293  | Two sliders (Sculpt + Envir) share a value — this keeps them in sync.                 |
-| `applyAtmoSliderToFocus` | 2343  | Three atmo sliders → focused body's gas mesh.                                         |
-| `applyRingsSliderToFocus`| 2364  | Rings checkbox + intensity slider → focused body's ring mesh.                         |
-| `sliderTo*`              | 2404  | Slider integer → physical value.                                                      |
-| `syncGenLabels`          | 2409  | Refresh the "Amplitude / Sea Level" value chips.                                      |
-| `setRange`               | 2468  | Update an `<input range>`'s min/max attributes safely.                                |
-| `applyFocusToLeftPanel`  | 2477  | Show/hide tabs + sections per focus kind. Big function — the heart of context-aware UI. |
-| `syncAtmoSlidersToFocus` | 2606  | Pull body.gas* into the atmo sliders. Inverse of `applyAtmoSliderToFocus`.            |
-| `syncRingsToFocus`       | 2646  | Pull body.rings into the rings UI.                                                    |
-| `nextPlanetName`         | 2732  | First unused `Planet I`, `Planet II`, …                                               |
-| `deployNewPlanet`        | 2742  | Create a new planet; auto-picks a free archetype and a farther orbit.                 |
-| `removePlanetBody`       | 2786  | Tear down a planet, including all its moons, probes, cities. Re-focuses elsewhere.    |
-| `renderPlanetList`       | 2856  | DOM render for the System tab's planet roster.                                        |
-| `renderMoonsList`        | 2883  | DOM render for the Satellites tab's moons list.                                       |
-| `renderProbesList`       | 2957  | DOM render for the Satellites tab's probes list.                                      |
-| `renderFocusBadges`      | 3022  | Footer text: focused body's name + archetype.                                         |
-| `setNavNameText`         | 3044  | Write the bottom-nav focus name without colliding with caret state.                   |
-| `setSystemFocus`         | 3049  | Zoom out to system view (no focused body). Used at startup and from `navUp`.          |
-| `navUp` / `navDown`      | 3065  | Up: focused body → parent / system. Down: planet → first moon → first city.           |
-| `navSibling(dir)`        | 3095  | Cycle planets / moons / cities at the current level (`dir` ∈ {-1, +1}).               |
-| `renderNavBodies`        | 3122  | Refresh the bottom-nav text (level, name, sub, breadcrumb) from current focus.        |
-| `isBodyVisitable`        | 3225  | Eligibility for surface walk (planet/moon AND `matter.solid`).                        |
-| `updateVisitButtonState` | 3231  | Visit button enabled/disabled + label per viewMode.                                   |
-| `flashPickToast`         | 3246  | Transient bottom-of-screen status during pick mode.                                   |
-| `enterPickMode` / `exitPickMode` | 3254 | Arms/disarms the click-to-land state. Disables OrbitControls while armed.       |
-| `buildLocalFrame`        | 3281  | Orthonormal basis at a body-local point (avoids singularity at the poles).            |
-| `enterSurfaceMode`       | 3290  | Snap camera to ground at hit point. Saves orbit camera state for restore.             |
-| `exitSurfaceMode`        | 3364  | Restore orbit camera + gas mesh material state.                                       |
-| `updateSurfaceCamera`    | 3402  | Each frame: rebuild camera transform from body's current world matrix + yaw/pitch.    |
-| `setBodyName`            | 3545  | Single fan-out for renaming — touches nav, lists, info, biome tools.                  |
-| `setSystemName`          | 3560  | Rename the star system. Re-renders nav + info.                                        |
-| `commitFocusName`        | 3567  | Inline-edit commit handler. Dispatches to `setBodyName`/`setSystemName`/city.         |
+| Looking for…                          | Module |
+| ------------------------------------- | ------ |
+| `createBody`, `colorBodyVertex`, `commitBodyChanges`, `regenerateBody`, `applyBrushToBody`, `bakeOceanShore`, `applyMatterToBody` | `framework/body.js` |
+| `computeClimate`, `colorOceanByClimate`, `tempColor`, `surfaceGravityG` | `framework/climate.js` |
+| `makeGasMaterial`, `ensureGasPaint`, `randomizeGasBands`, `addGasVortex` | `shaders/gas.js` |
+| `makePlasmaMaterial` / `makeCoronaMaterial` | `shaders/plasma.js` / `shaders/corona.js` |
+| `spawnSolarPlanet`, `registerPlanet`, `updatePlanetOrbits`, `updatePlanetRotation` | `system/planets.js` |
+| `refreshOrbitLine`, `setSatelliteOrbitLinesVisible` | `system/orbits.js` |
+| `updateSunLightForFocus`, `updateMoonLight` | `system/lighting.js` |
+| `loadStarSystem`, `createStarSystem`, `generateStarSystemSpec`, `bootstrapSolSystem` | `system/starsystems.js` |
+| `addMoon` / `addSatellite` / `addCity` | `entities/moons.js` / `probes.js` / `cities.js` |
+| `setFocus`, `updateFocusTracking` | `modes/focus.js` |
+| `enterPickMode`, `surfaceState`, `isBodyVisitable` | `modes/surface/core.js` |
+| `enterSurfaceMode` / `exitSurfaceMode` | `modes/surface/mode.js` |
+| `stepSurfaceWalk`, `sampleGroundRadius`, `tryJump` | `modes/surface/walk.js` |
+| `stampFootprint`, `footprintStrengthHere` | `modes/surface/ground.js` |
+| `waveHeightAtAvatar`, `buildWaterPatch` | `modes/surface/water.js` |
+| `updateInfoPanel`, `updateLiveInfo`, `computeBodyStats` | `ui/info-panel.js` |
+| `applyFocusToLeftPanel` | `ui/left-panel.js` |
+| `deployNewPlanet`, `removePlanetBody`, `renderPlanetList` | `ui/roster.js` |
+| `navUp`, `navDown`, `setSystemFocus`, `renderNavBodies` | `ui/nav.js` |
+| `setBodyName`, `commitFocusName` | `ui/naming.js` |
+| `openGalaxyMap`, `travelToSystem` | `ui/star-map.js` |
+| `generateName` | `core/names.js` |
 
 ---
 
-## Conventions
+## Verification & tooling
 
-- **Indentation**: 4 spaces. The whole file is inside an implicit module scope; no top-level `<script>` wrapping logic.
-- **Closures over arrays/state**: Almost all state (`bodies`, `planets`, `focusedBody`, brush state) lives at module scope. Functions reach in directly. Adding new collections is fine, but document them here.
-- **`body.kind`**: `'planet'` or `'moon'`. Many UI branches gate on this; check it before adding kind-specific behavior.
-- **Sea level**: `SEA_LEVEL = 0`. Heights below 0 are submerged (and invisible if `matter.liquid`).
-- **`commitBodyChanges`**: Always call after mutating `heights` / `colorArr` — otherwise the GPU sees stale data and normals.
-- **Reusable scratch vectors**: Several modules keep `_xxxTmp` `THREE.Vector3()` instances at module scope to avoid allocation in the frame loop. Reuse them; don't create new vectors per-frame in hot code.
-- **No build step**: Edits to `script.js` take effect on browser reload. No source maps, no transpile.
+There is no test suite; verification is headless-browser based. Helper scripts live in `.claude/` (untracked):
+
+- `verify-refactor.cjs` — boot smoke test: zero console errors, orbit view, surface landing + walk + jump, star map. Run with `NODE_PATH=$(npm root -g) node .claude/verify-refactor.cjs` (needs the globally installed `playwright`).
+- `verify-water.cjs` / `verify-venus.cjs` / `verify-swim.cjs` / … — feature-specific scenarios with screenshots.
+- In-app console diagnostics: `window.grassDiag()`, `window.footDiag()`.
+- Static checks (ESLint lives in `.claude/tooling/`): `node .claude/lint-report.cjs` (no-undef + no-import-assign over `src/`), `node .claude/check-imports.cjs` (every named import resolves to a real export), `node .claude/find-tdz.cjs` (heuristic scan for the import-cycle TDZ hazard described in Conventions).

@@ -1,3 +1,5 @@
+// Colonies — lunar_base.glb markers pinned to a body surface; day-side
+// dimming and the colony list.
 import { setFocusedCity } from '../modes/focus.js';
 
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';

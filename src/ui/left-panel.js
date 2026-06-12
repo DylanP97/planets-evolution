@@ -1,3 +1,5 @@
+// Context-aware left panel: which tabs/sections are visible per focus kind,
+// plus slider range setup and sync from the focused body.
 import { setCurrentArchetype } from '../framework/state.js';
 
 import { systemName } from '../core/names.js';

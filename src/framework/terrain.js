@@ -1,3 +1,5 @@
+// Seeded terrain noise: string hash, mulberry32 PRNG, and the sum-of-sines
+// FBM basis built per regenerate and sampled per vertex.
 export function hashSeed(str) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < str.length; i++) {

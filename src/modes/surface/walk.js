@@ -1,3 +1,5 @@
+// WASD/arrow walking, sprint, jump physics, ground-radius sampling, swim
+// buoyancy riding the water-patch waves.
 import * as THREE from 'three';
 import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT } from '../../core/constants.js';
 import { viewMode } from '../../framework/state.js';

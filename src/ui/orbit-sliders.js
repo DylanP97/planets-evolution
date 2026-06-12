@@ -1,3 +1,5 @@
+// Distance / orbit-speed / spin / size slider handlers for planets + moons
+// + probes, and the satellite orbit-plane controls.
 import { setMoonDistance, setMoonSize } from '../entities/moons.js';
 import { setSatelliteDistance, setSatelliteSize } from '../entities/probes.js';
 import { refreshClimateColoring } from '../framework/body.js';

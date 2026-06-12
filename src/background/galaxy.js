@@ -1,3 +1,4 @@
+// Procedural Milky Way band — a camera-riding skybox mesh.
 import * as THREE from 'three';
 import { scene } from '../core/scene.js';
 

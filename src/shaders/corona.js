@@ -1,3 +1,4 @@
+// Additive corona glow dome around stars (impact-parameter falloff).
 import * as THREE from 'three';
 import { PLASMA_VERT } from './plasma.js';
 
