@@ -1,0 +1,7 @@
+# Local Claude Code artifacts (screenshots/logs from verify scripts, scratch worktrees)
+.claude/*.png
+.claude/*.txt
+.claude/veg-shots/
+.claude/worktrees/
+.claude/tooling/node_modules/
+node_modules/

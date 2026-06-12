@@ -80,7 +80,24 @@
       "Bash(grep -n \"ARCHETYPES\\\\`, \\\\`ARCHETYPE_MATTER\\\\|Archetypes \" ARCHITECTURE.md)",
       "Bash(grep -n \"colorBodyVertex\\\\`            | 671\" ARCHITECTURE.md)",
       "PowerShell(Get-ChildItem src -Recurse -File | Select-Object FullName, LastWriteTime; Write-Output '---'; \\(Get-Item script.js\\).LastWriteTime)",
-      "PowerShell(git add *)"
+      "PowerShell(git add *)",
+      "PowerShell(node .claude/analyze-coverage.cjs)",
+      "PowerShell(node .claude/compare-extraction.cjs)",
+      "PowerShell(node .claude/check-imports.cjs)",
+      "PowerShell(node .claude/extract-modules.cjs)",
+      "PowerShell(node .claude/gen-imports.cjs --dry 2>&1 | Select-Object -First 120)",
+      "PowerShell(node .claude/gen-imports.cjs --dry 2>&1 | Select-Object -Skip 120)",
+      "PowerShell(node .claude/lint-report.cjs)",
+      "PowerShell(node .claude/verify-refactor.cjs)",
+      "PowerShell(npm root *)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-refactor.cjs)",
+      "PowerShell(node .claude/lint-report.cjs 2>&1 | Select-Object -Last 3; node .claude/check-imports.cjs; $env:NODE_PATH = npm root -g; node .claude/verify-refactor.cjs)",
+      "PowerShell(node .claude/find-tdz.cjs)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-water.cjs 2>&1 | Select-Object -Last 30)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-venus.cjs 2>&1 | Select-Object -Last 25)",
+      "PowerShell(git *)",
+      "PowerShell(node .claude/add-headers.cjs; node .claude/lint-report.cjs 2>&1 | Select-Object -Last 2)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-refactor.cjs 2>&1 | Select-String 'errors|landed|focus|exited|map')"
     ]
   }
 }

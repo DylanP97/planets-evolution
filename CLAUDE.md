@@ -43,7 +43,7 @@ node .claude/verify-water.cjs      # wade/swim/underwater overlay scenario
 node .claude/verify-venus.cjs      # venusian biomes + footprint decals
 ```
 
-Static checks (ESLint in `.claude/tooling/`):
+Static checks (ESLint in `.claude/tooling/` — first time, run `npm install` in that folder):
 
 ```powershell
 node .claude/lint-report.cjs       # no-undef + no-import-assign over src/
@@ -52,6 +52,11 @@ node .claude/find-tdz.cjs          # scan for the ui-cycle TDZ hazard
 ```
 
 In-app console diagnostics: `window.grassDiag()`, `window.footDiag()`.
+
+## Git
+
+- **Do not create new branches unless the user explicitly asks for one.** Work directly on the current branch (usually `main`).
+- Verify-script screenshots/logs land in `.claude/` and are gitignored — don't commit them.
 
 ## Docs to keep in sync
 
