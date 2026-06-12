@@ -28,7 +28,7 @@ export function loadCityTemplate() {
   const loader = new GLTFLoader();
   cityTemplateLoading = new Promise((resolve, reject) => {
     loader.load(
-      'lunar_base.glb',
+      'assets/lunar_base.glb',
       (gltf) => {
         const root = gltf.scene;
         const bbox = new THREE.Box3().setFromObject(root);

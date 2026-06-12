@@ -13,9 +13,9 @@ import { surfaceState } from './core.js';
 // like Wave. Clip names are fuzzy-matched, so any rigged+animated GLB
 // (e.g. a Mixamo export) can be dropped in as a replacement; an UNRIGGED
 // static mesh falls back to procedural bob + lean so it still reads as
-// moving. (astronaut.glb is the old model: textured but missing a Jump
+// moving. (The old astronaut.glb was removed: textured but missing a Jump
 // clip, which is why jumps used to freeze in the idle pose.)
-export const ASTRO_MODEL_URL = 'character.glb';
+export const ASTRO_MODEL_URL = 'assets/character.glb';
 export const ASTRO_CLIPS = { idle: 'Idle', walk: 'Walking', run: 'Running', jump: 'Jump' };
 // The model's local forward axis. Flip sign if the avatar faces the camera
 // instead of showing its back. RobotExpressive faces +Z, so we use +1
@@ -132,7 +132,7 @@ export function loadAstronaut() {
       if (animated) {
         console.info('[surface] astronaut clips:', Object.keys(actions).join(', '));
       } else {
-        console.info('[surface] astronaut.glb has no usable clips — using procedural motion');
+        console.info('[surface] avatar GLB has no usable clips — using procedural motion');
       }
       resolve(astronaut);
     }, undefined, (err) => {

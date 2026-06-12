@@ -17,7 +17,7 @@ For the code layout (module map, data model, frame lifecycle), see [ARCHITECTURE
 | Runtime | Vanilla **ES modules** (no npm / no bundler) |
 | 3D | **[Three.js](https://threejs.org/)** `0.160.0` via CDN **import map** (`index.html`) |
 | Controls | `OrbitControls` (three/addons) |
-| Assets | `GLTFLoader` — probes (`3d_objects/satellite.glb`), cities (`lunar_base.glb`), avatar (`character.glb`), surface props (`assets/*.glb`) |
+| Assets | `GLTFLoader` — all GLB models in `assets/` (satellite, colony, avatar, surface props) |
 | Shaders | Custom GLSL (gas, plasma/corona, rings, water, ground decals) |
 | UI | Plain DOM + tabbed left panel, info panel, bottom nav, star-map overlays |
 | Styling | `style.css` (CSS variables, HUD theme) |
@@ -51,7 +51,7 @@ Any static server on the project root works (e.g. `python -m http.server`).
 | `src/background/` | Starfield, Milky Way band, solar eruptions |
 | `src/modes/` | Focus + the surface-walk feature (`surface/*`) |
 | `src/ui/` | Panels, sliders, roster, nav, naming, star map |
-| `assets/`, `*.glb`, `3d_objects/` | GLB models (props, avatar, colony, satellite) |
+| `assets/` | All GLB models (props, avatar, colony, satellite) |
 | `ARCHITECTURE.md` | Maintainer map: modules, data model, frame lifecycle |
 | `CLAUDE.md` | Quick-start + conventions for AI coding agents |
 

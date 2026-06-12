@@ -34,7 +34,7 @@ export function loadSatelliteTemplate() {
   const loader = new GLTFLoader();
   satelliteTemplateLoading = new Promise((resolve, reject) => {
     loader.load(
-      '3d_objects/satellite.glb',
+      'assets/satellite.glb',
       (gltf) => {
         const root = gltf.scene;
         // Center the model on its bounding-box center so orbit pivot is sane.

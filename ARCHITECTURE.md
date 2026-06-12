@@ -13,10 +13,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `index.html`      | Canvas, tabbed left panel, info panel (right), bottom nav, surface overlay, importmap. |
 | `style.css`       | All styling. CSS variables drive the sci-fi HUD theme.                         |
 | `src/`            | The whole runtime, ~50 ES modules (map below).                                 |
-| `assets/`         | `tree.glb`, `pine.glb`, `rock.glb` — surface-walk props.                       |
-| `3d_objects/`     | `satellite.glb` for probe meshes (other formats are unused source).            |
-| `character.glb`   | The surface-walk avatar (three.js RobotExpressive).                            |
-| `lunar_base.glb`  | Colony / city marker mesh.                                                     |
+| `assets/`         | All GLB models: `character.glb` (avatar, three.js RobotExpressive), `satellite.glb` (probes), `lunar_base.glb` (colonies), `tree.glb`/`pine.glb`/`rock.glb` (surface props). |
 | `ARCHITECTURE.md` | This file. Update the module map when modules move.                            |
 
 ---
@@ -306,7 +303,7 @@ The scene holds one star system at a time. `galaxy` is a constellations → star
 
 ### GLB loading
 
-`3d_objects/satellite.glb` (probes), `lunar_base.glb` (cities), `character.glb` (avatar), `assets/*.glb` (props) — all lazily loaded once, normalized/grounded, then `.clone(true)`d per instance. Fallback primitives show until the load resolves.
+All models live in `assets/`: `satellite.glb` (probes), `lunar_base.glb` (cities), `character.glb` (avatar), `tree/pine/rock.glb` (props) — all lazily loaded once, normalized/grounded, then `.clone(true)`d per instance. Fallback primitives show until the load resolves.
 
 ---
 
