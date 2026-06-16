@@ -1,13 +1,13 @@
-// Left-panel tab switching, sculpt/biome/gas-paint controls, and most of the
-// left panel’s DOM element refs.
+// Left-panel tab switching, sculpt/biome/gas-paint controls, slider→value
+// conversions, and most of the left panel’s DOM element refs.
 import { setCurrentTool, setPaused } from '../framework/state.js';
 
 import {
   setActiveBrushBody, setActiveVortex, setBrushRadius, setBrushRaise, setBrushStrength, setCurrentArchetype, setGasPaintModeState, setIsPainting, setLastHitLocal, setSelectedGasBiomeId
 } from '../framework/state.js';
 
-import { BIOME, MOON_BIOME_OPTIONS } from '../core/constants.js';
-import { ARCHETYPES } from '../framework/archetypes.js';
+import { BIOME, MOON_BIOME_OPTIONS, ARCHETYPE_BAND_LABELS } from '../core/constants.js';
+import { ARCHETYPES, ARCHETYPE_MATTER } from '../framework/archetypes.js';
 import {
   activeBrushBody, activeVortex, brushRadius, brushRaise, brushStrength, currentArchetype, currentTool, focusedBody, gasPaintColor, gasPaintMode, isPainting, lastHitLocal, paused, selectedBiome, selectedGasBiomeId, setSelectedBiome
 } from '../framework/state.js';
@@ -16,7 +16,6 @@ import {
   GAS_BIOMES, clearGasFeatures, gasBiomeById, gasBiomesForArchetype, randomizeGasBands
 } from '../shaders/gas.js';
 import { orbitLinesGroup } from '../system/orbits.js';
-import { sliderToBrushRadius, sliderToBrushStrength, syncGenLabels } from './atmo-rings.js';
 import { updateInfoPanel } from './info-panel.js';
 
 // ====== 25. UI (tabs + sliders) ======
@@ -70,10 +69,6 @@ export const sculptRaiseBtn     = document.getElementById('sculptRaise');
 export const sculptLowerBtn     = document.getElementById('sculptLower');
 
 export const pauseRotInput      = document.getElementById('pauseRot');
-export const moonsListEl        = document.getElementById('moonsList');
-export const addMoonBtn         = document.getElementById('addMoon');
-export const probesListEl       = document.getElementById('probesList');
-export const addProbeBtn        = document.getElementById('addProbe');
 export const seedInput          = document.getElementById('seedInput');
 export const genAmpInput        = document.getElementById('genAmp');
 export const genAmpVal          = document.getElementById('genAmpVal');
@@ -81,11 +76,22 @@ export const genSeaInput        = document.getElementById('genSea');
 export const genSeaVal          = document.getElementById('genSeaVal');
 export const regenBtn           = document.getElementById('regenBtn');
 export const randomSeedBtn      = document.getElementById('randomSeedBtn');
-export const focusPlanetBtn     = document.getElementById('focusPlanet');
-export const focusNameEl        = document.getElementById('focusName');
 
 export const satellitesContext  = document.getElementById('satellitesContext');
 export const archetypeSelect    = document.getElementById('archetypeSelect');
+
+// Slider→value conversions shared by the brush, generator, and regen flows.
+export function sliderToBrushRadius(v) { return v / 100; }
+export function sliderToBrushStrength(v) { return v / 10; }
+export function sliderToAmplitude(v) { return v / 10; }
+export function sliderToSeaCoverage(v) { return v / 100; }
+
+export function syncGenLabels() {
+  genAmpVal.textContent = sliderToAmplitude(parseInt(genAmpInput.value, 10)).toFixed(1);
+  genSeaVal.textContent = genSeaInput.value + '%';
+}
+// genAmp/genSea label wiring + the initial syncGenLabels() call live in
+// ui/wire-up.js with the rest of the one-shot wiring.
 
 archetypeSelect.onchange = () => {
   setCurrentArchetype(archetypeSelect.value);
@@ -102,19 +108,41 @@ archetypeSelect.onchange = () => {
 // Rebuild the Environment tab's biome <select> for the focused body. Moons
 // and planets have different palettes; archetype also restricts the menu
 // (e.g. desert planets get desert + tundra only). Call after any focus change.
+// The five planet elevation bands as paint options, named for `archKey` via
+// ARCHETYPE_BAND_LABELS (Ocean/Coast/Grass/Rock/Snow on Earth, Magma/Cinder/…
+// on a lava world). These paint the generic BAND_* biomes, which reproduce the
+// body's own palette so a painted band matches the archetype's natural ground.
+const BAND_BIOME_OF_KEY = {
+  water: BIOME.BAND_WATER, sand: BIOME.BAND_SAND, grass: BIOME.BAND_GRASS,
+  rock:  BIOME.BAND_ROCK,  snow: BIOME.BAND_SNOW,
+};
+function bandOptionsForArch(archKey) {
+  const labels = ARCHETYPE_BAND_LABELS[archKey] || ARCHETYPE_BAND_LABELS.terrestrial;
+  return ['water', 'sand', 'grass', 'rock', 'snow'].map(k => ({ v: BAND_BIOME_OF_KEY[k], n: labels[k] }));
+}
+// Moon natural bands (crater→highland gradient); rock is the shared BAND_ROCK.
+const MOON_BAND_OPTIONS = [
+  { v: BIOME.BAND_CRATER,    n: 'Crater' },
+  { v: BIOME.BAND_DUST,      n: 'Dust' },
+  { v: BIOME.BAND_ROCK,      n: 'Rock' },
+  { v: BIOME.BAND_HIGHLIGHT, n: 'Highlands' },
+];
+
 export function updateBiomeTools() {
   const select = document.getElementById('biomeSelect');
   const hint = document.getElementById('biomeHint');
   select.innerHTML = '<option value="0">Natural State</option>';
+  const addOptions = list => list.forEach(opt => {
+    const el = document.createElement('option');
+    el.value = opt.v;
+    el.textContent = opt.n;
+    select.appendChild(el);
+  });
 
   // Moons get a deliberately tiny biome palette — focus drives the choice.
   if (focusedBody && focusedBody.kind === 'moon') {
-    MOON_BIOME_OPTIONS.forEach(opt => {
-      const el = document.createElement('option');
-      el.value = opt.v;
-      el.textContent = opt.n;
-      select.appendChild(el);
-    });
+    addOptions(MOON_BAND_OPTIONS);
+    addOptions(MOON_BIOME_OPTIONS);
     if (hint) hint.textContent = `Lunar palette · painting on ${focusedBody.name}`;
     select.value = 0;
     setSelectedBiome(0);
@@ -122,8 +150,12 @@ export function updateBiomeTools() {
   }
 
   const options = {
+    // Grass + Coast are provided by the natural-band options (Grass/Coast slots),
+    // so the terrestrial extras are just the climate/vegetation biomes.
     terrestrial: [
-      {v: 1, n: 'Forest'}, {v: 2, n: 'Desert'}, {v: 4, n: 'Tundra'}
+      {v: BIOME.FOREST, n: 'Forest'},   {v: BIOME.JUNGLE, n: 'Jungle'},
+      {v: BIOME.TUNDRA, n: 'Tundra'},   {v: BIOME.ICE, n: 'Ice'},
+      {v: BIOME.DESERT, n: 'Desert'}
     ],
     ocean: [
       {v: 11, n: 'Coral Reef'}, {v: 12, n: 'Kelp Forest'}, {v: 13, n: 'Abyssal Trench'}
@@ -132,7 +164,7 @@ export function updateBiomeTools() {
       {v: 5, n: 'Obsidian'}, {v: 6, n: 'Magma Flow'}, {v: 14, n: 'Sulfur Vent'}
     ],
     desert: [
-      {v: 15, n: 'Oasis'}, {v: 16, n: 'Ancient Ruins'}, {v: 17, n: 'Red Sand'}
+      {v: 17, n: 'Red Sand'}
     ],
     ice_planet: [
       {v: 18, n: 'Glacier'}, {v: 19, n: 'Cryo-Volcano'}, {v: 20, n: 'Blue Ice'}
@@ -166,20 +198,23 @@ export function updateBiomeTools() {
   const archKey = (focusedBody && focusedBody.kind === 'planet')
     ? (focusedBody.archetype || 'terrestrial')
     : currentArchetype;
-  // No fallback to terrestrial: archetypes without a dedicated biome list
-  // get only Natural State, which is more honest than showing wrong biomes.
+  // Solid-surfaced planets get their five natural elevation bands (named for the
+  // archetype) on top of the archetype's special biomes; full-gas worlds (gas/ice
+  // giants) have no surface to paint, so they fall through to Natural State only.
+  const solid = (focusedBody && focusedBody.kind === 'planet' && focusedBody.matter)
+    ? focusedBody.matter.solid
+    : !!(ARCHETYPE_MATTER[archKey] && ARCHETYPE_MATTER[archKey].solid);
+  // No fallback to terrestrial: archetypes without a dedicated biome list still
+  // get the natural bands when solid, which is more honest than wrong biomes.
+  const bandOptions = solid ? bandOptionsForArch(archKey) : [];
   const archOptions = options[archKey] || [];
-  archOptions.forEach(opt => {
-    const el = document.createElement('option');
-    el.value = opt.v;
-    el.textContent = opt.n;
-    select.appendChild(el);
-  });
+  addOptions(bandOptions);
+  addOptions(archOptions);
 
   if (hint) {
     const archName = (ARCHETYPES[archKey] && ARCHETYPES[archKey].name) || 'Surface';
     const bodyName = focusedBody && focusedBody.kind === 'planet' ? focusedBody.name : 'planet';
-    hint.textContent = archOptions.length
+    hint.textContent = (bandOptions.length + archOptions.length)
       ? `${archName} palette · painting on ${bodyName}`
       : `${archName} · no surface biomes available`;
   }
@@ -187,8 +222,6 @@ export function updateBiomeTools() {
   select.value = 0;
   setSelectedBiome(0);
 }
-export const cityNameInput      = document.getElementById('cityNameInput');
-
 randomSeedBtn.onclick = () => {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let newSeed = '';

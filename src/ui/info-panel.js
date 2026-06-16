@@ -1,74 +1,25 @@
 // Right-hand telemetry panel: composition rollup, climate section, rotation
 // and orbit readouts (updateInfoPanel + throttled updateLiveInfo).
 import {
-  BIOME, BODY_HEIGHT_SCALE, COL, GRASS_TOP, ROCK_TOP, SAND_TOP, SEA_ICE_C, SEA_LEVEL, SEA_VAPOR_C
+  BODY_HEIGHT_SCALE, COL,
+  COMP_DISPLAY, PLANET_COMP_ORDER, MOON_COMP_ORDER, BAND_KEY_TO_PALETTE, ARCHETYPE_BAND_LABELS,
+  BIOME_LABELS, BIOME_SWATCH
 } from '../core/constants.js';
 import { systemName } from '../core/names.js';
 import { DEFAULT_MOON_SPEED, MOON_REF_DISTANCE } from '../entities/moons.js';
-import { CLIMATE_LAND_ZONES, pickLandZone, vertexTempC } from '../framework/body.js';
+import { compKeyAt } from '../framework/body.js';
 import { computeClimate, fmtTemp, surfaceGravityG, tempColor } from '../framework/climate.js';
-import { focusedBody, moons, planets } from '../framework/state.js';
-import { focusedProbe } from '../modes/focus.js';
+import { focusedBody, focusedProbe, moons, planetCurrentSeed, planets } from '../framework/state.js';
 import { GAS_BAND_COUNT, gasBiomeById } from '../shaders/gas.js';
 import { DEFAULT_SPIN } from '../system/planets.js';
 
 // ====== 23. Info panel ======
-export let planetCurrentSeed = 'planet';
-export function setPlanetCurrentSeed(v) { planetCurrentSeed = v; }
+// (planetCurrentSeed lives in framework/state.js.)
 
-// Category metadata: label + swatch color (matches the in-world palette). Covers
-// both "auto" (height-band) and biome-painted categories for planets and moons.
-export const COMP_DISPLAY = {
-  water:     { label: 'Water',       color: '#3FA1DC' },
-  sand:      { label: 'Sand',        color: '#EDDFB8' },
-  grass:     { label: 'Grass',       color: '#4FAE4F' },
-  rock:      { label: 'Rock',        color: '#7d6a5a' },
-  snow:      { label: 'Snow',        color: '#f0f4f8' },
-  forest:    { label: 'Forest',      color: '#1a4d1a' },
-  desert:    { label: 'Desert',      color: '#d2b48c' },
-  city:      { label: 'Settlements', color: '#808080' },
-  // Climate land biomes (terrestrial latitude zones). Colors mirror
-  // CLIMATE_LAND_ZONES so the swatch matches the painted surface.
-  ice:       { label: 'Ice',         color: '#daf2ff' },
-  tundra:    { label: 'Tundra',      color: '#8f9e76' },
-  jungle:    { label: 'Jungle',      color: '#15702a' },
-  // Sea-state categories (water oceans only): a frozen-over sea and a basin
-  // the heat has boiled dry. Colors mirror SEA_ICE_COLOR / SEABED_COLOR.
-  seaice:    { label: 'Sea Ice',     color: '#cfe6f0' },
-  seabed:    { label: 'Dry Seabed',  color: '#cabfa3' },
-  crater:    { label: 'Crater',      color: '#322e29' },
-  dust:      { label: 'Dust',        color: '#6f6357' },
-  highlight: { label: 'Highlights',  color: '#e2dccf' },
-  mare:      { label: 'Mare',        color: '#2a2a30' },
-  regolith:  { label: 'Regolith',    color: '#c4b8a0' },
-  frost:     { label: 'Frost',       color: '#d8e8f0' },
-};
-export const PLANET_COMP_ORDER = ['water', 'seaice', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'seabed', 'rock', 'snow', 'city'];
-export const MOON_COMP_ORDER   = ['crater', 'dust', 'rock', 'highlight', 'mare', 'regolith', 'frost', 'city'];
-
-// Per-archetype labels for the auto-painted height bands. Without these, a
-// desert planet reports "Grass" for its mid-elevation band even though that
-// band is colored desert-tan — confusing because no green is visible.
-export const BAND_KEY_TO_PALETTE = { water: 'deep', sand: 'sand', grass: 'grass', rock: 'rock', snow: 'snow' };
-export const ARCHETYPE_BAND_LABELS = {
-  terrestrial: { water: 'Ocean',      sand: 'Coast',      grass: 'Grass',      rock: 'Rock',       snow: 'Snow' },
-  ocean:       { water: 'Abyss',      sand: 'Deep',       grass: 'Sea',        rock: 'Shoal',      snow: 'Foam' },
-  gas_giant:   { water: 'Deep Band',  sand: 'Lower Cloud',grass: 'Mid Cloud',  rock: 'Storm Belt', snow: 'High Cloud' },
-  ice_giant:   { water: 'Deep Ice',   sand: 'Ice Shelf',  grass: 'Ice Plain',  rock: 'Ridge',      snow: 'Frost Crown' },
-  desert:      { water: 'Basin',      sand: 'Dunes',      grass: 'Flats',      rock: 'Mesa',       snow: 'Salt Peak' },
-  lava:        { water: 'Magma',      sand: 'Cinder',     grass: 'Lava Plain', rock: 'Basalt',     snow: 'Ash' },
-  ice_planet:  { water: 'Subglacial', sand: 'Snowfield',  grass: 'Pack Ice',   rock: 'Glacier',    snow: 'Ice Peak' },
-  jungle:      { water: 'River',      sand: 'Bank',       grass: 'Jungle',     rock: 'Highland',   snow: 'Canopy' },
-  swamp:       { water: 'Bog',        sand: 'Marsh',      grass: 'Mossland',   rock: 'Ridge',      snow: 'Mist' },
-  toxic:       { water: 'Acid Sea',   sand: 'Sludge',     grass: 'Bloom',      rock: 'Spire',      snow: 'Vapor' },
-  venusian:    { water: 'Basalt Basin',sand: 'Basalt Slabs',grass: 'Volcanic Regolith', rock: 'Gravel Field', snow: 'Highland Tessera' },
-  metal:       { water: 'Slag Pit',   sand: 'Plate',      grass: 'Sheet',      rock: 'Ridge',      snow: 'Vein' },
-  carbon:      { water: 'Tar',        sand: 'Ash Flat',   grass: 'Soot Plain', rock: 'Diamond',    snow: 'Carbon Peak' },
-  moon_like:   { water: 'Crater Floor',sand: 'Dust Plain', grass: 'Regolith',   rock: 'Highland',   snow: 'Frost Cap' },
-  storm:       { water: 'Squall Sea', sand: 'Foam',       grass: 'Plain',      rock: 'Ridge',      snow: 'Cyclone' },
-  living:      { water: 'Blood Sea',  sand: 'Vein',       grass: 'Flesh',      rock: 'Bone',       snow: 'Organ' },
-  rogue:       { water: 'Void',       sand: 'Dust',       grass: 'Plain',      rock: 'Ridge',      snow: 'Peak' },
-};
+// COMP_DISPLAY / PLANET_COMP_ORDER / MOON_COMP_ORDER / BAND_KEY_TO_PALETTE /
+// ARCHETYPE_BAND_LABELS now live in core/constants.js (imported above) so the
+// surface minimap + orbit hover tooltip can name ground identically via
+// body.js's compKeyAt + bandLabel. This module owns only the swatch rendering.
 
 export function hexFromNumber(n) {
   return '#' + (n >>> 0).toString(16).padStart(6, '0');
@@ -101,49 +52,11 @@ export function bandMeta(body, key) {
 export function computeBodyStats(body) {
   let peak = -Infinity;
   const counts = {};
-  const hasBiomes = body.biomes != null;
-  // Mirror colorBodyVertex: on climate-zoned worlds the auto land band is
-  // named by latitude (ice/tundra/grass/jungle) rather than elevation, so the
-  // composition rollup matches what's actually painted on the surface.
-  const climateZoned = body.kind === 'planet' && body.climate && body.climate.spread > 0.5;
-  const zones = climateZoned ? CLIMATE_LAND_ZONES[body.archetype] : null;
-  // Water seas report their frozen / boiled-dry state so the rollup matches
-  // what the ocean sphere shows (see colorOceanByClimate).
-  const seaWater = climateZoned && body.matter && body.matter.liquid && body.oceanIsWater;
+  // Per-vertex bucket comes from the shared classifier in body.js, so the panel
+  // rollup, the surface minimap and the orbit hover tooltip all agree.
   for (let i = 0; i < body.N; i++) {
-    const h = body.heights[i];
-    if (h > peak) peak = h;
-    const b = hasBiomes ? body.biomes[i] : 0;
-    let key;
-    if (b === 1) key = 'forest';
-    else if (b === 2) key = 'desert';
-    else if (b === 3) key = 'city';
-    else if (b === 4) key = 'tundra';
-    else if (b === BIOME.MARE) key = 'mare';
-    else if (b === BIOME.REGOLITH) key = 'regolith';
-    else if (b === BIOME.FROST) key = 'frost';
-    else if (body.kind === 'planet') {
-      if (h < SEA_LEVEL) {
-        if (seaWater) {
-          const tC = vertexTempC(body, i);
-          key = tC >= SEA_VAPOR_C ? 'seabed' : (tC <= SEA_ICE_C ? 'seaice' : 'water');
-        } else key = 'water';
-      }
-      else if (h >= ROCK_TOP) key = 'snow';
-      else if (zones) {
-        const z = pickLandZone(zones, vertexTempC(body, i));
-        // Warm zones show a sandy shore at the waterline (matches coloring).
-        key = (z.beach && h < SAND_TOP) ? 'sand' : z.key;
-      }
-      else if (h < SAND_TOP) key = 'sand';
-      else if (h < GRASS_TOP) key = 'grass';
-      else key = 'rock';
-    } else {
-      if (h < 0) key = 'crater';
-      else if (h < GRASS_TOP) key = 'dust';
-      else if (h < ROCK_TOP) key = 'rock';
-      else key = 'highlight';
-    }
+    if (body.heights[i] > peak) peak = body.heights[i];
+    const key = compKeyAt(body, i);
     counts[key] = (counts[key] || 0) + 1;
   }
   return { peak: peak === -Infinity ? 0 : peak, N: body.N, counts };
@@ -330,6 +243,21 @@ export function updateInfoPanel() {
         `<span class="comp-swatch" style="background:${meta.color}"></span>` +
         `<span>${meta.label}</span>` +
         `<span class="comp-pct">${fmtPct(count, stats.N)}</span>` +
+        `</div>`
+      );
+    }
+    // Painted biomes with no natural-band equivalent (compKeyAt's 'biome:<code>'
+    // buckets) — Oasis, Obsidian, … — listed after the bands,
+    // dominant paint first, so the rollup reflects what was painted.
+    const biomeKeys = Object.keys(stats.counts).filter(k => k.startsWith('biome:'));
+    biomeKeys.sort((a, b) => stats.counts[b] - stats.counts[a]);
+    for (const key of biomeKeys) {
+      const code = +key.slice(6);
+      rows.push(
+        `<div class="comp-row">` +
+        `<span class="comp-swatch" style="background:${BIOME_SWATCH[code] || '#888888'}"></span>` +
+        `<span>${BIOME_LABELS[code] || 'Painted'}</span>` +
+        `<span class="comp-pct">${fmtPct(stats.counts[key], stats.N)}</span>` +
         `</div>`
       );
     }

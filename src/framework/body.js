@@ -4,9 +4,11 @@
 import * as THREE from 'three';
 import { 
   BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, MIN_LAND_HEIGHT, 
-  SAND_TOP, GRASS_TOP, ROCK_TOP, SNOW_FADE, 
+  SAND_TOP, GRASS_FLOOR, GRASS_TOP, ROCK_TOP, SNOW_FADE,
   KELVIN_ZERO_C, CLIMATE_LAPSE_C, SEA_LEVEL, SEABED_COLOR,
-  SEA_BOIL_C, SEA_VAPOR_C, COL, BIOME,
+  SEA_BOIL_C, SEA_VAPOR_C, SEA_ICE_C, COL, BIOME, BIOME_LABELS,
+  COMP_DISPLAY, ARCHETYPE_BAND_LABELS, BAND_KEY_TO_PALETTE,
+  BAND_BIOME_KEY, BAND_BIOME_SLOT,
   OCEAN_DEPTH_BOOST, TERRAIN_OCTAVES
 } from '../core/constants.js';
 import { RING_INNER_FACTOR, RING_OUTER_FACTOR } from '../shaders/ring.js';
@@ -213,6 +215,57 @@ export const CLIMATE_LAND_ZONES = {
   ],
 };
 
+// ── Canonical surface-biome classifier ─────────────────────────────────────
+// FACE_BIOME + groundBiomeOfFace are the SINGLE source of truth for "what biome
+// is this terrain face". The whole surface-detail layer keys off it (grass
+// variants in grass.js, which GLB props scatter where in props.js), the minimap
+// names the ground from it, and the orbit-mode hover tooltip does too — so all
+// of them always agree. It lives here in the framework layer (not in a surface
+// module) precisely so lower-layer consumers like interaction/ can import it
+// without an import cycle.
+//
+// Rules: hand-painted biomes win outright (explicit intent, on any archetype);
+// an unpainted face only carries a natural biome on terrestrial worlds, read
+// from beach/peak height bands + the climate zone. Moons and other archetypes'
+// unpainted ground return BARE. (Below-sea-level water is named by
+// biomeNameOfFace, which layers ocean depth on top of this.)
+export const FACE_BIOME = {
+  BARE: 0, GRASS: 1, FOREST: 2, JUNGLE: 3, TUNDRA: 4, ICE: 5, COAST: 6, DESERT: 7,
+};
+
+export function groundBiomeOfFace(body, f) {
+  if (body.kind !== 'planet') return FACE_BIOME.BARE;
+  switch (body.biomes[f.a]) {
+    case BIOME.FOREST:    return FACE_BIOME.FOREST;
+    case BIOME.GRASSLAND: return FACE_BIOME.GRASS;
+    case BIOME.JUNGLE:    return FACE_BIOME.JUNGLE;
+    case BIOME.TUNDRA:    return FACE_BIOME.TUNDRA;
+    case BIOME.ICE:       return FACE_BIOME.ICE;
+    case BIOME.COAST:     return FACE_BIOME.COAST;
+    case BIOME.DESERT:    return FACE_BIOME.DESERT;
+    case BIOME.BAND_GRASS: return FACE_BIOME.GRASS;           // grass band grows grass/props
+    case BIOME.BAND_SAND:  return FACE_BIOME.COAST;           // sand band reads as sandy coast
+    case BIOME.AUTO:      break;                              // natural ground: classify below
+    default:              return FACE_BIOME.BARE;             // exotic painted biomes grow nothing
+  }
+  if (body.archetype !== 'terrestrial') return FACE_BIOME.BARE;
+  const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+  if (h >= ROCK_TOP)     return FACE_BIOME.BARE;              // rock / snow peaks
+  if (h < GRASS_FLOOR)   return FACE_BIOME.COAST;             // sandy beach near the sea
+  const zoned = body.climate && body.climate.spread > 0.5 && CLIMATE_LAND_ZONES[body.archetype];
+  if (zoned) {
+    switch (pickLandZone(CLIMATE_LAND_ZONES[body.archetype], vertexTempC(body, f.a)).key) {
+      case 'jungle': return FACE_BIOME.JUNGLE;
+      case 'grass':  return FACE_BIOME.GRASS;
+      case 'tundra': return FACE_BIOME.TUNDRA;
+      case 'ice':    return FACE_BIOME.ICE;
+      case 'desert': return FACE_BIOME.DESERT;
+      default:       return FACE_BIOME.BARE;
+    }
+  }
+  return h < GRASS_TOP ? FACE_BIOME.GRASS : FACE_BIOME.BARE;  // unzoned plain grass band
+}
+
 export function colorBodyVertex(body, i) {
   const h = body.heights[i];
   const b = body.biomes[i];
@@ -220,10 +273,27 @@ export function colorBodyVertex(body, i) {
   let c;
   if (body.glowArr) body.glowArr[i] = 0;
 
+  // Generic "natural band" paints reproduce an auto terrain band from the body's
+  // own palette slot, so they match whatever the archetype's natural ground looks
+  // like (Rock→basalt on lava, rock-brown on Earth, …). Handled before the
+  // fixed-color biomes below.
+  const bandSlot = BAND_BIOME_SLOT[b];
+  if (bandSlot !== undefined) {
+    c = new THREE.Color((p && p[bandSlot]) ?? COL.rock);
+    body.colorArr[3 * i]     = c.r;
+    body.colorArr[3 * i + 1] = c.g;
+    body.colorArr[3 * i + 2] = c.b;
+    return;
+  }
+
   if (b === BIOME.FOREST) {
     c = new THREE.Color(COL.forest);
     const mix = smoothstep(GRASS_TOP, ROCK_TOP, h);
     c.lerp(new THREE.Color(COL.grassDark), mix * 0.3);
+  } else if (b === BIOME.GRASSLAND) {
+    c = new THREE.Color(COL.grass);
+    const mix = smoothstep(GRASS_TOP, ROCK_TOP, h);   // greens grade toward rock on slopes
+    c.lerp(new THREE.Color(p.rock), mix * 0.5);
   } else if (b === BIOME.DESERT) {
     c = new THREE.Color(COL.desert);
     const mix = smoothstep(SEA_LEVEL, SAND_TOP, h);
@@ -231,6 +301,17 @@ export function colorBodyVertex(body, i) {
   } else if (b === BIOME.TUNDRA) {
     c = new THREE.Color(COL.snow);
     c.lerp(new THREE.Color(COL.shore), 0.1);
+  } else if (b === BIOME.JUNGLE) {
+    c = new THREE.Color(0x15702a);                    // deep tropical green
+    const mix = smoothstep(GRASS_TOP, ROCK_TOP, h);   // grade toward rock on slopes
+    c.lerp(new THREE.Color(p.rock), mix * 0.5);
+  } else if (b === BIOME.ICE) {
+    c = new THREE.Color(0xdaf2ff);                     // pale glacial blue
+    if (body.glowArr) body.glowArr[i] = 0.55;
+  } else if (b === BIOME.COAST) {
+    c = new THREE.Color(COL.sand);                     // sandy beach
+    const wet = smoothstep(SAND_TOP, SEA_LEVEL, h);   // damp/darker toward the waterline
+    c.lerp(new THREE.Color(COL.shore), wet * 0.5);
   } else if (b === 5) { // Obsidian
     c = new THREE.Color(0x1a1a1a);
   } else if (b === 6) { // Magma Flow
@@ -253,9 +334,6 @@ export function colorBodyVertex(body, i) {
     c = new THREE.Color(0xffff00);
   } else if (b === 15) { // Oasis
     c = new THREE.Color(0x228b22);
-  } else if (b === 16) { // Ancient Ruins
-    c = new THREE.Color(0x808080);
-    if ((i * 11) % 10 > 7) c = new THREE.Color(0x00f2ff);
   } else if (b === 17) { // Red Sand
     c = new THREE.Color(0x8b0000);
   } else if (b === 18) { // Glacier
@@ -346,6 +424,99 @@ export function colorBodyVertex(body, i) {
   body.colorArr[3 * i + 2] = c.b;
 }
 
+// ── Composition classifier (the single source of truth for terrain naming) ──
+// compKeyAt returns the composition KEY for vertex `i` — exactly the bucket the
+// info-panel composition rollup tallies, mirroring colorBodyVertex: painted
+// biomes first, then below-sea-level water (incl. frozen sea-ice / boiled-dry
+// seabed on water oceans), snow peaks, the climate latitude zone (or, unzoned,
+// plain elevation bands), and the moon crater→highland gradient. The panel, the
+// surface minimap and the orbit hover tooltip all name ground through this, so
+// they can never disagree.
+// Painted biomes whose composition folds into a natural elevation/climate band
+// (so e.g. hand-painted Forest tallies with the natural forest band). Every
+// OTHER painted biome — Oasis, Obsidian, Coral Reef, … — has no
+// natural-band equivalent, so compKeyAt buckets it under its own 'biome:<code>'
+// key, which the info panel names from BIOME_LABELS and swatches from
+// BIOME_SWATCH. Without this, painting those biomes left the rollup unchanged.
+const PAINT_TO_BAND = {
+  [BIOME.FOREST]:    'forest',
+  [BIOME.GRASSLAND]: 'grass',
+  [BIOME.DESERT]:    'desert',
+  [BIOME.TUNDRA]:    'tundra',
+  [BIOME.JUNGLE]:    'jungle',
+  [BIOME.ICE]:       'ice',
+  [BIOME.COAST]:     'sand',
+  [BIOME.MARE]:      'mare',
+  [BIOME.REGOLITH]:  'regolith',
+  [BIOME.FROST]:     'frost',
+  // Generic band paints fold into the natural band they reproduce.
+  ...BAND_BIOME_KEY,
+};
+
+export function compKeyAt(body, i) {
+  const b = body.biomes ? body.biomes[i] : 0;
+  if (b !== BIOME.AUTO) return PAINT_TO_BAND[b] || ('biome:' + b);
+
+  const h = body.heights[i];
+  if (body.kind === 'planet') {
+    const climateZoned = body.climate && body.climate.spread > 0.5;
+    const zones = climateZoned ? CLIMATE_LAND_ZONES[body.archetype] : null;
+    const seaWater = climateZoned && body.matter && body.matter.liquid && body.oceanIsWater;
+    if (h < SEA_LEVEL) {
+      if (seaWater) {
+        const tC = vertexTempC(body, i);
+        return tC >= SEA_VAPOR_C ? 'seabed' : (tC <= SEA_ICE_C ? 'seaice' : 'water');
+      }
+      return 'water';
+    }
+    if (h >= ROCK_TOP) return 'snow';
+    if (zones) {
+      const z = pickLandZone(zones, vertexTempC(body, i));
+      return (z.beach && h < SAND_TOP) ? 'sand' : z.key;   // warm zones show a sandy shore
+    }
+    if (h < SAND_TOP)  return 'sand';
+    if (h < GRASS_TOP) return 'grass';
+    return 'rock';
+  }
+  if (h < 0)         return 'crater';
+  if (h < GRASS_TOP) return 'dust';
+  if (h < ROCK_TOP)  return 'rock';
+  return 'highlight';
+}
+
+// Display label for a composition key on `body` — identical to what the info
+// panel shows: the five elevation bands are renamed per archetype (Ocean/Coast
+// /Grass… on Earth, Magma/Cinder/Lava Plain… on a lava world), everything else
+// uses its fixed COMP_DISPLAY name (Sea Ice, Ice, Tundra, Jungle, Crater, …).
+export function bandLabel(body, key) {
+  if (body.kind === 'planet' && BAND_KEY_TO_PALETTE[key]) {
+    const labels = ARCHETYPE_BAND_LABELS[body.archetype] || ARCHETYPE_BAND_LABELS.terrestrial;
+    return labels[key] || (COMP_DISPLAY[key] && COMP_DISPLAY[key].label) || key;
+  }
+  return (COMP_DISPLAY[key] && COMP_DISPLAY[key].label) || key;
+}
+
+// Human-readable biome name for terrain face `f` — the single labelling path
+// shared by the surface minimap and the orbit-mode hover tooltip. Hand-painted
+// faces report their palette name from BIOME_LABELS (Forest…Obsidian); natural
+// ground is named exactly as the composition list does (compKeyAt + bandLabel),
+// so the hover/minimap and the right-panel rollup always agree. The face's
+// HIGHEST corner is the representative vertex, so a coastal face that straddles
+// the waterline is named for its land (Coast), never the water below it.
+export function biomeNameOfFace(body, f) {
+  const painted = body.biomes[f.a];
+  if (painted !== BIOME.AUTO) {
+    // Generic band paints carry no fixed label — name them per-archetype, the
+    // same way the natural band they reproduce is named.
+    if (BAND_BIOME_KEY[painted]) return bandLabel(body, BAND_BIOME_KEY[painted]);
+    return BIOME_LABELS[painted] || 'Painted';
+  }
+  let i = f.a;
+  if (body.heights[f.b] > body.heights[i]) i = f.b;
+  if (body.heights[f.c] > body.heights[i]) i = f.c;
+  return bandLabel(body, compKeyAt(body, i));
+}
+
 export function commitBodyChanges(body) {
   body.posAttr.needsUpdate = true;
   body.geo.attributes.color.needsUpdate = true;
@@ -383,6 +554,9 @@ export function applyMatterToBody(body, matterCfg, oceanCol) {
       u.uColor.value.setHex(matterCfg.gasCol || 0xffffff);
       u.uSkyTint.value.setHex(matterCfg.skyTint ?? matterCfg.gasCol ?? 0x87ceeb);
       u.uMode.value = matterCfg.gas === 'full' ? 1.0 : 0.0;
+      // Full-gas bodies are an opaque surface, not a translucent shell — let
+      // them write depth so they properly occlude what's behind them.
+      body.gasMesh.material.depthWrite = matterCfg.gas === 'full';
       u.uWindSpeed.value = matterCfg.windSpeed ?? 0.05;
       u.uWindMode.value  = body.windMode ? 1.0 : 0.0;
       if (matterCfg.gas === 'full') {
