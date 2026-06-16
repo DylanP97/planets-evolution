@@ -212,8 +212,8 @@ export const GAS_FRAG = /* glsl */ `
       vec3  baseCol = mix(uColor, bandCol, uUseBands);
       float bands = 0.5 + 0.5 * sin(warped.y * 6.0 + n * 2.5);
       col = mix(baseCol * 0.82, baseCol * 1.06, bands);
-      float core = smoothstep(0.0, 0.40, NdotV);
-      alpha = uDensity * core;
+      float core = smoothstep(0.0, 0.08, NdotV);
+      alpha = clamp(uDensity * mix(0.95, 1.0, core) + 0.12, 0.0, 1.0);
     }
 
     float light = inside

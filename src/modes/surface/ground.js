@@ -1,11 +1,11 @@
-// Near-field ground micro-relief patch + footprint decals (boot SDF stamped
-// in the fragment shader, ring buffer of FOOT_N prints).
+// Near-field ground micro-relief patch (currently DISABLED — see
+// ENABLE_GROUND_PATCH). Footprints used to live in this patch's shader; they
+// now have their own decoupled layer in footprints.js.
 import * as THREE from 'three';
-import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, SAND_TOP } from '../../core/constants.js';
-import { smoothstep } from '../../core/utils.js';
+import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT } from '../../core/constants.js';
 import { viewMode } from '../../framework/state.js';
 import { surfaceState } from './core.js';
-import { _gP, _gUp, _grDir, _grHit, _grOrigin, grassRaycaster } from './grass.js';
+import { _gP, _gUp, _grDir, _grHit, _grOrigin, grassRaycaster } from './scratch.js';
 
 // ── Near-field ground detail patch ──────────────────────────────────────
 // The base body mesh is one coarse icosphere (detail 7); up close its triangles
@@ -29,25 +29,15 @@ export const GP_GN          = 12;          // height/colour sample grid (GP_GN²
 export let groundPatch = null;
 export let groundPatchUniforms = null;
 
-// ── Footprints (soft-soil worlds) ──
-// Walking on soft ground leaves boot prints. Each print is a decal evaluated
-// in the ground patch's FRAGMENT shader (no extra meshes, no z-fighting):
-// an oriented boot shape (rounded sole + heel + tread bars) that darkens the
-// soil, throws up a pale rim of displaced regolith, and perturbs the shading
-// normal into a soft depression — so the soil visibly takes the print. The
-// prints live in the same ground-fixed treadmill coords (grassU/grassV) the
-// patch's micro-relief uses, so they stay put as the avatar walks away, and
-// they "settle" (fade) over about a minute. Ring buffer: oldest slot reused.
-export const FOOT_N    = 48;               // live print slots (vec4 uniform array)
-export const FOOT_LIFE = 70;               // seconds before a print fully settles away
-// Archetypes soft enough to print, with strength per band: `low` applies
-// below SAND_TOP (venusian slab flats barely dust over; the regolith and
-// dark soil above take a full print).
-export const FOOTPRINT_GROUND = {
-  venusian:  { strength: 1.0,  low: 0.4 },
-  desert:    { strength: 0.75, low: 0.75 },
-  moon_like: { strength: 0.9,  low: 0.9 },
-};
+// DISABLED. The patch is a translucent square plane laid over the coarse
+// terrain right around the avatar; it shaded differently from the ground it
+// covered, so it read as a dark square by day (and a pale square by night)
+// that tracked the camera on every world — the "square shadow/light around the
+// character" bug. Until its lighting is made to match the body mesh exactly,
+// we don't attach it. Footprints used to ride in this patch's shader; they now
+// live in their own decoupled layer (footprints.js), so they work even with the
+// patch off. Flip this to re-enable the micro-relief once the seam is fixed.
+export const ENABLE_GROUND_PATCH = false;
 
 export function buildGroundPatch() {
   const N = GROUND_PATCH_N;
@@ -55,9 +45,6 @@ export function buildGroundPatch() {
   // raycast samples we write actually reach the GPU (a separate uniform array
   // would stay all-zero → patch collapses to the body centre / invisible).
   const cell = new Float32Array(4 * GP_GN * GP_GN);
-  // Footprint slots, shared with the uFoot uniform the same way: per print
-  // vec4(u, v, yaw, fade) in ground-fixed tangent coords. fade==0 = empty.
-  const foot = new Float32Array(4 * FOOT_N);
   const geo = new THREE.PlaneGeometry(2, 2, N - 1, N - 1);
   geo.rotateX(-Math.PI / 2);        // lie flat in XZ; position.xz ∈ [-1,1] are the tangent coords
   const mat = new THREE.MeshStandardMaterial({
@@ -81,8 +68,6 @@ export function buildGroundPatch() {
     sh.uniforms.uEps       = { value: 0.01 };                      // finite-difference step for normals
     sh.uniforms.uReveal    = { value: 0 };                         // fade-in on attach
     sh.uniforms.uCell      = { value: cell };
-    sh.uniforms.uFoot      = { value: foot };                      // footprint decals (see above)
-    sh.uniforms.uFootLen   = { value: 0.05 };                      // boot length, body-local units
     groundPatchUniforms = sh.uniforms;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>',
@@ -93,10 +78,6 @@ export function buildGroundPatch() {
       + 'uniform float uDetailAmp;\nuniform float uDetailFreq;\nuniform float uEps;\n'
       + 'uniform vec4 uCell[' + (GP_GN * GP_GN) + '];\n'
       + 'varying float vEdge;\nvarying vec3 vGCol;\nvarying float vDet;\n'
-      // #ifndef-guarded: three.js can invoke onBeforeCompile more than once
-      // over an already-patched string (program variants), so bare varying
-      // declarations here would land twice → "redefinition" compile errors.
-      + '#ifndef FP_VARYINGS\n#define FP_VARYINGS\nvarying vec2 vWd;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n#endif\n'
       + 'float gHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n'
       + 'float gNoise(vec2 x){ vec2 i = floor(x); vec2 f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(mix(gHash(i), gHash(i + vec2(1.0,0.0)), f.x), mix(gHash(i + vec2(0.0,1.0)), gHash(i + vec2(1.0,1.0)), f.x), f.y); }\n'
       + 'float gFbm(vec2 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 4; k++){ s += a * gNoise(p); p *= 2.03; a *= 0.5; } return s; }\n'
@@ -121,61 +102,14 @@ export function buildGroundPatch() {
       + '  objectNormal = normalize(_pdir - (uPRight * _sx + uPFwd * _sy));\n'
       + '  vEdge = max(abs(_puv.x), abs(_puv.y));')
       .replace('#include <begin_vertex>',
-        '#include <begin_vertex>\n  transformed = _pdir * _ph;\n'
-      // Footprint plumbing: the ground-fixed coords for the decal lookup and
-      // the view-space patch tangents the depression normal is bent along.
-      + '  vWd = _wd;\n'
-      + '  vTanR = normalize(normalMatrix * uPRight);\n'
-      + '  vTanF = normalize(normalMatrix * uPFwd);\n');
+        '#include <begin_vertex>\n  transformed = _pdir * _ph;\n');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>',
-        '#include <common>\nvarying float vEdge;\nvarying vec3 vGCol;\nvarying float vDet;\nuniform float uReveal;\n'
-      + '#ifndef FP_VARYINGS\n#define FP_VARYINGS\nvarying vec2 vWd;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n#endif\n'
-      + 'uniform vec4 uFoot[' + FOOT_N + '];\nuniform float uFootLen;\n'
-      // Footprint accumulators, filled in color_fragment (which runs before
-      // normal_fragment_begin) and consumed there for the depression normal.
-      + 'float _fpDark = 0.0;\nfloat _fpRim = 0.0;\nvec2 _fpGrad = vec2(0.0);\n'
-      // Boot-print SDF in print-local coords (units of boot length, +y = direction
-      // of travel): a rounded-box sole up front and a round heel behind.
-      + 'float fpBox(vec2 p, vec2 b, float r){ vec2 d = abs(p) - b + r; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }\n'
-      + 'float fpSD(vec2 q){ return min(fpBox(q - vec2(0.0, 0.16), vec2(0.17, 0.30), 0.13), length(q - vec2(0.0, -0.33)) - 0.15); }\n')
+        '#include <common>\nvarying float vEdge;\nvarying vec3 vGCol;\nvarying float vDet;\nuniform float uReveal;\n')
       .replace('#include <color_fragment>',
         '#include <color_fragment>\n'
       + '  diffuseColor.rgb = vGCol * (0.96 + 0.06 * vDet);\n'           // terrain colour + faint relief mottle
-      // Footprint decals: per print, rotate into its frame, evaluate the boot
-      // SDF, darken the tread, lighten the displaced-soil rim, and build the
-      // depression gradient for the normal bend below. Cheap bounding-circle
-      // early-outs keep the loop ~free for fragments away from any print.
-      + '  for (int i = 0; i < ' + FOOT_N + '; i++) {\n'
-      + '    vec4 fp = uFoot[i];\n'
-      + '    if (fp.w <= 0.002) continue;\n'
-      + '    vec2 off = vWd - fp.xy;\n'
-      + '    if (dot(off, off) > uFootLen * uFootLen * 1.4) continue;\n'
-      + '    float cy = cos(fp.z), sy = sin(fp.z);\n'
-      + '    vec2 q = vec2(cy * off.x - sy * off.y, sy * off.x + cy * off.y) / uFootLen;\n'
-      + '    float d = fpSD(q);\n'
-      + '    float inside = smoothstep(0.03, -0.04, d);\n'
-      + '    float tread = 0.7 + 0.3 * smoothstep(0.22, 0.45, abs(fract(q.y * 5.0) - 0.5));\n'
-      + '    _fpDark += fp.w * inside * tread;\n'
-      + '    _fpRim  += fp.w * (smoothstep(0.13, 0.02, d) - smoothstep(0.02, -0.03, d));\n'
-      + '    float fe = 0.08;\n'
-      + '    float b0 = smoothstep(0.12, -0.10, d);\n'
-      + '    float gx = (smoothstep(0.12, -0.10, fpSD(q + vec2(fe, 0.0))) - b0) / fe;\n'
-      + '    float gy = (smoothstep(0.12, -0.10, fpSD(q + vec2(0.0, fe))) - b0) / fe;\n'
-      + '    _fpGrad += vec2(cy * gx + sy * gy, -sy * gx + cy * gy) * fp.w;\n'
-      + '  }\n'
-      + '  _fpDark = clamp(_fpDark, 0.0, 1.0);\n'
-      + '  _fpRim  = clamp(_fpRim, 0.0, 1.0);\n'
-      + '  diffuseColor.rgb *= 1.0 - 0.5 * _fpDark;\n'
-      + '  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.9 + vec3(0.015), _fpRim * 0.7);\n'
-      + '  diffuseColor.a = (1.0 - smoothstep(0.80, 1.0, vEdge)) * uReveal;')
-      // Bend the shading normal into each print's depression so the soil
-      // visibly takes the boot (lit wall on the sun side, shaded floor).
-      .replace('#include <normal_fragment_begin>',
-        '#include <normal_fragment_begin>\n'
-      + '  if (abs(_fpGrad.x) + abs(_fpGrad.y) > 1e-4) {\n'
-      + '    normal = normalize(normal + (vTanR * _fpGrad.x + vTanF * _fpGrad.y) * 0.45);\n'
-      + '  }\n');
+      + '  diffuseColor.a = (1.0 - smoothstep(0.80, 1.0, vEdge)) * uReveal;');
   };
   mat.customProgramCacheKey = () => 'groundPatch';
   const mesh = new THREE.Mesh(geo, mat);
@@ -196,15 +130,12 @@ export function buildGroundPatch() {
     // Per-visit shader params, pushed every frame by updateGroundPatch (so the
     // very first visit — whose shader only compiles AFTER attach — still gets
     // the right values once the uniforms exist).
-    detailAmp: 0.004, detailFreq: 40, eps: 0.01, footLen: 0.05,
-    // Footprint state: foot is the shared uniform array (u, v, yaw, fade per
-    // print); age/str are JS-side, fades recomputed each frame from them.
-    foot, footAge: new Float32Array(FOOT_N).fill(FOOT_LIFE), footStr: new Float32Array(FOOT_N),
-    footNext: 0, strideAcc: 0, strideSide: 1,
+    detailAmp: 0.004, detailFreq: 40, eps: 0.01,
   };
 }
 
 export function attachGroundPatch(body) {
+  if (!ENABLE_GROUND_PATCH) return;   // disabled — see ENABLE_GROUND_PATCH note
   if (!groundPatch) buildGroundPatch();
   const gp = groundPatch;
   gp.PR = surfaceState.eyeHeight * 14;
@@ -216,11 +147,6 @@ export function attachGroundPatch(body) {
   gp.detailAmp  = surfaceState.eyeHeight * (venus ? 0.09 : 0.05);  // softer default avoids self-shadow speckle
   gp.detailFreq = 1 / (surfaceState.eyeHeight * (venus ? 0.6 : 0.9));
   gp.eps        = surfaceState.eyeHeight * 0.45;                   // wider sample → gentler normals
-  gp.footLen    = surfaceState.eyeHeight * 0.26;                   // boot print length
-  // Fresh visit → no leftover prints from the previous world.
-  gp.foot.fill(0);
-  gp.footAge.fill(FOOT_LIFE);
-  gp.footNext = 0; gp.strideAcc = 0; gp.strideSide = 1;
   if (groundPatchUniforms) {
     groundPatchUniforms.uPR.value        = gp.PR;
     groundPatchUniforms.uRef.value       = surfaceState.groundRadius;
@@ -228,11 +154,9 @@ export function attachGroundPatch(body) {
     groundPatchUniforms.uDetailFreq.value= gp.detailFreq;
     groundPatchUniforms.uEps.value       = gp.eps;
     groundPatchUniforms.uReveal.value    = 0;
-    // Share the live cell/foot arrays with the uniforms so refreshGroundGrid
-    // and the footprint stamps mutate them in place.
+    // Share the live cell array with the uniform so refreshGroundGrid mutates it
+    // in place.
     groundPatchUniforms.uCell.value      = gp.cell;
-    groundPatchUniforms.uFoot.value      = gp.foot;
-    groundPatchUniforms.uFootLen.value   = gp.footLen;
   }
   gp.mesh.visible = false;
   if (gp.mesh.parent) gp.mesh.parent.remove(gp.mesh);
@@ -288,6 +212,7 @@ export function refreshGroundGrid() {
 // current tangent frame + drifts into the shader. The mesh itself never changes —
 // the GPU projects + displaces it from the uniforms.
 export function updateGroundPatch(dt) {
+  if (!ENABLE_GROUND_PATCH) return;   // disabled — see ENABLE_GROUND_PATCH note
   if (!groundPatch || viewMode !== 'surface' || !surfaceState.body) return;
   const gp = groundPatch, PR = gp.PR;
   if (!gp.gridValid ||
@@ -296,16 +221,6 @@ export function updateGroundPatch(dt) {
     refreshGroundGrid();
   }
   gp.reveal += (1 - gp.reveal) * Math.min(1, dt * 4);
-  // Age the footprints: a quick press-in, then a long settle-out. Fades are
-  // written straight into the shared uniform array, premultiplied by each
-  // print's soil softness (footStr). JS state — runs even before the shader
-  // has compiled.
-  for (let i = 0; i < FOOT_N; i++) {
-    const a = (gp.footAge[i] += dt);
-    if (a >= FOOT_LIFE) { gp.foot[4 * i + 3] = 0; continue; }
-    gp.foot[4 * i + 3] = Math.min(1, a / 0.12)
-      * (1 - smoothstep(FOOT_LIFE * 0.55, FOOT_LIFE, a)) * gp.footStr[i];
-  }
   // Show the mesh BEFORE the uniforms guard: the shader only compiles (and
   // groundPatchUniforms only appears) once the mesh first renders, so gating
   // visibility on the uniforms would deadlock the very first visit. The one
@@ -327,64 +242,5 @@ export function updateGroundPatch(dt) {
   u.uDetailAmp.value  = gp.detailAmp;
   u.uDetailFreq.value = gp.detailFreq;
   u.uEps.value        = gp.eps;
-  u.uFootLen.value    = gp.footLen;
-  u.uFoot.value       = gp.foot;
-}
-
-// Stamp one boot print at ground-fixed tangent coords (u, v), oriented to a
-// heading yaw (radians; the angle of the movement direction in the
-// localRight/localFwd basis). strength scales the whole decal.
-export function stampFootprint(u, v, yaw, strength) {
-  const gp = groundPatch;
-  if (!gp) return;
-  const i = gp.footNext;
-  gp.footNext = (i + 1) % FOOT_N;
-  gp.foot[4 * i]     = u;
-  gp.foot[4 * i + 1] = v;
-  gp.foot[4 * i + 2] = yaw;
-  gp.foot[4 * i + 3] = 0;            // updateGroundPatch fades it in from age 0
-  gp.footAge[i] = 0;
-  gp.footStr[i] = strength;
-}
-
-// How strongly the ground under the avatar takes a print (0 = hard ground or
-// not a soft-soil archetype). Venusian slab flats (below SAND_TOP) only dust
-// over; the regolith/soil bands above take a full print.
-export function footprintStrengthHere() {
-  const body = surfaceState.body;
-  const cfg = body && FOOTPRINT_GROUND[body.archetype];
-  if (!cfg || !groundPatch) return 0;
-  const h = (surfaceState.groundRadius / body.baseRadius - 1) / BODY_HEIGHT_SCALE;
-  return h < SAND_TOP ? cfg.low : cfg.strength;
-}
-
-// Called from stepSurfaceWalk with this frame's tangent step (du, dv): meter
-// out alternating left/right boot prints every half-stride along the path.
-export function stampFootprintsFromStep(du, dv) {
-  const gp = groundPatch;
-  if (!gp || !surfaceState.grounded || surfaceState.swimming) return;
-  const str = footprintStrengthHere();
-  if (str <= 0) return;
-  const stepLen = Math.hypot(du, dv);
-  if (stepLen <= 1e-9) return;
-  gp.strideAcc += stepLen;
-  const stride = surfaceState.eyeHeight * 0.55;
-  let n = Math.floor(gp.strideAcc / stride);
-  if (n <= 0) return;
-  gp.strideAcc -= n * stride;
-  if (n > 4) n = 4;                              // a hitch frame doesn't dump the whole ring
-  const yaw = Math.atan2(du, dv);
-  const hu = du / stepLen, hv = dv / stepLen;    // unit heading
-  // Place each crossed stride BACK along this frame's heading so prints stay
-  // evenly spaced even when one slow frame covers several strides.
-  for (let k = n - 1; k >= 0; k--) {
-    const back = gp.strideAcc + k * stride;
-    const w = surfaceState.eyeHeight * 0.07 * gp.strideSide;
-    gp.strideSide = -gp.strideSide;
-    stampFootprint(
-      surfaceState.grassU - hu * back + hv * w,
-      surfaceState.grassV - hv * back - hu * w,
-      yaw, str);
-  }
 }
 

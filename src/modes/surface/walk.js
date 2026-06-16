@@ -1,16 +1,18 @@
 // WASD/arrow walking, sprint, jump physics, ground-radius sampling, swim
-// buoyancy riding the water-patch waves.
+// buoyancy riding the global ocean sphere's oceanWave swell.
 import * as THREE from 'three';
 import { BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT } from '../../core/constants.js';
+import { oceanSwellDisp } from '../../framework/materials.js';
 import { viewMode } from '../../framework/state.js';
 import { astronaut, setAstronautAction } from './avatar.js';
 import { surfaceState } from './core.js';
-import { footprintStrengthHere, stampFootprint, stampFootprintsFromStep } from './ground.js';
+import { footprintStrengthHere, stampFootprint, stampFootprintsFromStep } from './footprints.js';
+import { resolvePropCollision } from './props.js';
 import { resolveRockCollision } from './rocks.js';
-import { waterPatch, waterUniforms, waveHeightAtAvatar } from './water.js';
 
-export const surfaceKeys = { w: false, a: false, s: false, d: false, shift: false };
+export const surfaceKeys = { w: false, a: false, s: false, d: false, shift: false, dive: false, ascend: false };
 export const SURFACE_SPRINT_MULT = 2.0;
+export const SWIM_VERT_SPEED = 3.0;   // free-swim rise/dive rate, eye-heights per second
 const _walkHeading = new THREE.Vector3();
 const _walkStrafe  = new THREE.Vector3();
 const _walkDelta   = new THREE.Vector3();
@@ -18,7 +20,7 @@ const _walkNewUp   = new THREE.Vector3();
 const _walkAxis    = new THREE.Vector3();
 
 export function clearSurfaceKeys() {
-  surfaceKeys.w = surfaceKeys.a = surfaceKeys.s = surfaceKeys.d = surfaceKeys.shift = false;
+  surfaceKeys.w = surfaceKeys.a = surfaceKeys.s = surfaceKeys.d = surfaceKeys.shift = surfaceKeys.dive = surfaceKeys.ascend = false;
 }
 
 // Dedicated raycaster for terrain-following so we don't disturb the shared
@@ -88,19 +90,29 @@ export function stepSurfaceWalk(dt) {
     const eh = surfaceState.eyeHeight;
     const inWaterBody = !!(b.matter && b.matter.liquid && b.oceanIsWater);
     const depth = inWaterBody ? (b.baseRadius - surfaceState.groundRadius) : 0;
+    const wasSwimming = surfaceState.swimming;
     if (!surfaceState.swimming && depth > eh * 1.05)    surfaceState.swimming = true;
     else if (surfaceState.swimming && depth < eh * 0.9) surfaceState.swimming = false;
     let standTarget;
     if (surfaceState.swimming) {
-      // Buoyancy: float on the ACTUAL swell, not a flat waterline — sample
-      // the same wave field the water patch displaces (at the avatar's spot)
-      // so the body, and the camera riding standRadius, bob with the waves.
-      let waterR = b.baseRadius;
-      if (waterPatch && waterPatch.mesh.visible && waterUniforms) {
-        waterR = b.baseRadius + waterUniforms.uLift.value
-               + waveHeightAtAvatar() * waterUniforms.uWaveAmp.value;
-      }
-      standTarget = waterR - eh * 0.32;   // body mostly submerged, head + back above water
+      // Buoyancy + free dive. The swell follows the ACTUAL oceanWave at the
+      // avatar's object-space spot (localUp·baseRadius), so the surface float
+      // bobs with the very crests rolling past.
+      const px = surfaceState.localUp.x * b.baseRadius;
+      const pz = surfaceState.localUp.z * b.baseRadius;
+      const waterR  = b.baseRadius + oceanSwellDisp(b, px, pz);
+      const floatR  = waterR - eh * 0.32;                      // resting float at the surface
+      const bottomR = surfaceState.groundRadius + eh * 0.6;    // just above the seabed
+      // Free 3D swim: C dives, Space rises, neutral hovers (no auto-buoyancy so
+      // you stay where you leave it). Clamp between the seabed and the bobbing
+      // surface so you can roam the whole water column but not clip ground or
+      // launch out of the sea. The camera rides standRadius, so going under
+      // flips cameraSubmerged and the underwater fog takes over for free.
+      if (!wasSwimming) surfaceState.swimRadius = floatR;       // enter at the surface
+      const vert = (surfaceKeys.ascend ? 1 : 0) - (surfaceKeys.dive ? 1 : 0);
+      surfaceState.swimRadius += vert * eh * SWIM_VERT_SPEED * dt;
+      surfaceState.swimRadius = Math.max(bottomR, Math.min(floatR, surfaceState.swimRadius));
+      standTarget = surfaceState.swimRadius;
     } else {
       standTarget = surfaceState.groundRadius;
     }
@@ -151,12 +163,17 @@ export function stepSurfaceWalk(dt) {
     .addScaledVector(_walkHeading, fwdInput * step)
     .addScaledVector(_walkStrafe,  strafeInput * step);
 
-  // Rock collision: convert the tangent step to (du,dv), let solid boulders
-  // block/deflect it, then rebuild the step from the resolved values.
+  // Collision: convert the tangent step to (du,dv), let solid obstacles
+  // block/deflect it, then rebuild the step from the resolved values. The
+  // instanced desert/venusian boulders (rocks.js) and the GLB trees + rocks
+  // on terrestrial worlds (props.js) are each resolved in turn so neither can
+  // be walked through.
   let _rkDu = _walkDelta.dot(surfaceState.localRight);
   let _rkDv = _walkDelta.dot(surfaceState.localFwd);
   const _rkRes = resolveRockCollision(_rkDu, _rkDv);
   _rkDu = _rkRes[0]; _rkDv = _rkRes[1];
+  const _ppRes = resolvePropCollision(_rkDu, _rkDv);
+  _rkDu = _ppRes[0]; _rkDv = _ppRes[1];
   _walkDelta.copy(surfaceState.localRight).multiplyScalar(_rkDu)
     .addScaledVector(surfaceState.localFwd, _rkDv);
   surfaceState.localEye.add(_walkDelta);

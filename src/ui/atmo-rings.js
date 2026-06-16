@@ -1,18 +1,15 @@
-// Atmosphere sliders, ring controls, the Generate World button handler, and
-// slider→value conversions.
-import { setPlanetCurrentSeed } from './info-panel.js';
+// Atmosphere sliders, ring controls, and the Generate World button handler.
+import { setPlanetCurrentSeed } from '../framework/state.js';
 
-import { setBrushStrength } from '../framework/state.js';
-
+import { emit } from '../core/bus.js';
 import {
   applyGasShell, applyRingsToBody, refreshClimateColoring, regenerateBody
 } from '../framework/body.js';
-import { brushStrength, currentArchetype, focusedBody, moons, planet } from '../framework/state.js';
+import { currentArchetype, focusedBody, moons, planet } from '../framework/state.js';
 import {
-  brushRadiusInput, brushStrengthInput, brushStrengthVal, genAmpInput, genAmpVal, genSeaInput, genSeaVal, regenBtn, seedInput, syncBrushRadius
+  genAmpInput, genSeaInput, seedInput, sliderToAmplitude, sliderToSeaCoverage
 } from './controls.js';
-import { planetCurrentSeed, renderClimateSection, updateInfoPanel } from './info-panel.js';
-import { applyFocusToLeftPanel, syncAtmoSlidersToFocus, syncRingsToFocus } from './left-panel.js';
+import { renderClimateSection, updateInfoPanel } from './info-panel.js';
 
 // ====== 26. Atmosphere sliders ======
 export const atmoThickInput      = document.getElementById('atmoThick');
@@ -89,13 +86,15 @@ export function applyRingsSliderToFocus() {
   ringsIntensityValEl.textContent = b.rings.intensity.toFixed(2);
   applyRingsToBody(b);
   // Toggling enable flips whether the intensity row is greyed; re-sync.
-  syncRingsToFocus();
+  // (Bus event — syncRingsToFocus lives in left-panel.js, which imports this
+  // module's element consts, so a direct import here would be a cycle.)
+  emit('ui:sync-rings');
 }
 ringsEnabledInput.onchange   = applyRingsSliderToFocus;
 ringsIntensityInput.oninput  = applyRingsSliderToFocus;
 
-// Bound to regenBtn.onclick in ui/wire-up.js — this module is evaluated
-// before controls.js finishes (import cycle), so regenBtn would be TDZ here.
+// Bound to regenBtn.onclick in ui/wire-up.js with the rest of the
+// one-shot button wiring.
 export function onRegenClick() {
   // Regenerate operates on the focused body (planet or moon). The archetype
   // global only changes palette for planets — moons keep MOON_PALETTE.
@@ -114,25 +113,10 @@ export function onRegenClick() {
   if (moonEntry) moonEntry.seed = seed;
   // Matter may have changed (e.g. desert→terrestrial gained an ocean and
   // atmosphere; or terrestrial→gas_giant dropped the solid surface) —
-  // re-sync the atmo sliders and the panel layout so the Sculpt tab and
-  // biome / band-color rows match the new state.
-  if (typeof syncAtmoSlidersToFocus === 'function') syncAtmoSlidersToFocus();
-  if (typeof applyFocusToLeftPanel === 'function') applyFocusToLeftPanel();
+  // re-sync the panel layout so the Sculpt tab and biome / band-color rows
+  // match the new state. applyFocusToLeftPanel (the 'ui:left-panel' handler
+  // in wire-up.js) also re-syncs the atmo + rings sliders.
+  emit('ui:left-panel');
   updateInfoPanel();
 }
-
-// Initial brush slider sync also lives in ui/wire-up.js (controls.js consts
-// are TDZ while this module evaluates).
-
-export function sliderToBrushRadius(v) { return v / 100; }
-export function sliderToBrushStrength(v) { return v / 10; }
-export function sliderToAmplitude(v) { return v / 10; }
-export function sliderToSeaCoverage(v) { return v / 100; }
-
-export function syncGenLabels() {
-  genAmpVal.textContent = sliderToAmplitude(parseInt(genAmpInput.value, 10)).toFixed(1);
-  genSeaVal.textContent = genSeaInput.value + '%';
-}
-// genAmp/genSea label wiring + the initial syncGenLabels() call are in
-// ui/wire-up.js for the same import-cycle reason.
 

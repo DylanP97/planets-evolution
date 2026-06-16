@@ -33,6 +33,22 @@ export function setFocusedBody(v) { focusedBody = v; }
 export let viewMode = 'orbit'; // 'orbit' | 'pick' | 'surface'
 export function setViewMode(v) { viewMode = v; }
 
+// City / probe focus. These only flag WHICH entity is focused — the
+// camera-moving entry points (setFocus / setCityFocus / setProbeFocus, which
+// also clear each other and re-render the UI) live in modes/focus.js.
+// When a probe is focused, focusedBody stays on its host planet so the left
+// panel keeps that planet's context; focusedProbe distinguishes the two.
+export let focusedCity = null;
+export function setFocusedCity(v) { focusedCity = v; }
+
+export let focusedProbe = null;
+export function setFocusedProbe(v) { focusedProbe = v; }
+
+// Seed of the last "Generate World" run on the home planet — the fallback
+// shown in the seed input / info panel when a body has no own currentSeed.
+export let planetCurrentSeed = 'planet';
+export function setPlanetCurrentSeed(v) { planetCurrentSeed = v; }
+
 // ── Brush / tool state (initial values match the original section 14) ──
 export let brushRadius   = 0.25; // radians of arc on the unit sphere
 export function setBrushRadius(v) { brushRadius = v; }

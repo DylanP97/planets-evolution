@@ -1,5 +1,8 @@
-// Surface-mode sky effects: aerial-perspective fog, underwater murk + the
-// full-screen overlay, and the thick-atmosphere skylight ramp.
+// Surface-mode sky effects: aerial-perspective fog and the thick-atmosphere
+// skylight ramp. (Underwater depth fog is no longer here — it's a per-pixel
+// post-process pass; see modes/surface/underwater-pass.js. A per-camera
+// scene.fog could only flip the whole view between "sky" and "murk", which
+// couldn't separate the two across the waterline or follow the waves.)
 import * as THREE from 'three';
 import { milkyMat } from '../../background/galaxy.js';
 import { starMat } from '../../background/starfield.js';
@@ -10,20 +13,15 @@ import { smoothstep } from '../../core/utils.js';
 import { viewMode } from '../../framework/state.js';
 import { _sunWorldTmp, _toSunTmp } from '../../system/lighting.js';
 import { surfaceState } from './core.js';
-import { waterPatch, waterUniforms } from './water.js';
+import { cameraSubmerged } from './underwater-pass.js';
 
 const _surfBodyCenter = new THREE.Vector3();
 const _surfCamDir     = new THREE.Vector3();
 export const SURFACE_STAR_OPACITY = 0.95;
-// Reused single fog instance for the underwater look (an exponential murk,
-// tinted from the body's own liquid, that collapses visibility to a few
-// body-heights). scene.fog is otherwise unused.
-export const underwaterFog = new THREE.FogExp2(0x10566f, 0.0);
-const _uwCamLocal = new THREE.Vector3();
-// Full-screen underwater tint overlay: three's fog only touches fog-enabled
-// materials, so the gas sky shell / sun / stars stay crisp through the murk
-// without it. The overlay tints EVERYTHING toward the water colour and adds
-// a soft vignette, which is what finally sells "you are inside the water".
+
+// Full-screen tint overlay element. The underwater pass now owns the submerged
+// look, so this is kept only so exitSurfaceMode can force it hidden (and for
+// any future above-water screen tints); setUnderwaterOverlay just drives it.
 export const underwaterOverlayEl = document.getElementById('underwaterOverlay');
 let _uwOverlayHex = -1;
 let _uwOverlayOp  = -1;
@@ -64,45 +62,11 @@ export function updateSurfaceSkyEffects() {
     setUnderwaterOverlay(0, null);
     return;
   }
-  // Underwater: judged from the CAMERA's actual position, not the avatar's
-  // nominal head height — the third-person camera trails low behind the
-  // walker and routinely dips under the surface while the head is still dry
-  // (that mismatch is why the sea used to look completely transparent from
-  // just below the waterline). When submerged, sight collapses to a handful
-  // of body-heights of liquid-coloured murk that darkens with depth, and the
-  // full-screen overlay tints the fog-immune sky shaders to match.
-  let submerged = false;
-  {
-    const b = surfaceState.body;
-    if (b.matter && b.matter.liquid) {
-      _uwCamLocal.copy(camera.position);
-      b.mesh.worldToLocal(_uwCamLocal);
-      const camR = _uwCamLocal.length();
-      // The water-patch surface rides at baseRadius + uLift (so wave troughs
-      // clear sea level) — judge submersion against the VISIBLE waterline,
-      // not the nominal one, or a camera just under the surface stays dry.
-      let seaR = b.baseRadius;
-      if (waterPatch && waterPatch.mesh.visible && waterUniforms) seaR += waterUniforms.uLift.value;
-      if (camR < seaR) {
-        submerged = true;
-        const scale  = b.group.scale.x || 1;
-        const eh     = surfaceState.eyeHeight * scale;   // world-unit body height
-        const depthW = (seaR - camR) * scale;            // world units below the waterline
-        // Clear-ish for the first body-heights, closing in as you sink.
-        const vis = Math.max(eh * 3.0, eh * 14.0 - depthW * 5.0);
-        underwaterFog.density = 1.4 / vis;
-        const deepF = Math.min(1, depthW / (eh * 18.0));
-        underwaterFog.color.setHex(b.oceanBaseColor || COL.water)
-          .multiplyScalar(0.42 * (1 - deepF) + 0.10 * deepF);
-        scene.fog = underwaterFog;
-        setUnderwaterOverlay(0.40 + 0.40 * deepF, b);
-      }
-    }
-    if (!submerged) {
-      scene.fog = null;
-      setUnderwaterOverlay(0, null);
-    }
-  }
+  // Underwater fog is a per-pixel post-process pass now (underwater-pass.js),
+  // so nothing here keys off "is the camera submerged" — the sky stays the sky
+  // and the murk is decided per pixel by the view ray. scene.fog is reset and
+  // only re-armed below as the above-water aerial haze on atmosphere worlds.
+  scene.fog = null;
   // Atmosphere worlds: shader paints the sun, so keep the real mesh hidden.
   // Airless worlds: show the real Sun (occluded by the body when it sets).
   sunMesh.visible    = !surfaceState.paintsSunDisc;
@@ -110,7 +74,7 @@ export function updateSurfaceSkyEffects() {
   // Airless worlds have no atmosphere to scatter daylight, so the sky stays
   // black and the stars never wash out — the Sun just hangs among them.
   if (!surfaceState.paintsSunDisc) {
-    starMat.opacity = submerged ? 0 : SURFACE_STAR_OPACITY;
+    starMat.opacity = SURFACE_STAR_OPACITY;
     return;
   }
   surfaceState.body.group.getWorldPosition(_surfBodyCenter);
@@ -131,10 +95,11 @@ export function updateSurfaceSkyEffects() {
     const eased = t * t * (3 - 2 * t);
     starMat.opacity = eased * SURFACE_STAR_OPACITY;
   }
-  if (submerged) starMat.opacity = 0;   // no stars through the murk
-  // Aerial-perspective haze (atmosphere worlds, above water). Dim the haze
-  // toward night so the dark-side horizon doesn't pick up a daytime glow.
-  if (scene.fog !== underwaterFog) {
+  // Aerial-perspective haze (atmosphere worlds). Dim the haze toward night so
+  // the dark-side horizon doesn't pick up a daytime glow. Skip it entirely while
+  // the camera is submerged: its pale-blue colour would bake into the offscreen
+  // target and wash the underwater pass's blue murk toward white at the horizon.
+  if (!cameraSubmerged()) {
     const eh = surfaceState.eyeHeight;
     const dayFactor = 1 - Math.min(1, starMat.opacity / SURFACE_STAR_OPACITY);
     aerialFog.near = eh * 8;

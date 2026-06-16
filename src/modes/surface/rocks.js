@@ -5,9 +5,10 @@ import {
 } from '../../core/constants.js';
 import { viewMode } from '../../framework/state.js';
 import { surfaceState } from './core.js';
+import { GRASS_GN, grassGroundRadius } from './grass.js';
 import {
-  GRASS_GN, _gAxisY, _gMat, _gP, _gQuat, _gRot, _gScale, _gTilt, _gUp, _grCol, _grDir, _grHit, _grOrigin, _grTint, grassGroundRadius, grassRaycaster
-} from './grass.js';
+  _gAxisY, _gMat, _gP, _gQuat, _gRot, _gScale, _gTilt, _gUp, _grCol, _grDir, _grHit, _grOrigin, _grTint, grassRaycaster
+} from './scratch.js';
 
 // ── Surface rocks (Martian / desert worlds) ────────────────────────────
 // A sparse InstancedMesh of low-poly boulders, built and scattered with the

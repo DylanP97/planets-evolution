@@ -1,14 +1,12 @@
 // Colonies — lunar_base.glb markers pinned to a body surface; day-side
 // dimming and the colony list.
-import { setFocusedCity } from '../modes/focus.js';
-
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { COL } from '../core/constants.js';
 import { sunMesh } from '../core/sun.js';
-import { cities, focusedBody } from '../framework/state.js';
-import { focusedCity, setCityFocus } from '../modes/focus.js';
-import { focusNameEl } from '../ui/controls.js';
+import { cities, focusedBody, focusedCity, setFocusedCity } from '../framework/state.js';
+import { setCityFocus } from '../modes/focus.js';
+import { focusNameEl } from '../ui/dom.js';
 
 // ====== 18. Cities ======
 // Cities are pinned to a body by a unit-direction `localPos`. Each settlement

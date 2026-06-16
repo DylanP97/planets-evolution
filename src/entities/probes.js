@@ -2,13 +2,13 @@
 // loading, slots, per-frame orbit + self-spin.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
+import { emit } from '../core/bus.js';
 import { scene } from '../core/scene.js';
-import { planet, probes } from '../framework/state.js';
-import { focusedProbe, setFocus } from '../modes/focus.js';
+import { focusedProbe, planet, probes } from '../framework/state.js';
+import { setFocus } from '../modes/focus.js';
 import {
   applySatelliteOrbitOpts, disposeSatelliteOrbitLine, refreshSatelliteOrbitLine, syncSatelliteOrbitLinePosition
 } from '../system/orbits.js';
-import { setSystemFocus } from '../ui/nav.js';
 import { satelliteWorldOffset } from './moons.js';
 
 // ====== 17. Probes (artificial satellites) ======
@@ -158,7 +158,7 @@ export function removeSatelliteAt(index) {
   // Drop focus to the host planet before tearing down the mesh so the
   // camera tracker doesn't chase a removed object.
   if (focusedProbe === probe) {
-    if (probe.parent) setFocus(probe.parent); else setSystemFocus();
+    if (probe.parent) setFocus(probe.parent); else emit('focus:system');
   }
   scene.remove(probe.mesh);
   probe.mesh.traverse((obj) => {

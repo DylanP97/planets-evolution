@@ -22,6 +22,30 @@ export const WATER_PATCH_N = 144;          // grid resolution (verts per side)
 export let waterPatch = null;
 export let waterUniforms = null;
 
+// Per-body water params captured by attachWaterPatch. The material compiles
+// lazily on its first render — which happens AFTER the first attach — so on a
+// cold first visit `waterUniforms` is still null and the values can't be
+// pushed yet. We stash them here and replay them via applyWaterParams() both
+// from attach (when the shader is already live) and from onBeforeCompile (the
+// instant the uniforms come into existence), so the first visit no longer runs
+// on the hardcoded defaults (null seabed tex → white-foam sheet everywhere).
+let pendingWaterParams = null;
+
+function applyWaterParams() {
+  if (!waterUniforms || !pendingWaterParams) return;
+  const p = pendingWaterParams;
+  waterUniforms.uPR.value       = p.pr;
+  waterUniforms.uBodyR.value    = p.bodyR;
+  waterUniforms.uWaveAmp.value  = p.waveAmp;
+  waterUniforms.uLift.value     = p.lift;
+  waterUniforms.uWaveTime.value = 0;
+  waterUniforms.uDrift.value.set(0, 0);
+  waterUniforms.uSeabedTex.value = p.seabedTex;
+  waterUniforms.uShallowCol.value.copy(p.shallowCol);
+  waterUniforms.uDeepCol.value.copy(p.deepCol);
+  waterUniforms.uHorizonCol.value.copy(p.horizonCol);
+}
+
 export function buildWaterPatch() {
   const N = WATER_PATCH_N;
   // Flat unit grid; after the rotate it lies in the XZ plane with position.xz
@@ -32,9 +56,10 @@ export function buildWaterPatch() {
     // Opaque so it reads as a clean blue sea — at 0.92 it revealed the deep,
     // dark OCEAN_DEPTH_BOOST seabed beneath and looked blotchy. (See-through
     // shallows can come back later as a depth-aware effect.) The shader still
-    // fades alpha at the rim, which needs transparent:true. Roughness is low
-    // so the micro-ripple normals (fragment shader) throw real sun glints.
-    color: 0xffffff, roughness: 0.12, metalness: 0.04,
+    // fades alpha at the rim, which needs transparent:true. Roughness/metalness
+    // MATCH the global ocean sphere (body.js: 0.18 / 0.05) so the patch is lit
+    // identically and doesn't read as a glossier, brighter disc on the sea.
+    color: 0xffffff, roughness: 0.18, metalness: 0.05,
     transparent: true, opacity: 1.0, side: THREE.DoubleSide,
   });
   mat.polygonOffset = true;          // bias against the global ocean sphere it sits on
@@ -52,7 +77,7 @@ export function buildWaterPatch() {
     sh.uniforms.uWaveAmp  = { value: 0.004 };
     // STEP 2 — crest foam: white foam riding the tops of the waves.
     sh.uniforms.uFoamColor = { value: FOAM_COLOR };
-    sh.uniforms.uCrestFoam = { value: 0.85 };       // crest foam strength (0 = off)
+    sh.uniforms.uCrestFoam = { value: 0.0 };        // crest foam strength (0 = off) — off: it aliased into a white horizon band; shoreline foam below carries the foam look
     // Depth-based look (clearer shallows → deeper blue) + STEP 3 shoreline foam.
     // uSeabedTex is the equirect seabed-height map (built by bakeOceanShore);
     // the shader reads water depth under each fragment from it.
@@ -62,17 +87,20 @@ export function buildWaterPatch() {
     sh.uniforms.uShallowA   = { value: 0.72 };      // alpha in the shallows (only slightly see-through)
     sh.uniforms.uDeepA      = { value: 0.95 };      // alpha in deep water (near opaque)
     sh.uniforms.uDepthFade  = { value: 0.65 };      // seabed-height units over which it deepens
-    sh.uniforms.uShoreFoam  = { value: 0.9 };       // shoreline crash-foam strength
+    sh.uniforms.uShoreFoam  = { value: 0.0 };       // shoreline crash-foam strength — OFF: the global seabed map (~44x22) is far coarser than this sub-texel local patch, so depth reads one flat ~0 value near any coast and the foam fills the whole character-centred patch. Proper coast foam belongs on the global ocean's per-vertex aShore data, not here.
     sh.uniforms.uShoreW     = { value: 0.16 };      // shoreline foam band width (depth units)
-    // Stylized self-illumination floor so the water keeps its clear blue even
-    // in dim / colour-tinted surface lighting instead of crushing to near-black.
-    sh.uniforms.uWaterGlow  = { value: 0.28 };
+    // Self-illumination floor — OFF. At 0.28 it lit the patch brighter than the
+    // global ocean sphere (which has no water self-illum), so the patch read as
+    // a bright disc following the avatar. Keep it lit purely by the scene, like
+    // the surrounding sea. (Re-introduce small if night water crushes to black.)
+    sh.uniforms.uWaterGlow  = { value: 0.0 };
     // Micro-ripple normal strength (fragment-level sparkle between the
     // vertex-displaced swells) and the pale sky tint the fresnel term pulls
     // the water toward at grazing view angles.
     sh.uniforms.uRipple     = { value: 0.35 };
     sh.uniforms.uHorizonCol = { value: new THREE.Color(0xcfe9f5) };
     waterUniforms = sh.uniforms;
+    applyWaterParams();   // replay any params captured before this first compile
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>',
         '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n'
@@ -129,7 +157,7 @@ export function buildWaterPatch() {
       + '  vec3 _Vv = normalize(vViewPosition);\n'
       + '  vec3 _Nv = normalize(vNormal) * (gl_FrontFacing ? 1.0 : -1.0);\n'
       + '  float _fres = pow(1.0 - clamp(dot(_Nv, _Vv), 0.0, 1.0), 3.0);\n'
-      + '  diffuseColor.rgb = mix(diffuseColor.rgb, uHorizonCol, _fres * 0.55);\n'
+      + '  diffuseColor.rgb = mix(diffuseColor.rgb, uHorizonCol, _fres * 0.30);\n'
       + '  _alpha = mix(_alpha, 1.0, _fres * 0.85);\n'
       // Rim fade into the far sea — LAST, so the fresnel-opaque horizon (and
       // the foam below) still melt away at the patch edge.
@@ -189,27 +217,42 @@ export function attachWaterPatch(body) {
   if (!show) return;
   // Ensure the seabed-depth texture exists/fresh (depth transparency + shore foam).
   if (!body.seabedTex) bakeOceanShore(body);
-  if (waterUniforms) {
-    waterUniforms.uPR.value       = surfaceState.eyeHeight * 30;
-    waterUniforms.uBodyR.value    = body.baseRadius;
+  // Capture this body's water params, then push them. applyWaterParams() is a
+  // no-op until the shader has compiled (first render after this attach); the
+  // onBeforeCompile hook replays the same stash the moment the uniforms exist,
+  // so the cold first visit gets the real seabed tex + colours, not the
+  // hardcoded defaults (a null seabed tex reads as shallow everywhere → the
+  // whole patch goes pale + full shoreline foam = a white snow-field sheet).
+  const base = new THREE.Color(body.oceanBaseColor || COL.water);
+  // Patch radius MUST reach past the horizon, or its rim shows as a ring at a
+  // fixed distance ahead that tracks the avatar (the dreaded "zone following the
+  // character"). The horizon arc for an eye at height h over a sphere of radius
+  // R is ≈ √(2·R·h); size the patch to ~1.9× that so the rim (and its fade) sit
+  // safely below the visible horizon where curvature hides them.
+  const horizon = Math.sqrt(2 * body.baseRadius * Math.max(1e-4, surfaceState.eyeHeight));
+  pendingWaterParams = {
+    pr:      horizon * 1.9,
+    bodyR:   body.baseRadius,
     // uLift MUST be ≥ uWaveAmp so wave TROUGHS never dip below sea level —
     // otherwise the shallow seabed pokes up through the troughs near shore and
     // the water looks blotchy. The whole sea then rides slightly above true sea
     // level (negligible) with troughs ≈ sea level and crests ≈ +2·amp.
-    waterUniforms.uWaveAmp.value  = surfaceState.eyeHeight * 0.22;
-    waterUniforms.uLift.value     = surfaceState.eyeHeight * 0.27;
-    waterUniforms.uWaveTime.value = 0;
-    waterUniforms.uDrift.value.set(0, 0);
-    waterUniforms.uSeabedTex.value = body.seabedTex || null;
-    // Clearer-blue look derived from the body's own water tint: shallows lean
-    // bright/pale, open water leans a touch deeper than the base tint.
-    const base = new THREE.Color(body.oceanBaseColor || COL.water);
-    waterUniforms.uShallowCol.value.copy(base).lerp(new THREE.Color(0xffffff), 0.45);
-    waterUniforms.uDeepCol.value.copy(base);   // keep deep water a bright clear blue, not near-black
+    waveAmp: surfaceState.eyeHeight * 0.012,
+    lift:    surfaceState.eyeHeight * 0.018,
+    seabedTex: body.seabedTex || null,
+    // Shallow vs deep tint kept nearly equal on purpose: the seabed depth map
+    // (~44x22) is coarser than this sub-texel local patch, so `depth` reads one
+    // flat value across the whole patch and the shallow→deep gradient can't
+    // resolve locally — a strong shallow tint just paints a pale disc that
+    // follows the avatar. Only a hint of lightening so the local sea matches
+    // the base ocean colour beyond the patch rim.
+    shallowCol: base.clone().lerp(new THREE.Color(0xffffff), 0.12),
+    deepCol:    base.clone(),   // keep deep water a bright clear blue, not near-black
     // Grazing-angle fresnel tint: the body's water colour pushed well toward
     // white, so the horizon reads as pale sky-mirror on any liquid colour.
-    waterUniforms.uHorizonCol.value.copy(base).lerp(new THREE.Color(0xffffff), 0.65);
-  }
+    horizonCol: base.clone().lerp(new THREE.Color(0xffffff), 0.40),
+  };
+  applyWaterParams();
   body.mesh.add(wp.mesh);
   wp.mesh.visible = true;
 }

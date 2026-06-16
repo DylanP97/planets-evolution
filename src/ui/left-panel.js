@@ -5,17 +5,17 @@ import { setCurrentArchetype } from '../framework/state.js';
 import { systemName } from '../core/names.js';
 import { DEFAULT_MOON_SPEED, updateMoonPosition } from '../entities/moons.js';
 import { DEFAULT_PROBE_SPEED, updateProbePosition } from '../entities/probes.js';
-import { currentArchetype, focusedBody, moons, planets } from '../framework/state.js';
-import { focusedCity, focusedProbe } from '../modes/focus.js';
+import {
+  currentArchetype, focusedBody, focusedCity, focusedProbe, moons, planetCurrentSeed, planets
+} from '../framework/state.js';
 import { ORBIT_DEG, applySatelliteOrbitPlane } from '../system/orbits.js';
 import { DEFAULT_SPIN } from '../system/planets.js';
 import {
-  atmoCloudDriftInput, atmoCloudDriftValEl, atmoComplexWindsInput, atmoCoverageInput, atmoCoverageValEl, atmoDensityInput, atmoDensityValEl, atmoHintEl, atmoThickInput, atmoThickValEl, ringsEnabledInput, ringsHintEl, ringsIntensityInput, ringsIntensityValEl, syncGenLabels
+  atmoCloudDriftInput, atmoCloudDriftValEl, atmoComplexWindsInput, atmoCoverageInput, atmoCoverageValEl, atmoDensityInput, atmoDensityValEl, atmoHintEl, atmoThickInput, atmoThickValEl, ringsEnabledInput, ringsHintEl, ringsIntensityInput, ringsIntensityValEl
 } from './atmo-rings.js';
 import {
-  archetypeSelect, genAmpInput, genSeaInput, refreshActiveTool, refreshGasBiomeOptions, regenBtn, satellitesContext, seedInput, tabBtns
+  archetypeSelect, genAmpInput, genSeaInput, refreshActiveTool, refreshGasBiomeOptions, regenBtn, satellitesContext, seedInput, syncGenLabels, tabBtns
 } from './controls.js';
-import { planetCurrentSeed } from './info-panel.js';
 import { renderPlanetList } from './roster.js';
 
 // ====== 28. Context-aware left panel ======
@@ -27,15 +27,10 @@ import { renderPlanetList } from './roster.js';
 export const classifyContextEl  = document.getElementById('classifyContext');
 export const systemContextEl    = document.getElementById('systemContext');
 export const archetypeHeaderEl  = document.getElementById('archetypeHeader');
-// Direct DOM lookups (not the consts imported from controls.js): this module
-// evaluates before controls.js finishes its import cycle, so those bindings
-// are still TDZ here.
 export const classifyArchSection = document.getElementById('archetypeSelect').closest('label');
 export const classifyGenLabels  = [document.getElementById('genAmp').closest('label'), document.getElementById('genSea').closest('label')];
 export const rosterHintEl       = document.getElementById('rosterHint');
 export const rosterSectionEl    = document.getElementById('rosterSection');
-export const planetListEl       = document.getElementById('planetList');
-export const deployPlanetBtn    = document.getElementById('deployPlanetBtn');
 export const bodyOrbitSectionEl = document.getElementById('bodyOrbitSection');
 export const bodyOrbitHeaderEl  = document.getElementById('bodyOrbitHeader');
 export const bodyDistInput      = document.getElementById('bodyDistInput');

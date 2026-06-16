@@ -20,7 +20,7 @@ For the code layout (module map, data model, frame lifecycle), see [ARCHITECTURE
 | Assets | `GLTFLoader` — all GLB models in `assets/` (satellite, colony, avatar, surface props) |
 | Shaders | Custom GLSL (gas, plasma/corona, rings, water, ground decals) |
 | UI | Plain DOM + tabbed left panel, info panel, bottom nav, star-map overlays |
-| Styling | `style.css` (CSS variables, HUD theme) |
+| Styling | `styles/` (CSS variables, HUD theme — one file per panel) |
 
 **Languages:** HTML, CSS, JavaScript (WebGL / GLSL inline in the shader modules).
 
@@ -41,7 +41,7 @@ Any static server on the project root works (e.g. `python -m http.server`).
 | Path | Role |
 | ---- | ---- |
 | `index.html` | Canvas, UI shell, Three.js import map — loads `src/main.js` |
-| `style.css` | All styling |
+| `styles/` | All styling, one file per panel (`base.css` holds the theme variables) |
 | `src/main.js` | Entry point: imports every module, boots Sol, runs the frame loop |
 | `src/core/` | Scene, sun, constants, palettes, names, utils |
 | `src/shaders/` | Gas, plasma, corona, ring GLSL |

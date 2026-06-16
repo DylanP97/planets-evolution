@@ -3,8 +3,7 @@
 import { setMoonDistance, setMoonSize } from '../entities/moons.js';
 import { setSatelliteDistance, setSatelliteSize } from '../entities/probes.js';
 import { refreshClimateColoring } from '../framework/body.js';
-import { focusedBody, moons, planets, probes } from '../framework/state.js';
-import { focusedProbe } from '../modes/focus.js';
+import { focusedBody, focusedProbe, moons, planets, probes } from '../framework/state.js';
 import {
   refreshOrbitLine, setSatelliteOrbitLinesVisible, showSatelliteOrbits
 } from '../system/orbits.js';

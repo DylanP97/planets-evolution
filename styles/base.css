@@ -1,0 +1,45 @@
+/* Font, body, cursor rules, canvas — global page chrome.
+   Loaded by index.html; file order preserves the original cascade. */
+
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+body {
+    margin: 0;
+    overflow: hidden;
+    background: #02030a;
+    font-family: 'Share Tech Mono', monospace;
+    color: #00f2ff;
+    cursor: none;
+}
+
+/* Restore the OS cursor only over panels with controls/options */
+#ui,
+#bottomNav,
+#surfaceTopBar {
+  cursor: default;
+}
+
+canvas {
+    display: block;
+    cursor: none;
+}
+
+/* Orbit-mode hover tooltip: names the biome of the terrain under the cursor.
+   Positioned at the pointer by interaction/pointer.js. */
+#hoverBiomeTip {
+  position: fixed;
+  z-index: 40;
+  padding: 4px 9px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  background: rgba(10, 25, 40, 0.88);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 3px;
+  box-shadow: 0 0 14px rgba(0, 242, 255, 0.25);
+  pointer-events: none;
+  white-space: nowrap;
+}
+#hoverBiomeTip[aria-hidden="true"] { display: none; }

@@ -1,0 +1,237 @@
+/* Pick mode + surface-walk overlay: top bar, crosshair, hints.
+   Loaded by index.html; file order preserves the original cascade. */
+
+/* Pick mode — crosshair over the canvas while choosing a landing spot. */
+body.pick-mode canvas { cursor: crosshair !important; }
+
+#pickHint {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 8px 16px;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  background: rgba(10, 25, 40, 0.85);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 2px;
+  box-shadow: 0 0 18px rgba(0, 242, 255, 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+body.pick-mode #pickHint { opacity: 1; }
+
+#pickToast {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 31;
+  padding: 8px 16px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #ff5577;
+  background: rgba(40, 10, 20, 0.9);
+  border: 1px solid rgba(255, 85, 119, 0.6);
+  border-radius: 2px;
+  box-shadow: 0 0 18px rgba(255, 85, 119, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+#pickToast.show { opacity: 1; }
+
+/* Surface mode — the immersive ground-level view. Hides editing panels and
+   the multi-row nav; shows a top bar with the location name + an exit button,
+   plus a faint crosshair so the user has a focal point. */
+#surfaceOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+body.surface-mode #surfaceOverlay {
+  opacity: 1;
+}
+body.surface-mode #ui,
+body.surface-mode #infoPanel,
+body.surface-mode #bottomNav {
+  display: none;
+}
+
+#surfaceTopBar {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: rgba(10, 25, 40, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 242, 255, 0.35);
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(0, 242, 255, 0.18);
+  pointer-events: auto;
+}
+
+.surface-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.surface-eyebrow {
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.55);
+}
+
+.surface-name {
+  font-size: 14px;
+  letter-spacing: 2px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.7);
+}
+
+#surfaceExitBtn {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 8px 14px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#surfaceExitBtn:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+
+#surfaceCrosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 1px solid rgba(0, 242, 255, 0.35);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(0, 242, 255, 0.25);
+}
+#surfaceCrosshair::before,
+#surfaceCrosshair::after {
+  content: '';
+  position: absolute;
+  background: rgba(0, 242, 255, 0.45);
+}
+#surfaceCrosshair::before {
+  left: 50%; top: -6px; width: 1px; height: 5px; margin-left: -0.5px;
+}
+#surfaceCrosshair::after {
+  top: 50%; left: -6px; height: 1px; width: 5px; margin-top: -0.5px;
+}
+
+/* Minimap — bottom-left corner radar of the terrain around the avatar, with
+   the biome name under the avatar's feet. Populated by modes/surface/minimap.js. */
+#surfaceMinimapPanel {
+  position: absolute;
+  left: 20px;
+  bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  background: rgba(10, 25, 40, 0.78);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 242, 255, 0.35);
+  border-radius: 6px;
+  box-shadow: 0 0 20px rgba(0, 242, 255, 0.15);
+}
+
+#surfaceMinimapWrap {
+  position: relative;
+  width: 120px;
+  height: 120px;
+}
+
+#surfaceMinimap {
+  width: 120px;
+  height: 120px;
+  display: block;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.55);
+  image-rendering: auto;
+}
+
+/* Rotating compass: N/E/S/W chips positioned each frame by minimap.js so they
+   point to true planetary north as the avatar (and the radar) turns. */
+#surfaceMinimapCompass {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.mm-card {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #d6fbff;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.9);
+}
+#mmCardN { color: #ff6b6b; }   /* north stands out like a compass needle */
+
+.surface-minimap-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.3;
+}
+
+.surface-minimap-eyebrow {
+  font-size: 8px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.55);
+}
+
+#surfaceMinimapBiome {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #fff;
+  text-shadow: 0 0 8px rgba(0, 242, 255, 0.6);
+}
+
+#surfaceHint {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.5);
+  padding: 6px 14px;
+  background: rgba(10, 25, 40, 0.6);
+  border: 1px solid rgba(0, 242, 255, 0.18);
+  border-radius: 2px;
+}

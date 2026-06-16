@@ -11,9 +11,9 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | Path              | What it holds                                                                  |
 | ----------------- | ------------------------------------------------------------------------------ |
 | `index.html`      | Canvas, tabbed left panel, info panel (right), bottom nav, surface overlay, importmap. |
-| `style.css`       | All styling. CSS variables drive the sci-fi HUD theme.                         |
-| `src/`            | The whole runtime, ~50 ES modules (map below).                                 |
-| `assets/`         | All GLB models: `character.glb` (avatar, three.js RobotExpressive), `satellite.glb` (probes), `lunar_base.glb` (colonies), `tree.glb`/`pine.glb`/`rock.glb` (surface props). |
+| `styles/`         | All styling, split by panel: `base` (variables/theme), `left-panel`, `controls`, `lists`, `info-panel`, `bottom-nav`, `surface`, `star-map`, `effects`. CSS variables in `base.css` drive the sci-fi HUD theme. |
+| `src/`            | The whole runtime, ~55 ES modules (map below).                                 |
+| `assets/`         | All GLB models: `character.glb` (avatar, three.js RobotExpressive), `satellite.glb` (probes), `lunar_base.glb` (colonies), `tree.glb`/`pine.glb`/`rock.glb` (surface props), `fish.glb` (seabed schools). |
 | `ARCHITECTURE.md` | This file. Update the module map when modules move.                            |
 
 ---
@@ -31,7 +31,8 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `utils.js`     | `smoothstep` and friends. |
 | `scene.js`     | `scene`, `camera`, `renderer`, `controls` (OrbitControls), `sun` point light + shadow map, ambient/moon/sky lights. |
 | `sun.js`       | `sunMesh` (plasma photosphere), `coronaMesh`, `plasmaTickUniforms` (ticked every frame, even paused). |
-| `names.js`     | Random cosmic name generator; `systemName`. |
+| `names.js`     | Random cosmic name generator; `systemName`; `ROMAN` numerals. |
+| `bus.js`       | Synchronous pub/sub (`on`/`emit`). Lower layers emit UI-refresh events; **every** subscription is registered in `ui/wire-up.js`. Event list in the header comment. |
 
 ### `shaders/` — GLSL + material factories
 
@@ -51,7 +52,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `terrain.js`    | `hashSeed`, `makeRNG`, sum-of-sines FBM basis (`buildTerrainBasis` / `sampleTerrainNoise`). |
 | `materials.js`  | `onBeforeCompile` patches: ice self-glow, surface-walk ground detail, ocean waves + shoreline foam. |
 | `climate.js`    | Climate model (`computeClimate`, `temperatureAtLatitude`), ocean climate coloring, `tempColor`/`fmtTemp`, `surfaceGravityG`. |
-| `body.js`       | `createBody`, per-vertex write/color (incl. venusian branch + `CLIMATE_LAND_ZONES`), `applyMatterToBody`, `applyGasShell`, `applyRingsToBody`, `regenerateBody`, `recolorBody`, `refreshClimateColoring`, `applyBrushToBody`, `bakeOceanShore` (incl. the seabed texture the water patch samples). |
+| `body.js`       | `createBody`, per-vertex write/color (incl. venusian branch + `CLIMATE_LAND_ZONES`), `applyMatterToBody`, `applyGasShell`, `applyRingsToBody`, `regenerateBody`, `recolorBody`, `refreshClimateColoring`, `applyBrushToBody`, `bakeOceanShore` (incl. the seabed texture the water patch samples). **Terrain naming (single source of truth):** `compKeyAt` (composition bucket per vertex) + `bandLabel` (per-archetype name) drive the info-panel rollup, the minimap and the orbit hover via `biomeNameOfFace`. Also the surface-detail classifier `FACE_BIOME` + `groundBiomeOfFace` (grass/props key off it). |
 
 ### `system/` — orbital mechanics + star systems
 
@@ -61,6 +62,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `planets.js`     | `SOLAR_SYSTEM_SPEC`, planet registry, orbit advance, `updatePlanetRotation`, `spawnSolarPlanet`. |
 | `lighting.js`    | `updateSunLightForFocus` (per-body `uSunDir`, shadow framing), `updateMoonLight`. |
 | `starsystems.js` | `galaxy` catalog, procedural system generation, `loadStarSystem` / `unloadStarSystem` / `bootstrapSolSystem`, `viewLevel`. |
+| `teardown.js`    | `removePlanetBody` — cascade-delete a planet + its moons/probes/cities/orbit line. Used by both the roster's remove button and `unloadStarSystem`. |
 
 ### `interaction/` — canvas input (orbit mode)
 
@@ -89,45 +91,58 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 
 | Module               | Responsibility |
 | -------------------- | -------------- |
-| `focus.js`           | `setFocus`/`setCityFocus`/`setProbeFocus`, `focusedCity`/`focusedProbe`, `updateFocusTracking`. |
+| `focus.js`           | `setFocus`/`setCityFocus`/`setProbeFocus` (the camera-moving setters; the `focused*` state itself lives in `framework/state.js`), `updateFocusTracking`. |
 | `surface/core.js`    | `surfaceState` (the big shared state object), pick mode, visit button, `buildLocalFrame`. |
 | `surface/avatar.js`  | `character.glb` loading, clip state machine, blob shadow. |
 | `surface/mode.js`    | `enterSurfaceMode`/`exitSurfaceMode` — camera snap/restore, atmosphere reconfig, attach/detach all fields. |
-| `surface/sky.js`     | Aerial fog, underwater murk + `#underwaterOverlay`, atmospheric skylight ramp. |
+| `surface/sky.js`     | Aerial-perspective fog + atmospheric skylight ramp (underwater fog moved to the pass below). |
+| `surface/underwater-pass.js` | Per-pixel underwater depth fog as a post-process pass: scene → offscreen target → fullscreen shader that fogs each pixel by its view ray's chord below the sea-level sphere (`renderUnderwater`/`underwaterPassActive`; live knobs at `window.uwFog`). |
 | `surface/camera.js`  | Floating-origin shift (`updateSurfaceOrigin`), surface camera transform. |
 | `surface/swim.js`    | Procedural swim stroke, `updateAstronaut` (pose/facing/animation per frame). |
-| `surface/grass.js`   | Instanced grass + flowers, treadmill grid, ground sampling (`sampleGrassGround`, shared `_gr*`/`_g*` scratch). |
+| `surface/scratch.js` | Shared per-frame scratch (one raycaster + `_gr*`/`_g*` vectors) used by grass/ground/rocks/props — zero imports besides THREE, so no cycles. |
+| `surface/grass.js`   | Instanced grass, treadmill grid, ground sampling (`sampleGrassGround`, `grassGroundRadius`). Reads the canonical `groundBiomeOfFace`/`FACE_BIOME` classifier (now in `framework/body.js`) for per-blade variants (meadow/forest/tundra) via `grassZoneOfFace` + `GRASS_ZONE_STYLE`. |
 | `surface/rocks.js`   | Instanced rocks (desert/venusian), `resolveRockCollision`. |
 | `surface/water.js`   | Local water patch: waves, depth shading, crest/shore foam, `waveHeightAtAvatar`. |
-| `surface/ground.js`  | Ground micro-relief patch + footprint decals (`stampFootprint*`, `FOOTPRINT_GROUND`). |
-| `surface/props.js`   | Real GLB props (trees/pines/rocks) on grass worlds. |
-| `surface/walk.js`    | `stepSurfaceWalk` (WASD/sprint/jump/swim buoyancy), `sampleGroundRadius`, `tryJump`. |
+| `surface/seabed.js`  | Submerged dressing on water worlds: procedural swaying kelp/algae fronds + schooling fish (`fish.glb`), on the grass treadmill grid, gated to below-waterline cells; patchiness (distinct beds/schools with open water between) comes from the cluster scatter (`attachSeabed`/`updateSeabed`, `window.seabedDiag`). |
+| `surface/ground.js`  | Ground micro-relief patch (currently disabled — `ENABLE_GROUND_PATCH`). |
+| `surface/footprints.js` | Footprint decal layer (`stampFootprint*`, `FOOTPRINT_GROUND`, `window.footDiag`). |
+| `surface/bubbles.js` | Soft air bubbles that fizz up around the avatar while submerged (`surfaceState.swimming`): a scene-local Points cloud anchored to the avatar's foot point, eased in/out on dive/surface (`attachBubbles`/`updateBubbles`). |
+| `surface/props.js`   | Real GLB props gated per surface biome: pines→forest, boulders→tundra, palm+understory→jungle (`groundBiomeOfFace`). |
+| `surface/minimap.js` | Corner minimap (`updateMinimap`): top-down terrain-colour radar around the avatar + biome name (via `biomeNameOfFace`) + a rotating N/E/S/W compass (chips track true planetary north each frame). |
+| `surface/weather.js` | Storm-world weather: frequent lightning (sky flash + bolt), tornado funnels, rain (`attachWeather`/`updateWeather`). |
+| `surface/walk.js`    | `stepSurfaceWalk` (WASD/sprint/jump/swim buoyancy/free C-dive+Space-rise), `sampleGroundRadius`, `tryJump`. |
 | `surface/input.js`   | Surface-mode listeners: drag/pointer-lock look, wheel zoom, key handling, deploy buttons. |
 
 ### `ui/` — panels + HUD
 
 | Module             | Responsibility |
 | ------------------ | -------------- |
+| `dom.js`           | Zero-import table of shared `getElementById` consts. The only `ui/` module lower layers may import. |
 | `info-panel.js`    | Right telemetry panel: composition rollup, climate section, `updateInfoPanel` + throttled `updateLiveInfo`. |
-| `controls.js`      | Tab switching, sculpt/biome/gas-paint controls, most left-panel DOM refs. |
-| `atmo-rings.js`    | Atmosphere sliders, ring controls, `onRegenClick`, `sliderTo*` conversions. |
+| `controls.js`      | Tab switching, sculpt/biome/gas-paint controls, `sliderTo*` conversions, most left-panel DOM refs. |
+| `atmo-rings.js`    | Atmosphere sliders, ring controls, `onRegenClick`. |
 | `left-panel.js`    | `applyFocusToLeftPanel` — context-aware section visibility + slider sync. |
 | `orbit-sliders.js` | Distance/speed/spin/size + satellite orbit-plane slider handlers. |
-| `roster.js`        | `deployNewPlanet`, `removePlanetBody` (cascade), roster/moons/probes list renderers. |
+| `roster.js`        | `deployNewPlanet`, roster/moons/probes list renderers. (Cascade planet teardown is `system/teardown.js`.) |
 | `nav.js`           | Bottom-nav hierarchy (`navUp`/`navDown`/`navSibling`), `setSystemFocus`, breadcrumb. |
 | `naming.js`        | Inline rename for bodies/system, re-render fan-out. |
 | `star-map.js`      | Galaxy/constellation overlays, drag, create/delete/travel. |
-| `wire-up.js`       | **Deferred wiring** — see the TDZ note in Conventions. Imported last by `main.js`. |
+| `wire-up.js`       | **Deferred wiring + the bus subscription registry** — every `core/bus.js` subscription, one-shot button wiring, slider init. Imported last by `main.js`. |
 
 ---
 
 ## Module conventions
 
-- **Shared mutable state lives in `framework/state.js`.** ES-module live bindings mean any module can *read* `focusedBody` directly via import, but assigning to an import is a TypeError — so every reassignable variable has a `set*` function (`setFocusedBody(b)`, `setViewMode('pick')`, …). A few module-local ones follow the same pattern (`setFocusedCity` in `modes/focus.js`, `setViewLevel` in `system/starsystems.js`, `setPlanetCurrentSeed` in `ui/info-panel.js`). Arrays/objects (`bodies`, `surfaceState`, `gasPaintColor`) are mutated in place and need no setters.
-- **The ui/ modules form import cycles** (controls ↔ atmo-rings ↔ left-panel ↔ roster ↔ nav ↔ star-map ↔ starsystems …). A module evaluated mid-cycle must NOT touch another cycle member's `const`s at its own module scope — they are still in their temporal dead zone (TDZ) and throw `Cannot access 'x' before initialization`, which kills the whole app. Function *calls inside handlers* are always fine (they run later). Wiring that genuinely needs cross-cycle consts at init time lives in `ui/wire-up.js`, which `main.js` imports last. If you add module-scope statements to a ui/ module, prefer `document.getElementById(...)` over importing another module's element const.
+- **Shared mutable state lives in `framework/state.js`.** ES-module live bindings mean any module can *read* `focusedBody` directly via import, but assigning to an import is a TypeError — so every reassignable variable has a `set*` function (`setFocusedBody(b)`, `setViewMode('pick')`, …). A few module-local ones follow the same pattern (`setViewLevel` in `system/starsystems.js`, `setSystemNameValue` in `core/names.js`). Arrays/objects (`bodies`, `surfaceState`, `gasPaintColor`) are mutated in place and need no setters.
+- **The import graph is acyclic** — verify with `node .claude/scc-graph.cjs` ("No cycles."). Rough layering: `core → framework → entities / modes → system → ui`, with `ui/nav.js`, `ui/naming.js`, and `ui/wire-up.js` at the very top. Three mechanisms keep upward edges out:
+  - **`ui/dom.js`** — a zero-import table of `getElementById` consts. Any module (any layer) may import element refs from it; never import element consts from a peer ui/ module if `dom.js` already has them.
+  - **`core/bus.js`** — synchronous pub/sub. When a lower module needs a UI refresh (e.g. `entities/moons.js` after removing a moon, `system/starsystems.js` at the end of a system load), it `emit`s an event instead of importing the panel renderer. **All `on()` subscriptions are registered in `ui/wire-up.js`**, in source order, so the handler call order is deterministic and the whole event wiring is auditable in one file. Emitting an event nobody subscribed to yet is a harmless no-op — safe during module evaluation, before wire-up runs. The event list lives in `core/bus.js`'s header comment.
+  - **`system/teardown.js`** — owns `removePlanetBody` so both `ui/roster.js` and `system/starsystems.js` can cascade-delete without a system→ui edge.
+
+  If you add an import and `scc-graph.cjs` reports a cycle, break it with one of the three (or move shared state down into `framework/state.js`) rather than living with it — cycles reintroduce load-order TDZ crashes (`find-tdz.cjs` is the legacy scanner for those).
 - **`main.js` import order mirrors the original monolith's section order** — keep new modules in a sensible spot and keep `wire-up.js` last, followed only by the `loadStarSystem` bootstrap call.
 - **`commitBodyChanges(body)`** — always call after mutating `heights` / `colorArr`, otherwise the GPU sees stale data and normals.
-- **Reusable scratch vectors**: modules keep `_xxx` `THREE.Vector3` instances at module scope to avoid allocation in the frame loop (some are exported and shared across the surface modules — e.g. `grass.js`'s `_gr*` sampler outputs are read by rocks/ground/props). Reuse them; don't allocate per-frame in hot code.
+- **Reusable scratch vectors**: modules keep `_xxx` `THREE.Vector3` instances at module scope to avoid allocation in the frame loop. The surface modules (grass/ground/rocks/props) share one set in `modes/surface/scratch.js`. Reuse them; don't allocate per-frame in hot code — and remember they're not re-entrant.
 - **`body.kind`**: `'planet'` or `'moon'`. Many UI branches gate on this.
 - **Sea level**: `SEA_LEVEL = 0`. Heights below 0 are submerged (and invisible if `matter.liquid`).
 - **GLSL injection**: injected varyings in `onBeforeCompile` patches are `#ifndef`-guarded because three.js can re-run the patch over an already-patched string (program variants) — bare declarations land twice and fail to compile.
@@ -220,7 +235,7 @@ The loop is the bottom of `src/main.js`. Read it top to bottom for the canonical
 3. Always: `updateMoons`, `updateSatellites`, `updateEruptions`, `updateCityMarkers`, `updateSunLightForFocus`, `updateMoonLight`.
 4. `updateFocusTracking` keeps the camera chasing the focused body's world position.
 5. `controls.update()` (OrbitControls).
-6. If `viewMode === 'surface'`: `updateSurfaceOrigin` → `stepSurfaceWalk` → `updateSurfaceCamera` → `updateAstronaut` → grass/rocks/water/ground/props updates → `updateSurfaceSkyEffects`.
+6. If `viewMode === 'surface'`: `updateSurfaceOrigin` → `stepSurfaceWalk` → `updateSurfaceCamera` → `updateAstronaut` → grass/rocks/water/ground/props/seabed updates → `updateSurfaceSkyEffects` → `updateWeather` (storm worlds; runs last so its lightning pulse adds on top of the skylight).
 7. If a brush stroke is active, `applyBrushToBody(activeBrushBody, lastHitLocal, dt)`.
 8. Galactic band recentered on the camera; brightness follows the starfield fade.
 9. Throttled (~10 Hz): `updateLiveInfo()`.
@@ -285,7 +300,7 @@ Single state variable, `viewMode` (`framework/state.js`): `'orbit' | 'pick' | 's
 
 **Water patch** (`surface/water.js`): a local high-res grid replacing the global ocean sphere during the visit — rolling waves (`wv()` mirrored by `waveHeightAtAvatar` for buoyancy), per-fragment depth shading from `body.seabedTex` (baked in `bakeOceanShore`), crest + shoreline crash foam, fresnel, micro-ripple glints.
 
-**Footprints** (`surface/ground.js`): boot-print decals evaluated in the `groundPatch` fragment shader — an oriented boot SDF that darkens soil, lightens a displaced rim, and bends the shading normal. Prints live in the ground-fixed treadmill coords (`grassU/grassV`), settle over `FOOT_LIFE` (~70 s) in a `FOOT_N`-slot ring buffer. `stampFootprintsFromStep` meters alternating prints every half-stride; a jump landing punches both boots. `FOOTPRINT_GROUND` gates which archetypes print. `window.footDiag()` is the console diagnostic.
+**Footprints** (`surface/footprints.js`): a standalone near-field decal layer, decoupled from the disabled ground patch. A transparent terrain-hugging plane (its own GP raycast grid for height + soil colour) renders boot-print decals in its fragment shader — an oriented boot SDF that darkens soil, lightens a displaced rim, and bends the shading normal. The plane is fully transparent except on prints (alpha = 0 elsewhere), so it never reintroduces the "square overlay" bug that disabled the ground patch. Prints live in the ground-fixed treadmill coords (`grassU/grassV`), settle over `FOOT_LIFE` (~70 s) in a `FOOT_N`-slot ring buffer. `stampFootprintsFromStep` meters alternating prints every half-stride; a jump landing punches both boots. `footprintStrengthHere` decides where prints land: archetype-soft planets (`FOOTPRINT_GROUND`: venusian/desert/moon_like) by height band; **moons** everywhere (regolith/mare/frost); **Earth-likes** only on sand beaches and snow/ice (mirrors `colorBodyVertex`'s zone logic via `CLIMATE_LAND_ZONES`/`pickLandZone`). The layer attaches on any body that prints somewhere (`bodyCanPrint`). `window.footDiag()` is the console diagnostic.
 
 **Sky / underwater** (`surface/sky.js`): aerial-perspective `FogExp2` tinted by the archetype sky; submersion is judged from the **camera's** body-local radius vs the lifted waterline — underwater swaps fog to a liquid tint and raises the `#underwaterOverlay` full-screen tint (covers the fog-immune sky shaders). The atmospheric skylight (HemisphereLight in `core/scene.js`) scales with `(density × coverage)^1.5` and sun elevation, so Venus-thick shells get overcast daylight while airless worlds get none.
 
@@ -295,7 +310,7 @@ Single state variable, `viewMode` (`framework/state.js`): `'orbit' | 'pick' | 's
 
 ### Focus → left panel (`modes/focus.js`, `ui/left-panel.js`)
 
-`focusedBody` (+ `focusedCity`/`focusedProbe`) drive everything visible. `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute in `index.html`. `setFocus`/`setCityFocus`/`setProbeFocus` retarget OrbitControls and re-render the lists.
+`focusedBody` (+ `focusedCity`/`focusedProbe`, all in `framework/state.js`) drive everything visible. `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute in `index.html`. `setFocus`/`setCityFocus`/`setProbeFocus` retarget OrbitControls and end with `emit('focus:changed')`, whose wire-up handler re-renders the badges, biome tools, info panel, and left panel (in that order — the left panel runs last so its gas-band hint wins).
 
 ### Star systems + maps (`system/starsystems.js`, `ui/star-map.js`)
 
@@ -346,11 +361,17 @@ Anything referenced from JS by id, grouped by panel:
 | `enterPickMode`, `surfaceState`, `isBodyVisitable` | `modes/surface/core.js` |
 | `enterSurfaceMode` / `exitSurfaceMode` | `modes/surface/mode.js` |
 | `stepSurfaceWalk`, `sampleGroundRadius`, `tryJump` | `modes/surface/walk.js` |
-| `stampFootprint`, `footprintStrengthHere` | `modes/surface/ground.js` |
+| `stampFootprint`, `footprintStrengthHere` | `modes/surface/footprints.js` |
+| `updateMinimap` | `modes/surface/minimap.js` |
+| `biomeNameOfFace` (face label), `compKeyAt`/`bandLabel` (composition naming), `groundBiomeOfFace`/`FACE_BIOME` (grass/prop classifier) | `framework/body.js` |
+| `COMP_DISPLAY`, `ARCHETYPE_BAND_LABELS`, `*_COMP_ORDER` (composition label tables) | `core/constants.js` |
+| Orbit-mode cursor markers — `updateOrbitInteraction` (per-frame re-raycast so brush ring / hover dot / `#hoverBiomeTip` don't drift as planets rotate) | `interaction/pointer.js` |
 | `waveHeightAtAvatar`, `buildWaterPatch` | `modes/surface/water.js` |
 | `updateInfoPanel`, `updateLiveInfo`, `computeBodyStats` | `ui/info-panel.js` |
 | `applyFocusToLeftPanel` | `ui/left-panel.js` |
-| `deployNewPlanet`, `removePlanetBody`, `renderPlanetList` | `ui/roster.js` |
+| `deployNewPlanet`, `renderPlanetList` | `ui/roster.js` |
+| `removePlanetBody` | `system/teardown.js` |
+| `on`, `emit` (bus events; subscriptions in `ui/wire-up.js`) | `core/bus.js` |
 | `navUp`, `navDown`, `setSystemFocus`, `renderNavBodies` | `ui/nav.js` |
 | `setBodyName`, `commitFocusName` | `ui/naming.js` |
 | `openGalaxyMap`, `travelToSystem` | `ui/star-map.js` |
@@ -365,4 +386,4 @@ There is no test suite; verification is headless-browser based. Helper scripts l
 - `verify-refactor.cjs` — boot smoke test: zero console errors, orbit view, surface landing + walk + jump, star map. Run with `NODE_PATH=$(npm root -g) node .claude/verify-refactor.cjs` (needs the globally installed `playwright`).
 - `verify-water.cjs` / `verify-venus.cjs` / `verify-swim.cjs` / … — feature-specific scenarios with screenshots.
 - In-app console diagnostics: `window.grassDiag()`, `window.footDiag()`.
-- Static checks (ESLint lives in `.claude/tooling/`): `node .claude/lint-report.cjs` (no-undef + no-import-assign over `src/`), `node .claude/check-imports.cjs` (every named import resolves to a real export), `node .claude/find-tdz.cjs` (heuristic scan for the import-cycle TDZ hazard described in Conventions).
+- Static checks (ESLint lives in `.claude/tooling/`): `node .claude/lint-report.cjs` (no-undef + no-import-assign over `src/`), `node .claude/check-imports.cjs` (every named import resolves to a real export), `node .claude/scc-graph.cjs` (Tarjan SCC over the import graph — must print "No cycles."), `node .claude/find-tdz.cjs` (legacy heuristic scan for cycle-induced TDZ hazards; moot while the graph stays acyclic).

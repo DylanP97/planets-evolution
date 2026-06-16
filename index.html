@@ -5,7 +5,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planets Evolution</title>
-   <link rel="stylesheet" href="style.css"/>
+  <!-- Order matters: files preserve the original cascade order. -->
+  <link rel="stylesheet" href="styles/base.css"/>
+  <link rel="stylesheet" href="styles/left-panel.css"/>
+  <link rel="stylesheet" href="styles/controls.css"/>
+  <link rel="stylesheet" href="styles/lists.css"/>
+  <link rel="stylesheet" href="styles/effects.css"/>
+  <link rel="stylesheet" href="styles/info-panel.css"/>
+  <link rel="stylesheet" href="styles/bottom-nav.css"/>
+  <link rel="stylesheet" href="styles/surface.css"/>
+  <link rel="stylesheet" href="styles/star-map.css"/>
 </head>
 
 <body>
@@ -258,7 +267,22 @@
       <button id="surfaceExitBtn" type="button" title="Return to orbital view">▲ RETURN TO ORBIT</button>
     </div>
     <div id="surfaceCrosshair"></div>
-    <div id="surfaceHint">WASD: Walk / Swim · Shift: Run · Space: Jump · V: Camera · O: Orbits · Drag: Look</div>
+    <div id="surfaceMinimapPanel">
+      <div id="surfaceMinimapWrap">
+        <canvas id="surfaceMinimap" width="120" height="120"></canvas>
+        <div id="surfaceMinimapCompass">
+          <span class="mm-card" id="mmCardN">N</span>
+          <span class="mm-card" id="mmCardE">E</span>
+          <span class="mm-card" id="mmCardS">S</span>
+          <span class="mm-card" id="mmCardW">W</span>
+        </div>
+      </div>
+      <div class="surface-minimap-label">
+        <span class="surface-minimap-eyebrow">Biome</span>
+        <span id="surfaceMinimapBiome">—</span>
+      </div>
+    </div>
+    <div id="surfaceHint">WASD: Walk / Swim · Shift: Run · Space: Jump / Rise · C: Dive · V: Camera · O: Orbits · Drag: Look</div>
   </div>
 
   <div id="mapOverlay" aria-hidden="true">
@@ -277,10 +301,13 @@
 
   <div id="systemTransition" aria-hidden="true"><div id="systemTransitionText">Entering…</div></div>
 
+  <div id="hoverBiomeTip" aria-hidden="true"></div>
+
   <div id="pickHint" aria-hidden="true">Click on solid land to land there · Esc to cancel</div>
   <div id="pickToast" aria-live="polite"></div>
 
   <div id="underwaterOverlay" aria-hidden="true"></div>
+  <div id="lightningFlash" aria-hidden="true"></div>
   <div id="scanOverlay"></div>
   <canvas id="c"></canvas>
 

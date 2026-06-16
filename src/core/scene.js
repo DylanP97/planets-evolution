@@ -12,7 +12,15 @@ camera.position.set(0, 15, 28);
 export const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
+// Shadow map OFF. The Sun is a PointLight at the system origin, so its single
+// shadow map has to span the WHOLE solar system (far = SUN_FAR ≈ 1400) at
+// 1024². Up close on a surface that's one texel across the entire landscape,
+// so the planet self-shadows into a big dark zone around the avatar by day
+// (and the inverse, a pale zone, by night) that tracks the camera on every
+// world. It resolves nothing useful at any zoom — rings draw their own
+// shader-based planet shadow, and the avatar has a blob shadow — so we leave
+// the shadow map disabled. (sun.castShadow below is then a no-op.)
+renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 export const controls = new OrbitControls(camera, renderer.domElement);

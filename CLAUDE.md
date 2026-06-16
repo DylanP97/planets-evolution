@@ -17,6 +17,7 @@ Entry point: `index.html` → `src/main.js`.
 Read **ARCHITECTURE.md** first — it has the module map, data model, frame lifecycle, and a "where is function X" table. Every `src/` module also starts with a header comment saying what it owns. Quick orientation:
 
 - `src/main.js` — imports everything in order, boots Sol, runs the animate loop.
+- `src/core/` — scene/camera/renderer, constants, names, and **`bus.js`** (the pub/sub lower layers use to trigger UI refreshes).
 - `src/framework/` — body factory, terrain, climate, archetypes, and **`state.js`** (all shared mutable state).
 - `src/shaders/` — gas/plasma/corona/ring GLSL.
 - `src/system/` — orbits, Sol spec, lighting, star-system load/unload.
@@ -27,14 +28,16 @@ Read **ARCHITECTURE.md** first — it has the module map, data model, frame life
 ## Critical conventions (violating these breaks the app)
 
 1. **Never assign to an imported binding.** Shared mutable state lives in `framework/state.js` (and a few sibling modules) behind `set*` functions: `setFocusedBody(b)`, `setViewMode('surface')`, … Reading via import is fine (live bindings).
-2. **The ui/ modules form import cycles.** Module-scope code must not touch another cycle member's consts — TDZ `ReferenceError` kills the whole app at load. Cross-cycle init wiring belongs in `ui/wire-up.js` (imported last by `main.js`). Details + a scan script in ARCHITECTURE.md → Conventions.
+2. **The import graph is acyclic — keep it that way.** Layering: `core → framework → entities/modes → system → ui`. A lower-layer module must never import from `ui/` (sole exception: `ui/dom.js`, a zero-import table of `getElementById` consts); when it needs a UI refresh it emits a `core/bus.js` event, and **all** subscriptions live in `ui/wire-up.js` (imported last by `main.js`, so handler order is deterministic and auditable in one place). Check with `node .claude/scc-graph.cjs` — it must print "No cycles." Details in ARCHITECTURE.md → Conventions.
 3. **Call `commitBodyChanges(body)`** after mutating `body.heights` / `body.colorArr`.
 4. **Don't allocate vectors in the frame loop** — reuse the module-scope `_xxx` scratch vectors (some are exported and shared between surface modules).
 5. **GLSL `onBeforeCompile` patches**: guard injected varyings with `#ifndef` — three.js may re-run the patch on an already-patched shader string.
 
 ## Verify changes
 
-Headless Playwright scripts in `.claude/` (playwright is installed globally; on this machine set `NODE_PATH` to `npm root -g`):
+**Do not run Playwright or take screenshots autonomously.** Visual verification is the user's job: after making changes, ask the user to reload the browser and describe what they see. Only run the static checks below automatically.
+
+The Playwright scripts exist for reference but should only be run if the user explicitly asks:
 
 ```powershell
 $env:NODE_PATH = npm root -g
@@ -48,7 +51,8 @@ Static checks (ESLint in `.claude/tooling/` — first time, run `npm install` in
 ```powershell
 node .claude/lint-report.cjs       # no-undef + no-import-assign over src/
 node .claude/check-imports.cjs     # every named import resolves to a real export
-node .claude/find-tdz.cjs          # scan for the ui-cycle TDZ hazard
+node .claude/scc-graph.cjs         # import-cycle check — must print "No cycles."
+node .claude/find-tdz.cjs          # legacy TDZ-hazard scan (moot while acyclic)
 ```
 
 In-app console diagnostics: `window.grassDiag()`, `window.footDiag()`.

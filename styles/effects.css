@@ -1,0 +1,116 @@
+/* Full-screen HUD effects: scan line, underwater tint, CRT overlay, flicker.
+   Loaded by index.html; file order preserves the original cascade. */
+
+/* Scanning line effect — its own element so it doesn't clobber the
+   ::before corner decoration in the top-left. */
+.scan-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(0, 242, 255, 0.15);
+  z-index: 4;
+  pointer-events: none;
+  animation: scanLine 6s linear infinite;
+}
+
+@keyframes scanLine {
+  0% { top: 0; }
+  100% { top: 100%; }
+}
+
+/* Full-screen underwater tint. The 3D fog can't touch the fog-less sky/sun/star
+   shaders, so this overlay is what makes the WHOLE view read submerged. The
+   gradient (body's own water colour) and opacity are driven from src/modes/surface/sky.js. */
+#underwaterOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 90;
+  opacity: 0;
+}
+
+/* Animated underwater haze: drifting soft light shafts layered over the tint,
+   so the murk feels alive rather than a flat colour wash. Self-animating via
+   keyframes; it only shows when sky.js raises the parent overlay's opacity
+   underwater (the parent gates it), so it costs nothing above water. */
+#underwaterOverlay::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), transparent 45%),
+    radial-gradient(circle at 72% 60%, rgba(255, 255, 255, 0.05), transparent 50%),
+    radial-gradient(circle at 48% 82%, rgba(200, 240, 255, 0.05), transparent 55%);
+  mix-blend-mode: screen;
+  filter: blur(10px);
+  animation: underwaterHaze 18s ease-in-out infinite alternate;
+}
+
+@keyframes underwaterHaze {
+  0%   { transform: translate3d(-3%, -2%, 0) scale(1.05); opacity: 0.65; }
+  50%  { transform: translate3d(2%, 3%, 0)   scale(1.16); opacity: 1.0; }
+  100% { transform: translate3d(3%, -1%, 0)  scale(1.08); opacity: 0.8; }
+}
+
+/* Storm-world lightning flash. A cool blue-white sheet over the whole view;
+   opacity is pulsed per strike from src/modes/surface/weather.js (it decays
+   itself each frame, so no CSS animation). Sits below the scanline/vignette UI
+   but above the scene so the strike washes the sky. */
+#lightningFlash {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle at 50% 30%, rgba(226, 236, 255, 0.95), rgba(176, 196, 235, 0.6) 60%, rgba(140, 160, 200, 0.3) 100%);
+  mix-blend-mode: screen;
+  pointer-events: none;
+  z-index: 95;
+  opacity: 0;
+}
+
+#scanOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 242, 255, 0.02) 50%), 
+              linear-gradient(90deg, rgba(255, 0, 0, 0.01), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.01));
+  background-size: 100% 4px, 3px 100%;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0.3;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle, transparent 70%, rgba(0, 0, 0, 0.4) 100%);
+  pointer-events: none;
+  z-index: 99;
+}
+
+@keyframes flicker {
+  0% { opacity: 0.97; }
+  5% { opacity: 0.95; }
+  10% { opacity: 0.9; }
+  15% { opacity: 0.95; }
+  20% { opacity: 0.98; }
+  25% { opacity: 0.95; }
+  30% { opacity: 0.9; }
+  100% { opacity: 1; }
+}
+
+#ui {
+  animation: flicker 0.15s infinite;
+}

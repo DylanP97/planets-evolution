@@ -97,7 +97,31 @@
       "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-venus.cjs 2>&1 | Select-Object -Last 25)",
       "PowerShell(git *)",
       "PowerShell(node .claude/add-headers.cjs; node .claude/lint-report.cjs 2>&1 | Select-Object -Last 2)",
-      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-refactor.cjs 2>&1 | Select-String 'errors|landed|focus|exited|map')"
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-refactor.cjs 2>&1 | Select-String 'errors|landed|focus|exited|map')",
+      "PowerShell(node .claude/find-tdz.cjs; \\(Get-Content style.css | Measure-Object -Line\\).Lines)",
+      "PowerShell(node .claude/scc-graph.cjs)",
+      "PowerShell(node .claude/split-css.cjs; Get-ChildItem styles | Select-Object Name, Length)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-water.cjs; node .claude/verify-venus.cjs)",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-darkzone.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-light.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/confirm-noshadow.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/check-imports.cjs\"; if \\($?\\) { node \".claude/scc-graph.cjs\" })",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-disc.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-fix.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-earth.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/confirm-earth.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/lint-report.cjs; if \\($?\\) { node .claude/check-imports.cjs }; if \\($?\\) { node .claude/scc-graph.cjs })",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/probe-square.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/check-imports.cjs\"; if \\($?\\) { node \".claude/scc-graph.cjs\" }; node \".claude/probe-square.cjs\")",
+      "PowerShell($env:NODE_PATH = npm root -g; node \".claude/check-imports.cjs\"; if \\($?\\) { node \".claude/scc-graph.cjs\" }; if \\($?\\) { node \".claude/lint-report.cjs\" })",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-water.cjs)",
+      "PowerShell($env:NODE_PATH = npm root -g; node .claude/verify-foam.cjs)",
+      "Bash(ls .claude/foam-*.png)",
+      "Bash(tail -30 .claude/verify-foam-log.txt)",
+      "PowerShell(git status --short; \"----\"; git log --oneline -1; \"----\"; git branch --show-current)",
+      "Read(//c/c/Users/dylan/Code/planet tiles/assets/**)",
+      "Read(//c/c/Users/dylan/Code/planet tiles/**)",
+      "Bash(xxd)"
     ]
   }
 }

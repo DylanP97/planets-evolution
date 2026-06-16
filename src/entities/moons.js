@@ -1,5 +1,6 @@
 // Moons — full editable bodies orbiting a parent planet: creation, slot
 // allocation (orbit planes), per-frame orbit advance.
+import { emit } from '../core/bus.js';
 import { scene } from '../core/scene.js';
 import { createBody, regenerateBody } from '../framework/body.js';
 import { bodies, focusedBody, moons, planet } from '../framework/state.js';
@@ -7,7 +8,6 @@ import { setFocus } from '../modes/focus.js';
 import {
   applySatelliteOrbitOpts, disposeSatelliteOrbitLine, refreshSatelliteOrbitLine, syncSatelliteOrbitLinePosition
 } from '../system/orbits.js';
-import { updateInfoPanel } from '../ui/info-panel.js';
 
 // ====== 16. Moons (each is a full editable body) ======
 // Moons are built once at MOON_BASE_RADIUS = 1 and resized via group.scale,
@@ -121,7 +121,7 @@ export function removeMoonAt(index) {
   freeMoonSlot(moon.parent, moon.slot);
   disposeSatelliteOrbitLine(moon);
   moons.splice(index, 1);
-  updateInfoPanel();
+  emit('ui:info');
 }
 
 export function setMoonSize(index, size) {

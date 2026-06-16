@@ -1,25 +1,21 @@
 // Galaxy catalog (constellations → star systems), procedural system
 // generation, and star-system load / unload / bootstrap.
 import { setSystemNameValue } from '../core/names.js';
-import { setClimateReady, setFocusedBody, setPlanet } from '../framework/state.js';
-import { setFocusedCity, setFocusedProbe } from '../modes/focus.js';
+import {
+  setClimateReady, setFocusedBody, setFocusedCity, setFocusedProbe, setPlanet
+} from '../framework/state.js';
 
-import { generateName, systemName } from '../core/names.js';
+import { ROMAN, generateName, systemName } from '../core/names.js';
 import { addMoon } from '../entities/moons.js';
 import { addSatellite } from '../entities/probes.js';
 import { recolorBody } from '../framework/body.js';
 import { computeClimate } from '../framework/climate.js';
-import {
-  bodies, climateReady, focusedBody, planet, planets, viewMode
-} from '../framework/state.js';
-import { focusedCity, focusedProbe } from '../modes/focus.js';
+import { bodies, planets, viewMode } from '../framework/state.js';
 import { exitPickMode } from '../modes/surface/core.js';
 import { exitSurfaceMode } from '../modes/surface/mode.js';
-import { refreshActiveTool, updateBiomeTools } from '../ui/controls.js';
-import { updateInfoPanel } from '../ui/info-panel.js';
-import { setSystemFocus } from '../ui/nav.js';
-import { ROMAN, removePlanetBody, renderMoonsList, renderProbesList } from '../ui/roster.js';
+import { emit } from '../core/bus.js';
 import { SOLAR_SYSTEM_SPEC, spawnSolarPlanet } from './planets.js';
+import { removePlanetBody } from './teardown.js';
 
 // ====== 34. Star-system load / unload ======
 // The 3D scene only ever holds one star system at a time. Switching systems
@@ -257,8 +253,9 @@ export function unloadStarSystem() {
 
 // Post-build step shared by every system (Sol or procedural): enable the
 // climate model, repaint solid surfaces for frost, and settle into the
-// system-wide view. setSystemFocus() cascades to the planet/moon/probe/nav
-// panels. Mirrors the original end-of-init tail.
+// system-wide view. The ui refreshes go out as bus events (handled in
+// ui/wire-up.js) so this module never imports ui/. Mirrors the original
+// end-of-init tail; events fire in the original call order.
 export function finalizeSystemLoad() {
   // The world is now fully built and the climate model (section 22b) exists,
   // so switch frost on and repaint every solid body — polar ice and altitude
@@ -270,13 +267,12 @@ export function finalizeSystemLoad() {
     // Only planets render latitude frost; moons keep their fixed palette.
     if (b.kind === 'planet' && b.matter && b.matter.solid) recolorBody(b);
   }
-  renderMoonsList();
-  renderProbesList();
-  updateBiomeTools();
+  emit('ui:satellite-lists');
+  emit('ui:biome-tools');
   // Default to the system-wide view so the user sees the whole system.
-  setSystemFocus();
-  refreshActiveTool();
-  updateInfoPanel();
+  emit('focus:system');
+  emit('ui:active-tool');
+  emit('ui:info');
 }
 
 // Build a user-created system from the planetSpecs cached on its catalog

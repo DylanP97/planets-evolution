@@ -6,7 +6,7 @@ import { SOLAR_SYSTEM_SPEC } from '../system/planets.js';
 import {
   createStarSystem, currentSystemId, deleteStarSystem, findConstellation, findStarSystem, galaxy, loadStarSystem, viewLevel, viewedConstellationId
 } from '../system/starsystems.js';
-import { renderNavBodies } from './nav.js';
+import { emit } from '../core/bus.js';
 
 // ====== 34b. Star-map overlays ======
 // The galaxy/constellation levels are 2D HTML overlays (not 3D scenes). The
@@ -164,7 +164,7 @@ export function openConstellationMap(constellationId) {
   mapOverlay.classList.remove('is-galaxy');
   showMapOverlay();
   renderConstellationMap();
-  renderNavBodies();
+  emit('nav:render');
 }
 
 // Enter the galaxy map: every constellation as a node, over the spiral art.
@@ -174,7 +174,7 @@ export function openGalaxyMap() {
   buildGalaxyArt();
   showMapOverlay();
   renderGalaxyMap();
-  renderNavBodies();
+  emit('nav:render');
 }
 
 export function closeMap() {
@@ -182,7 +182,7 @@ export function closeMap() {
   mapOverlay.classList.remove('is-galaxy');
   document.body.classList.remove('map-mode');
   mapOverlay.setAttribute('aria-hidden', 'true');
-  renderNavBodies();
+  emit('nav:render');
 }
 
 // Adapt the chrome to the level: "+ New System" and the star hint belong to

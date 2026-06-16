@@ -3,12 +3,12 @@ import { setSystemNameValue } from '../core/names.js';
 
 import { generateName, systemName } from '../core/names.js';
 import { renderCityList } from '../entities/cities.js';
-import { focusedBody } from '../framework/state.js';
-import { focusedCity, focusedProbe } from '../modes/focus.js';
-import { focusNameEl, updateBiomeTools } from './controls.js';
+import { focusedBody, focusedCity, focusedProbe } from '../framework/state.js';
+import { updateBiomeTools } from './controls.js';
+import { focusNameEl, navNameEl, navRandomBtn } from './dom.js';
 import { updateInfoPanel } from './info-panel.js';
 import { applyFocusToLeftPanel } from './left-panel.js';
-import { navNameEl, navRandomBtn, renderNavBodies } from './nav.js';
+import { renderNavBodies } from './nav.js';
 import { renderMoonsList, renderProbesList } from './roster.js';
 
 // ====== 34. Renaming ======

@@ -1,0 +1,287 @@
+/* Roster rows and cards: cities, moons/probes, planets, hints, focus name.
+   Loaded by index.html; file order preserves the original cascade. */
+
+.city-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(0, 242, 255, 0.05);
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 242, 255, 0.1);
+  border-radius: 2px;
+  font-size: 11px;
+  color: #00f2ff;
+}
+
+.city-row span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.city-row button {
+  padding: 2px 8px;
+  font-size: 9px;
+  margin-left: 8px;
+  border-color: rgba(255, 50, 50, 0.5);
+  color: #ff5555;
+  background: rgba(255, 0, 0, 0.05);
+}
+
+.city-row button:hover {
+  background: rgba(255, 0, 0, 0.2);
+  box-shadow: 0 0 10px rgba(255, 0, 0, 0.3);
+}
+
+/* ---------- Moon / satellite cards ---------- */
+#moonsList,
+#probesList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.moon-card {
+  background: rgba(0, 242, 255, 0.04);
+  border: 1px solid rgba(0, 242, 255, 0.18);
+  border-radius: 3px;
+  color: #00f2ff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.moon-card.is-focused {
+  border-color: rgba(0, 242, 255, 0.7);
+  box-shadow: 0 0 12px rgba(0, 242, 255, 0.25);
+}
+
+.moon-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0, 242, 255, 0.1);
+  border-bottom: 1px solid rgba(0, 242, 255, 0.18);
+  padding: 6px 10px;
+  gap: 8px;
+}
+
+.moon-card-title {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  text-shadow: 0 0 6px rgba(0, 242, 255, 0.45);
+}
+
+.moon-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.moon-card-actions .moon-remove {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1;
+  border-color: rgba(255, 60, 60, 0.5);
+  color: #ff5555;
+  background: rgba(255, 0, 0, 0.06);
+}
+
+.moon-card-actions .moon-remove:hover {
+  background: rgba(255, 0, 0, 0.22);
+  box-shadow: 0 0 10px rgba(255, 0, 0, 0.35);
+}
+
+.moon-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.moon-card-body label {
+  font-size: 11px;
+  gap: 8px;
+}
+
+.moon-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.45);
+  padding-top: 6px;
+  border-top: 1px dashed rgba(0, 242, 255, 0.12);
+}
+
+.focus-btn.focused {
+  background: rgba(0, 242, 255, 0.3);
+  border-color: #00f2ff;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(0, 242, 255, 0.4);
+}
+
+.empty-state {
+  font-size: 10px;
+  color: rgba(0, 242, 255, 0.4);
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 14px 10px;
+  border: 1px dashed rgba(0, 242, 255, 0.2);
+  border-radius: 2px;
+  text-align: center;
+}
+
+.hint {
+  font-size: 10px;
+  color: rgba(0, 242, 255, 0.5);
+  margin-top: -5px;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Banner at the top of each tab showing which entity the panel will act on. */
+.context-banner {
+  margin: 0 0 4px;
+  padding: 6px 10px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.08);
+  border-left: 2px solid #00f2ff;
+  text-shadow: 0 0 5px rgba(0, 242, 255, 0.4);
+}
+
+/* Inputs in a section that can't act on the current focus are dimmed in place
+   rather than removed, so the user still sees where the controls live. */
+.is-disabled-section {
+  opacity: 0.4;
+  pointer-events: none;
+  filter: saturate(0.4);
+}
+
+/* Hidden by focus type — removed from layout entirely (vs. is-disabled which
+   keeps the controls visible but greyed). */
+.is-hidden-section { display: none !important; }
+.tab-btn.is-hidden { display: none !important; }
+
+#planetList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+/* Compact one-line roster row. Name + small italic archetype tag + two
+   icon-only buttons. Borderless so 8 planets don't tower over the panel. */
+.planet-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 2px;
+  font-size: 11px;
+  color: rgba(0, 242, 255, 0.85);
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.planet-row:hover {
+  background: rgba(0, 242, 255, 0.06);
+}
+
+.planet-row.is-focused {
+  background: rgba(0, 242, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(0, 242, 255, 0.35);
+}
+
+.planet-row-name {
+  flex: 0 0 auto;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planet-row-arch {
+  flex: 1 1 auto;
+  font-size: 9px;
+  font-style: italic;
+  color: rgba(0, 242, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: lowercase;
+}
+
+.planet-row .planet-focus,
+.planet-row .planet-remove {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.planet-row .planet-remove {
+  border-color: rgba(255, 60, 60, 0.4);
+  color: #ff7070;
+  background: rgba(255, 0, 0, 0.04);
+}
+
+.planet-row .planet-remove:hover:not(:disabled) {
+  background: rgba(255, 0, 0, 0.2);
+  box-shadow: 0 0 8px rgba(255, 0, 0, 0.3);
+}
+
+.planet-row .planet-remove:disabled {
+  border-color: #333;
+  color: #555;
+  background: transparent;
+}
+
+#removePlanetBtn {
+  border-color: rgba(255, 60, 60, 0.4);
+  color: #ff8888;
+  background: rgba(255, 0, 0, 0.04);
+}
+#removePlanetBtn:hover:not(:disabled) {
+  background: rgba(255, 0, 0, 0.18);
+  box-shadow: 0 0 10px rgba(255, 0, 0, 0.3);
+  color: #fff;
+}
+
+#legend {
+  font-size: 9px;
+  color: rgba(0, 242, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 10px;
+  line-height: 1.4;
+}
+
+.body-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #00f2ff;
+}
+
+#focusName {
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    text-shadow: 0 0 8px rgba(0, 242, 255, 0.5);
+}

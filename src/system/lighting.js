@@ -3,8 +3,7 @@
 import * as THREE from 'three';
 import { moonLight, scene } from '../core/scene.js';
 import { sunMesh } from '../core/sun.js';
-import { bodies, focusedBody, moons, viewMode } from '../framework/state.js';
-import { focusedProbe } from '../modes/focus.js';
+import { bodies, focusedBody, focusedProbe, moons, viewMode } from '../framework/state.js';
 import { surfaceState } from '../modes/surface/core.js';
 
 // ====== 21. Sun light for focus ======
@@ -54,6 +53,36 @@ export function updateSunLightForFocus() {
         u.uGasRadius.value  = 0.0;
         u.uGasOpacity.value = 0.0;
       }
+    }
+  }
+}
+
+// Refresh the moon-eclipse-shadow uniforms on every planet's body + ocean
+// material (see framework/materials.js → ECLIPSE_GLSL). For each planet we
+// gather its moons' world positions + world radii and the Sun's world
+// position; the shader darkens the sunlit fragments each moon occludes.
+const _eclSun  = new THREE.Vector3();
+const _eclMoon = new THREE.Vector3();
+function writeEclipseUniforms(sh, planet) {
+  if (!sh) return;
+  let n = 0;
+  for (const m of moons) {
+    if (m.parent !== planet || n >= sh.uniforms.uEclipsePos.value.length) continue;
+    m.body.group.getWorldPosition(_eclMoon);
+    sh.uniforms.uEclipsePos.value[n].copy(_eclMoon);
+    sh.uniforms.uEclipseRad.value[n] = m.body.baseRadius * m.body.group.scale.x;
+    n++;
+  }
+  sh.uniforms.uEclipseCount.value = n;
+  sh.uniforms.uSunPos.value.copy(_eclSun);
+}
+export function updateEclipseShadows() {
+  sunMesh.getWorldPosition(_eclSun);
+  for (const b of bodies) {
+    if (b.kind !== 'planet') continue;
+    writeEclipseUniforms(b.mesh.material.userData.detailShader, b);
+    if (b.oceanMesh && b.oceanMesh.visible) {
+      writeEclipseUniforms(b.oceanMesh.material.userData.shader, b);
     }
   }
 }
@@ -116,6 +145,6 @@ export function updateMoonLight() {
   moonLight.position.copy(_bodyPosTmp).add(_toSunTmp).sub(scene.position);
   
   // Subtle cool blue moonlight.
-  moonLight.intensity = 0.18;
+  moonLight.intensity = 0.10;
 }
 

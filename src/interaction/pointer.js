@@ -4,13 +4,15 @@ import {
   setActiveBrushBody, setActiveVortex, setIsPainting, setLastHitLocal
 } from '../framework/state.js';
 
-import { camera, renderer } from '../core/scene.js';
+import * as THREE from 'three';
+import { camera, renderer, scene } from '../core/scene.js';
+import { biomeNameOfFace } from '../framework/body.js';
 import { addCity } from '../entities/cities.js';
 import {
   activeBrushBody, activeVortex, bodies, currentTool, isPainting, lastHitLocal, paintMode, viewMode
 } from '../framework/state.js';
 import { addGasVortex } from '../shaders/gas.js';
-import { cityNameInput } from '../ui/controls.js';
+import { cityNameInput } from '../ui/dom.js';
 import { updateInfoPanel } from '../ui/info-panel.js';
 import {
   brushArcWorldRadius, brushRing, isBrushTool, pointer, raycaster, updateBrushRing
@@ -85,33 +87,110 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   }
 });
 
+// Pointer tracking. The actual marker placement happens every frame in
+// updateOrbitInteraction (called from the animate loop), NOT here: the planets
+// rotate and orbit continuously, so a marker positioned once on pointermove
+// slides off the surface as the body turns beneath it. Re-raycasting from the
+// cursor's screen position each frame keeps every marker (brush ring, hover dot,
+// city/satellite placement preview) glued to whatever is under the cursor — and
+// keeps the biome readout current as the terrain rotates past a still cursor.
+let pointerOverCanvas = false;
+let lastClientX = 0, lastClientY = 0;
 renderer.domElement.addEventListener('pointermove', (e) => {
   setPointerFromEvent(e);
-  // Brush ring only on Sculpt / Environment (and gas sub-modes).
-  if (!paintMode || !isBrushTool() || viewMode !== 'orbit') {
+  lastClientX = e.clientX; lastClientY = e.clientY;
+  pointerOverCanvas = true;
+});
+renderer.domElement.addEventListener('pointerenter', () => { pointerOverCanvas = true; });
+
+// Orbit-mode hover tooltip + cyan surface dot. The tooltip names the terrain
+// face under the cursor via the SAME biomeNameOfFace the surface minimap reads,
+// so orbit and surface readouts always agree. The dot marks the exact spot the
+// reading comes from (the OS cursor is hidden over the canvas). Only solid
+// terrain reports a biome — gas/plasma shells have no per-vertex terrain.
+const hoverBiomeTip = document.getElementById('hoverBiomeTip');
+const hoverDot = new THREE.Mesh(
+  new THREE.CircleGeometry(1, 24),
+  new THREE.MeshBasicMaterial({
+    color: 0x00f2ff, side: THREE.DoubleSide, transparent: true, opacity: 0.95,
+    depthWrite: false, depthTest: false,
+  })
+);
+hoverDot.renderOrder = 999;
+hoverDot.visible = false;
+scene.add(hoverDot);
+const _nWorld  = new THREE.Vector3();   // scratch: world-space surface normal
+const _dotLook = new THREE.Vector3();   // scratch: hoverDot lookAt target
+const _localHit = new THREE.Vector3();  // scratch: hit point in body-local space
+
+function hideHoverBiome() {
+  if (hoverBiomeTip) hoverBiomeTip.setAttribute('aria-hidden', 'true');
+  hoverDot.visible = false;
+}
+
+// Per-frame (animate loop): refresh every cursor-anchored marker from a fresh
+// raycast, so rotation/orbit can't drift them off the surface.
+export function updateOrbitInteraction() {
+  if (viewMode !== 'orbit' || !pointerOverCanvas) {
     brushRing.visible = false;
-    return;
-  }
-  const hb = raycastBodies();
-  if (!hb) {
-    brushRing.visible = false;
+    hideHoverBiome();
     if (isPainting) setLastHitLocal(null);
     return;
   }
-  const nWorld = hb.hit.face.normal.clone()
-    .transformDirection(hb.body.mesh.matrixWorld)
-    .normalize();
-  // Scale the ring by the body's local hit radius times its world scale so the
-  // visible ring matches the brush footprint on bodies of any size.
-  const worldScale = hb.body.group.scale.x;
-  const localHitRadius = worldToBodyLocal(hb.body, hb.hit.point).length();
-  updateBrushRing(hb.hit.point, nWorld, brushArcWorldRadius(localHitRadius) * worldScale);
-  if (isPainting) {
-    // Only continue painting on the body we started on, so dragging off doesn't
-    // jump the brush to a different body.
-    if (hb.body === activeBrushBody) setLastHitLocal(worldToBodyLocal(hb.body, hb.hit.point));
-    else setLastHitLocal(null);
+  const hb = raycastBodies();
+  const brushActive = paintMode && isBrushTool();
+
+  // Brush cursor ring (Sculpt / Environment / gas sub-modes).
+  if (brushActive && hb) {
+    _nWorld.copy(hb.hit.face.normal).transformDirection(hb.body.mesh.matrixWorld).normalize();
+    // Ring footprint = brush arc at the hit radius, scaled to the body's world size.
+    _localHit.copy(hb.hit.point); hb.body.mesh.worldToLocal(_localHit);
+    const worldScale = hb.body.group.scale.x;
+    updateBrushRing(hb.hit.point, _nWorld, brushArcWorldRadius(_localHit.length()) * worldScale);
+  } else {
+    brushRing.visible = false;
   }
+
+  // Keep an active paint stroke pinned to the spot the cursor currently points
+  // at (re-derived each frame so the brush follows the surface as it rotates,
+  // and never jumps to a different body mid-stroke).
+  if (isPainting && isBrushTool()) {
+    if (hb && hb.body === activeBrushBody) {
+      _localHit.copy(hb.hit.point); activeBrushBody.mesh.worldToLocal(_localHit);
+      setLastHitLocal(_localHit.clone());
+    } else {
+      setLastHitLocal(null);
+    }
+  }
+
+  // Hover biome tooltip + dot (solid terrain only). The dot is suppressed while
+  // the brush ring is already marking the spot, to avoid two overlapping cursors.
+  if (hb && hb.hit.object === hb.body.mesh && hb.hit.face) {
+    if (hoverBiomeTip) {
+      hoverBiomeTip.textContent = biomeNameOfFace(hb.body, hb.hit.face);
+      hoverBiomeTip.style.left = (lastClientX + 16) + 'px';
+      hoverBiomeTip.style.top  = (lastClientY + 16) + 'px';
+      hoverBiomeTip.setAttribute('aria-hidden', 'false');
+    }
+    if (!brushActive) {
+      _nWorld.copy(hb.hit.face.normal).transformDirection(hb.body.mesh.matrixWorld).normalize();
+      const worldRadius = hb.body.baseRadius * hb.body.group.scale.x;
+      hoverDot.position.copy(hb.hit.point).addScaledVector(_nWorld, worldRadius * 0.01);
+      hoverDot.lookAt(_dotLook.copy(hb.hit.point).add(_nWorld));
+      hoverDot.scale.setScalar(worldRadius * 0.025);
+      hoverDot.visible = true;
+    } else {
+      hoverDot.visible = false;
+    }
+  } else {
+    hideHoverBiome();
+  }
+}
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  pointerOverCanvas = false;
+  brushRing.visible = false;
+  hideHoverBiome();
 });
 
 export function endPaint(e) {

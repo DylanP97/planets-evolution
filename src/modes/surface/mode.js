@@ -15,13 +15,16 @@ import { updateSurfaceCamera } from './camera.js';
 import {
   buildLocalFrame, pickTargetBody, surfaceLocationEl, surfaceOverlay, surfaceState, updateVisitButtonState
 } from './core.js';
+import { attachBubbles, detachBubbles } from './bubbles.js';
+import { attachFootLayer, detachFootLayer } from './footprints.js';
 import { attachGrass, detachGrass, grassField } from './grass.js';
 import { attachGroundPatch, detachGroundPatch, groundPatch } from './ground.js';
 import { attachProps, detachProps, propField } from './props.js';
 import { attachRocks, detachRocks } from './rocks.js';
+import { attachSeabed, detachSeabed } from './seabed.js';
 import { SURFACE_STAR_OPACITY, setUnderwaterOverlay } from './sky.js';
 import { clearSurfaceKeys } from './walk.js';
-import { attachWaterPatch, detachWaterPatch } from './water.js';
+import { detachWaterPatch } from './water.js';
 
 export function enterSurfaceMode(body, hitPoint) {
   // hitPoint comes in as a world-space Vector3 from the raycast result.
@@ -31,16 +34,15 @@ export function enterSurfaceMode(body, hitPoint) {
   // vertices form the visible "ground", and we want the camera to ride
   // their height field, not float over the click coordinate.
   surfaceState.body = body;
-  // On a WATER world the local water patch (attachWaterPatch below) becomes the
-  // only water up close — it reaches past the horizon, so the coarse global
-  // ocean sphere is hidden while we walk to avoid a second, separately-shaded
-  // water layer fighting it. Non-water liquids (lava/acid) have no patch, so
-  // their sphere stays visible. Restored on exit. uSurface stays 0 (the sphere
-  // is never put into surface see-through/wave mode now that the patch exists).
+  // The global ocean sphere stays visible while walking — it IS the water now.
+  // Put it into surface wave mode (uSurface=1) so up close it rolls with the
+  // stock swell and goes see-through near the avatar (the light, lively water).
+  // The dark local water patch is NOT attached — it read as a flat navy layer
+  // fighting the sphere. Restored to 0 on exit.
   surfaceState.oceanHidden = false;
   if (body.oceanMesh && body.matter && body.matter.liquid && body.oceanIsWater) {
-    body.oceanMesh.visible = false;
-    surfaceState.oceanHidden = true;
+    const osh = body.oceanMesh.material.userData.shader;
+    if (osh) osh.uniforms.uSurface.value = 1;
   }
   // Shrink the character scale on planets so the world feels larger and
   // traversal takes longer without needing slow-motion animations.
@@ -100,7 +102,7 @@ export function enterSurfaceMode(body, hitPoint) {
 
   // Kick off (or reuse) the avatar load, then mount it for this visit.
   loadAstronaut().then(() => {
-    if (viewMode === 'surface') attachAstronaut();
+    if (viewMode === 'surface') { attachAstronaut(); attachBubbles(); }
   }).catch(() => { /* avatar optional — surface view still works without it */ });
 
   // Reset and mount the grass field (gated to green ground by sampleGrassGround).
@@ -108,10 +110,15 @@ export function enterSurfaceMode(body, hitPoint) {
   surfaceState.grassV = 0;
   attachGrass(body);
   attachRocks(body);
-  // Lay the local high-detail water patch (waves) under the avatar.
-  attachWaterPatch(body);
+  // Submerged kelp/algae beds + schooling fish (water worlds only; gated to
+  // cells whose floor sits below the waterline).
+  attachSeabed(body);
+  // (Local dark water patch intentionally not attached — the wave-mode global
+  // ocean sphere above is the water now.)
   // High-res near-field ground patch (real micro-relief over the coarse mesh).
   attachGroundPatch(body);
+  // Footprint decal layer (soft-soil worlds only — venusian/desert/moon_like).
+  attachFootLayer(body);
   // Scattered GLB trees + rocks (terrestrial only; loads lazily on first visit).
   attachProps(body);
   // Switch the body material's procedural ground detail on for this visit
@@ -315,8 +322,11 @@ export function exitSurfaceMode() {
   }
   detachGrass();
   detachRocks();
+  detachSeabed();
+  detachBubbles();
   detachWaterPatch();
   detachGroundPatch();
+  detachFootLayer();
   detachProps();
   // Turn the body's procedural ground detail back off so the orbit view is
   // unchanged (uSurfaceDetail = 0 skips every detail branch in the shader).

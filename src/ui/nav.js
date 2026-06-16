@@ -1,20 +1,19 @@
 // Bottom-nav hierarchy navigation: up/down/sibling across system → planet →
 // moon/city, breadcrumb rendering, setSystemFocus.
-import { setFocusedBody } from '../framework/state.js';
-import { setFocusedCity, setFocusedProbe } from '../modes/focus.js';
+import { setFocusedBody, setFocusedCity, setFocusedProbe } from '../framework/state.js';
 
 import { systemName } from '../core/names.js';
 import { camera, controls } from '../core/scene.js';
 import { ARCHETYPES } from '../framework/archetypes.js';
-import { cities, focusedBody, moons, planets, probes } from '../framework/state.js';
 import {
-  focusedCity, focusedProbe, setCityFocus, setFocus, setProbeFocus
-} from '../modes/focus.js';
+  cities, focusedBody, focusedCity, focusedProbe, moons, planets, probes
+} from '../framework/state.js';
+import { setCityFocus, setFocus, setProbeFocus } from '../modes/focus.js';
 import { updateVisitButtonState } from '../modes/surface/core.js';
 import {
   findConstellation, galaxy, viewLevel, viewedConstellationId
 } from '../system/starsystems.js';
-import { focusNameEl } from './controls.js';
+import { focusNameEl, navNameEl } from './dom.js';
 import { updateInfoPanel } from './info-panel.js';
 import { applyFocusToLeftPanel } from './left-panel.js';
 import { renderFocusBadges } from './roster.js';
@@ -25,14 +24,12 @@ import { closeMap, currentConstellation, openConstellationMap, openGalaxyMap } f
 // probes, same level) / City. Arrows: ↑ zoom out, ↓ zoom in to first child,
 // ←/→ cycle siblings (moons and probes share one ring under their planet).
 export const navLevelEl = document.getElementById('navFocusLevel');
-export const navNameEl  = document.getElementById('navFocusName');
 export const navSubEl   = document.getElementById('navFocusSub');
 export const navUpBtn   = document.getElementById('navUp');
 export const navDownBtn = document.getElementById('navDown');
 export const navLeftBtn = document.getElementById('navLeft');
 export const navRightBtn= document.getElementById('navRight');
 export const navBreadcrumbEl = document.getElementById('navBreadcrumb');
-export const navRandomBtn    = document.getElementById('navRandomBtn');
 
 // navNameEl is contenteditable. While the user has it focused for typing,
 // skip programmatic updates so renders don't clobber their unsaved input.

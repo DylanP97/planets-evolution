@@ -9,7 +9,7 @@ import { setPointerFromEvent } from '../../interaction/pointer.js';
 import {
   orbitLinesGroup, setSatelliteOrbitLinesVisible, showSatelliteOrbits
 } from '../../system/orbits.js';
-import { addMoonBtn, addProbeBtn } from '../../ui/controls.js';
+import { addMoonBtn, addProbeBtn } from '../../ui/dom.js';
 import { updateInfoPanel } from '../../ui/info-panel.js';
 import { navDown, navSibling, navUp } from '../../ui/nav.js';
 import { renderMoonsList, renderProbesList } from '../../ui/roster.js';
@@ -179,7 +179,10 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'a' || k === 'arrowleft')  { surfaceKeys.a = true; e.preventDefault(); }
   else if (k === 'd' || k === 'arrowright') { surfaceKeys.d = true; e.preventDefault(); }
   else if (k === 'shift') surfaceKeys.shift = true;
-  else if (k === ' ' || e.code === 'Space') { tryJump(); e.preventDefault(); }
+  else if (k === 'c') { surfaceKeys.dive = true; e.preventDefault(); }
+  // Space: jump on land (one-shot) AND held = swim-up while afloat. tryJump
+  // no-ops while swimming, so the same key does both without conflict.
+  else if (k === ' ' || e.code === 'Space') { surfaceKeys.ascend = true; tryJump(); e.preventDefault(); }
   else if (k === 'v') { toggleSurfaceCamera(); e.preventDefault(); }
 });
 document.addEventListener('keyup', (e) => {
@@ -189,6 +192,8 @@ document.addEventListener('keyup', (e) => {
   else if (k === 'a' || k === 'arrowleft')  surfaceKeys.a = false;
   else if (k === 'd' || k === 'arrowright') surfaceKeys.d = false;
   else if (k === 'shift') surfaceKeys.shift = false;
+  else if (k === 'c') surfaceKeys.dive = false;
+  else if (k === ' ' || e.code === 'Space') surfaceKeys.ascend = false;
 });
 // If the window loses focus mid-walk, drop all held keys so the camera
 // doesn't keep drifting on its own when the user returns.

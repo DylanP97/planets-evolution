@@ -4,9 +4,8 @@ import { setViewMode } from '../../framework/state.js';
 
 import * as THREE from 'three';
 import { controls } from '../../core/scene.js';
-import { focusedBody, viewMode } from '../../framework/state.js';
+import { focusedBody, focusedCity, focusedProbe, viewMode } from '../../framework/state.js';
 import { brushRing } from '../../interaction/brush.js';
-import { focusedCity, focusedProbe } from '../focus.js';
 
 // ====== 32. Surface walk ======
 // Lets the user stand on a planet/moon as a microscopic person. Three modes:
@@ -61,6 +60,7 @@ export const surfaceState = {
   // prone paddling pose; swimPhase clocks the bob/roll.
   swimming: false,
   standRadius: 0,
+  swimRadius: 0,                       // free-swim target radius (C dives / Space rises while afloat)
   swimBlend: 0,
   swimPhase: 0,
   // Grass treadmill: how far (in body-local tangent units) the walker has

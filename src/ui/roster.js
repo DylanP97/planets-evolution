@@ -1,14 +1,13 @@
-// Deploy/remove planets (cascade teardown) and the roster, moons, probes
-// list renderers.
-import { setFocusedCity } from '../modes/focus.js';
-
+// Deploy planets and the roster, moons, probes list renderers. (Cascade
+// planet teardown lives in system/teardown.js.)
 import { setCurrentArchetype } from '../framework/state.js';
 
+import { emit } from '../core/bus.js';
 import { BASE_RADIUS, ICO_DETAIL } from '../core/constants.js';
+import { ROMAN } from '../core/names.js';
 import { scene } from '../core/scene.js';
-import { disposeCityMesh, renderCityList } from '../entities/cities.js';
 import {
-  MAX_MOONS, freeMoonSlot, removeMoonAt, setMoonDistance, setMoonSize
+  MAX_MOONS, removeMoonAt, setMoonDistance, setMoonSize
 } from '../entities/moons.js';
 import {
   MAX_PROBES, removeSatelliteAt, setSatelliteDistance, setSatelliteSize
@@ -16,19 +15,14 @@ import {
 import { ARCHETYPES } from '../framework/archetypes.js';
 import { createBody, refreshClimateColoring, regenerateBody } from '../framework/body.js';
 import {
-  bodies, cities, currentArchetype, focusedBody, moons, planets, probes
+  bodies, currentArchetype, focusedBody, focusedProbe, moons, planets, probes
 } from '../framework/state.js';
-import {
-  focusedCity, focusedProbe, setCityFocus, setFocus, setProbeFocus
-} from '../modes/focus.js';
-import { disposeOrbitLine, disposeSatelliteOrbitLine } from '../system/orbits.js';
+import { setFocus, setProbeFocus } from '../modes/focus.js';
 import { registerPlanet } from '../system/planets.js';
-import { addMoonBtn, addProbeBtn, focusPlanetBtn, moonsListEl, probesListEl } from './controls.js';
-import { deployPlanetBtn, planetListEl } from './left-panel.js';
-import { renderNavBodies, setSystemFocus } from './nav.js';
+import { removePlanetBody } from '../system/teardown.js';
+import { addMoonBtn, addProbeBtn, moonsListEl, planetListEl, probesListEl } from './dom.js';
 
 // ====== 30. Add / Remove planet ======
-export const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'];
 export function nextPlanetName() {
   // Find lowest unused roman so removed slots get reused first.
   const used = new Set(planets.map(p => p.body.name));
@@ -84,76 +78,8 @@ export function deployNewPlanet() {
   return body;
 }
 
-// Cascade-delete a planet: also tears down its moons, probes, cities, and
-// the visible orbit line. Refuses to delete the last remaining planet and
-// re-focuses on a neighbor if the deleted planet was focused.
-// opts.force — used by unloadStarSystem() to tear down every planet when
-// swapping systems: skips the keep-≥1 guard and the per-planet refocus
-// (the caller re-focuses once after the new system is built).
-export function removePlanetBody(target, opts = {}) {
-  if (!target || target.kind !== 'planet') return;
-  if (!opts.force && planets.length <= 1) return;
-  // Remove moons of this planet first.
-  for (let i = moons.length - 1; i >= 0; i--) {
-    if (moons[i].parent === target) {
-      if (focusedBody === moons[i].body) {
-        // moot since focusedBody is the planet, not the moon — but be safe
-      }
-      scene.remove(moons[i].body.group);
-      const bi = bodies.indexOf(moons[i].body);
-      if (bi >= 0) bodies.splice(bi, 1);
-      moons[i].body.geo.dispose();
-      moons[i].body.mesh.material.dispose();
-      freeMoonSlot(moons[i].parent, moons[i].slot);
-      disposeSatelliteOrbitLine(moons[i]);
-      moons.splice(i, 1);
-    }
-  }
-  // Remove probes orbiting this planet.
-  for (let i = probes.length - 1; i >= 0; i--) {
-    if (probes[i].parent === target) removeSatelliteAt(i);
-  }
-  // Remove cities on this planet.
-  for (let i = cities.length - 1; i >= 0; i--) {
-    if (cities[i].body === target) {
-      if (focusedCity === cities[i]) setFocusedCity(null);
-      target.group.remove(cities[i].mesh);
-      disposeCityMesh(cities[i].mesh);
-      cities.splice(i, 1);
-    }
-  }
-  // Remove the planet itself.
-  scene.remove(target.group);
-  const bi = bodies.indexOf(target);
-  if (bi >= 0) bodies.splice(bi, 1);
-  const pi = planets.findIndex(p => p.body === target);
-  if (pi >= 0) {
-    disposeOrbitLine(planets[pi]);
-    planets.splice(pi, 1);
-  }
-  target.geo.dispose();
-  target.mesh.material.dispose();
-  if (target.oceanMesh) {
-    target.oceanMesh.geometry.dispose();
-    target.oceanMesh.material.dispose();
-  }
-  if (target.ringMesh) {
-    target.ringMesh.geometry.dispose();
-    target.ringMesh.material.dispose();
-  }
-  // Bounce to system view: the focus may have been pointing at the planet
-  // itself, one of its moons, or a city on it — all destroyed above. Skipped
-  // during a bulk system swap (the caller re-focuses once at the end).
-  if (!opts.force) {
-    setSystemFocus();
-    renderCityList();
-  }
-}
-
-// The deployPlanetBtn / focusPlanetBtn click wiring lives in ui/wire-up.js:
-// this module is evaluated mid-import-cycle (left-panel → roster), before
-// the button consts in left-panel/controls are initialized, so touching them
-// at module scope here would throw a TDZ ReferenceError.
+// The deployPlanetBtn / focusPlanetBtn click wiring lives in ui/wire-up.js
+// alongside the rest of the one-shot button wiring.
 
 export function renderPlanetList() {
   if (!planetListEl) return;
@@ -183,7 +109,7 @@ export function renderPlanetList() {
 }
 
 export function renderMoonsList() {
-  renderNavBodies();
+  emit('nav:render');
   // Only show moons of the focused planet. With multiple planets in the
   // system, mixing them all into one list would be confusing.
   const parent = (focusedBody && focusedBody.kind === 'planet') ? focusedBody : null;

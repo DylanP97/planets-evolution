@@ -13,14 +13,14 @@ import { applyBrushToBody } from './framework/body.js';
 import './system/orbits.js';
 import { updatePlanetOrbits, updatePlanetRotation } from './system/planets.js';
 import { isBrushTool } from './interaction/brush.js';
-import './interaction/pointer.js';
+import { updateOrbitInteraction } from './interaction/pointer.js';
 import { updateMoons } from './entities/moons.js';
 import { updateSatellites } from './entities/probes.js';
 import { updateCityMarkers } from './entities/cities.js';
 import { starMat } from './background/starfield.js';
 import { milkyway, milkyMat } from './background/galaxy.js';
 import { updateEruptions } from './background/eruptions.js';
-import { updateSunLightForFocus, updateMoonLight } from './system/lighting.js';
+import { updateSunLightForFocus, updateMoonLight, updateEclipseShadows } from './system/lighting.js';
 import { updateFocusTracking } from './modes/focus.js';
 import { updateLiveInfo } from './ui/info-panel.js';
 import './ui/controls.js';
@@ -39,8 +39,14 @@ import { updateGrass } from './modes/surface/grass.js';
 import { updateRocks } from './modes/surface/rocks.js';
 import { updateWaterPatch } from './modes/surface/water.js';
 import { updateGroundPatch } from './modes/surface/ground.js';
+import { updateFootprints } from './modes/surface/footprints.js';
 import { updateProps } from './modes/surface/props.js';
+import { updateSeabed } from './modes/surface/seabed.js';
+import { updateBubbles } from './modes/surface/bubbles.js';
+import { updateMinimap } from './modes/surface/minimap.js';
+import { renderUnderwater, underwaterPassActive } from './modes/surface/underwater-pass.js';
 import { stepSurfaceWalk } from './modes/surface/walk.js';
+import { surfaceState } from './modes/surface/core.js';
 import './modes/surface/input.js';
 import './ui/naming.js';
 import { loadStarSystem, findStarSystem } from './system/starsystems.js';
@@ -48,6 +54,11 @@ import './ui/star-map.js';
 // Must stay last: wires UI handlers that touch consts across the ui/ import
 // cycles, which are only safe once every module above has fully evaluated.
 import './ui/wire-up.js';
+
+// Walking-ocean swell height as a fraction of the avatar's eye height (set on
+// the ocean shader's uWaveAmp each frame in surface mode). ~0.26 → crests ride
+// about a quarter of the walker tall: a visible but gentle swell, not a tsunami.
+const SURFACE_WAVE_AMP = 0.26;
 
 // Initial boot: load Sol from the catalog (unload is a no-op on an empty
 // scene) so currentSystemId is set through the same path as every later swap.
@@ -121,6 +132,7 @@ let plasmaTime = 0;
   updateEruptions(dt);
   updateCityMarkers();
   updateSunLightForFocus();
+  updateEclipseShadows();
   updateMoonLight();
   updateFocusTracking();
 
@@ -137,9 +149,39 @@ let plasmaTime = 0;
     updateRocks(dt);
     updateWaterPatch(dt);
     updateGroundPatch(dt);
+    updateFootprints(dt);
     updateProps(dt);
+    updateSeabed(dt);
+    updateBubbles(dt);
+    updateMinimap(dt);
     updateSurfaceSkyEffects();
+    // Keep the visited water world's ocean sphere in wave mode every frame.
+    // The one-time set in enterSurfaceMode is a no-op on a cold first visit
+    // (the ocean material compiles lazily, so userData.shader is still null
+    // when it runs) — re-applying here guarantees uSurface=1 the moment the
+    // shader exists, and advances the wave clock itself so the swell rolls
+    // even if the global bodies loop skipped this ocean.
+    const _ob = surfaceState.body;
+    if (_ob && _ob.oceanMesh && _ob.oceanMesh.visible
+        && _ob.matter && _ob.matter.liquid && _ob.oceanIsWater) {
+      const _os = _ob.oceanMesh.material.userData.shader;
+      if (_os) {
+        _os.uniforms.uSurface.value = 1;
+        // Scale the swell to the CHARACTER, not the planet. The baked default
+        // (baseRadius·0.0022) is ~2× the avatar's eye height on a small body —
+        // a 2-storey wave for an ankle-high robot. Tie it to eyeHeight so crests
+        // stay a gentle fraction of the walker on any sized world. The fog
+        // boundary + buoyancy read uWaveAmp live, so they follow automatically.
+        _os.uniforms.uWaveAmp.value = surfaceState.eyeHeight * SURFACE_WAVE_AMP;
+        if (!paused) _os.uniforms.uWaveTime.value += dt;
+      }
+    }
   }
+  // Re-anchor the orbit-mode cursor markers (brush ring, hover dot + biome
+  // tooltip) to the surface under the pointer every frame, so planet rotation
+  // can't drift them. Also refreshes lastHitLocal for an active paint stroke,
+  // so the brush below paints the spot the cursor currently points at.
+  updateOrbitInteraction();
   if (isPainting && isBrushTool() && lastHitLocal && activeBrushBody) {
     applyBrushToBody(activeBrushBody, lastHitLocal, dt);
   }
@@ -153,5 +195,9 @@ let plasmaTime = 0;
   milkyMat.uniforms.uBrightness.value = starMat.opacity / SURFACE_STAR_OPACITY;
   liveInfoAccum += dt;
   if (liveInfoAccum >= 0.1) { liveInfoAccum = 0; updateLiveInfo(); }
-  renderer.render(scene, camera);
+  // Walking a liquid-water world routes through the per-pixel underwater fog
+  // pass so the submerged horizon fogs to the body's blue water tint instead of
+  // the white aerial haze; everywhere else renders straight to the canvas.
+  if (underwaterPassActive()) renderUnderwater();
+  else renderer.render(scene, camera);
 })();

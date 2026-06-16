@@ -1,0 +1,119 @@
+/* The left editing panel shell (#ui): tabs, sections, footer.
+   Loaded by index.html; file order preserves the original cascade. */
+
+#ui {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    z-index: 10;
+    background: rgba(10, 25, 40, 0.85);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 242, 255, 0.3);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    width: 300px;
+    max-height: calc(100vh - 40px);
+    box-shadow: 0 0 30px rgba(0, 242, 255, 0.15), inset 0 0 15px rgba(0, 242, 255, 0.1);
+    overflow: hidden;
+}
+
+.ui-tabs, #footer { flex-shrink: 0; }
+
+/* Decorative corners */
+#ui::before, #ui::after {
+  content: '';
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  border: 2px solid #00f2ff;
+  pointer-events: none;
+  z-index: 15;
+}
+#ui::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+#ui::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+.ui-tabs {
+  display: flex;
+  background: rgba(0, 20, 40, 0.6);
+  border-bottom: 1px solid rgba(0, 242, 255, 0.2);
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 12px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: transparent;
+  color: rgba(0, 242, 255, 0.4);
+  border: none;
+  border-bottom: 2px solid transparent;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: inherit;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+.tab-btn:hover {
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.05);
+}
+
+.tab-btn.active {
+  color: #00f2ff;
+  border-bottom: 2px solid #00f2ff;
+  background: rgba(0, 242, 255, 0.15);
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.8);
+}
+
+.tab-content {
+  display: none;
+  padding: 18px;
+  flex-direction: column;
+  gap: 15px;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.03) 0%, transparent 100%);
+}
+
+.tab-content.active {
+  display: flex;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  animation: contentFade 0.4s ease-out;
+}
+
+.tab-content.active::-webkit-scrollbar { width: 5px; }
+.tab-content.active::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); }
+.tab-content.active::-webkit-scrollbar-thumb { background: rgba(0, 242, 255, 0.3); }
+
+@keyframes contentFade {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.section-header {
+  font-size: 12px;
+  font-weight: 800;
+  color: #00f2ff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(0, 242, 255, 0.2);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  text-shadow: 0 0 5px rgba(0, 242, 255, 0.5);
+}
+
+#footer {
+  background: rgba(0, 10, 20, 0.8);
+  padding: 15px 18px;
+  border-top: 1px solid rgba(0, 242, 255, 0.2);
+}
+
+.full-btn {
+  width: 100%;
+  margin-top: 8px;
+}
