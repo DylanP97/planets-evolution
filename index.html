@@ -15,9 +15,30 @@
   <link rel="stylesheet" href="styles/bottom-nav.css"/>
   <link rel="stylesheet" href="styles/surface.css"/>
   <link rel="stylesheet" href="styles/star-map.css"/>
+  <link rel="stylesheet" href="styles/loading.css"/>
+  <link rel="stylesheet" href="styles/perf-hud.css"/>
 </head>
 
 <body>
+  <!-- Boot loader: covers the page from first paint until main.js renders the
+       first frame, then is removed instantly (styles/loading.css, main.js). -->
+  <div id="bootLoader">
+    <div class="boot-system" aria-hidden="true">
+      <div class="boot-star"></div>
+      <div class="boot-ring boot-ring--1"><span class="boot-planet"></span></div>
+      <div class="boot-ring boot-ring--2"><span class="boot-planet"><span class="boot-planet__ring"></span></span></div>
+      <div class="boot-ring boot-ring--3"><span class="boot-planet"></span></div>
+    </div>
+
+    <div class="boot-text">
+      <div class="boot-title">Planets Evolution</div>
+      <div class="boot-subtitle"><span id="bootStatus">Igniting stellar core</span></div>
+      <div class="boot-meter">
+        <div class="boot-bar"><div class="boot-bar__fill" id="bootBarFill"></div></div>
+        <div class="boot-percent"><span id="bootPercent">0</span>%</div>
+      </div>
+    </div>
+  </div>
   <div id="ui">
     <div class="scan-line"></div>
     <div class="ui-tabs">
@@ -185,7 +206,7 @@
         <span id="focusName">Planet</span>
         <button id="focusPlanet" class="small-btn">Reset Camera</button>
       </div>
-      <div id="legend">WASD: Move · O: Orbits · V: Camera · Space: Jump</div>
+      <div id="legend">WASD: Move · O: Orbits · V: Camera · Space: Jump · H: Hide UI</div>
     </div>
   </div>
 
@@ -257,6 +278,31 @@
       </button>
     </div>
   </nav>
+
+  <!-- Developer performance HUD: full-width status strip at the bottom edge.
+       Stats hug the left/right edges so the centred #bottomNav stays clear.
+       Populated each frame by src/ui/perf-hud.js. -->
+  <div id="perfHud" aria-hidden="true">
+    <div class="perf-left">
+      <span class="perf-status"><span class="perf-dot"></span><span id="perfMode">Orbit</span></span>
+      <span class="perf-sep">|</span>
+      <span class="perf-gpu">GPU: <span id="perfGpu">…</span></span>
+    </div>
+    <div class="perf-right">
+      <canvas id="perfGraph" class="perf-graph" title="Frame rate, last ~2s"></canvas>
+      <span class="perf-fps is-good" id="perfFps">0 FPS</span>
+      <span class="perf-stat"><span id="perfMs">0.0</span><i>ms</i></span>
+      <span class="perf-sep">|</span>
+      <span class="perf-stat" title="Triangles drawn this frame (all passes)"><span id="perfTris">0</span><i>tris</i></span>
+      <span class="perf-stat" title="Draw calls this frame (all passes)"><span id="perfCalls">0</span><i>calls</i></span>
+      <span class="perf-sep">|</span>
+      <span class="perf-stat" title="Geometries resident on the GPU"><span id="perfGeo">0</span><i>geo</i></span>
+      <span class="perf-stat" title="Textures resident on the GPU"><span id="perfTex">0</span><i>tex</i></span>
+      <span class="perf-stat" title="Compiled shader programs"><span id="perfProg">0</span><i>prog</i></span>
+      <span class="perf-sep perf-mem-sep">|</span>
+      <span class="perf-stat perf-mem" title="JS heap in use (Chromium only)"><span id="perfMem">—</span><i>MB</i></span>
+    </div>
+  </div>
 
   <div id="surfaceOverlay" aria-hidden="true">
     <div id="surfaceTopBar">

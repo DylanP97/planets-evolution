@@ -264,6 +264,10 @@ window.grassDiag = () => {
 // 1 meadow, 2 tundra sedge, 3 forest/jungle understory. Grass grows on grass,
 // forest, jungle and tundra ground; coast, ice, desert and bare rock grow none.
 export function grassZoneOfFace(body, f) {
+  // Martian (desert) worlds grow NO grass on any biome — their flats are
+  // fractured bedrock, not meadow. Gate the whole field off here so even a
+  // hand-painted grass/forest band stays bare on Mars-type worlds.
+  if (body.archetype === 'desert') return 0;
   switch (groundBiomeOfFace(body, f)) {
     case FACE_BIOME.GRASS:  return 1;
     case FACE_BIOME.TUNDRA: return 2;

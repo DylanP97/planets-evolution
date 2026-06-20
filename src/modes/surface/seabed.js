@@ -391,14 +391,16 @@ function placeKelpGroup(sf, up, right, fwd, footR, uOff, vOff, driftU, driftV) {
   grp.mesh.geometry.getAttribute('aFade').needsUpdate = true;
 }
 
-// Hovers each fish in the water column over a habitable submerged cell, milling
-// it slowly in a circle (the school drifts about), and yaws it to face its path.
+// Hovers each fish in the water column over a submerged cell, milling it slowly
+// in a circle (the school drifts about), and yaws it to face its path. Schools
+// fade out in shallow water so they stay offshore, not lapping the beach.
 function placeFishGroup(sf, up, right, fwd, footR, uOff, vOff, driftU, driftV) {
   const grp = sf.fish, PR = sf.PR, period = PR * 2;
   const fadeNear = PR * 0.82, fadeFar = PR;
   const seaR = surfaceState.body.baseRadius;
   const t = sf.time, eh = surfaceState.eyeHeight;
   const swim = eh * 5;                                   // weave amplitude in tangent units
+  const FISH_MIN_DEPTH = eh * 4;                         // no fish in water shallower than this
   for (let i = 0; i < grp.count; i++) {
     const ph = grp.phase[i];
     const wu = Math.cos(t * 0.35 + ph) * swim;
@@ -407,13 +409,16 @@ function placeFishGroup(sf, up, right, fwd, footR, uOff, vOff, driftU, driftV) {
     let v = grp.baseUV[2 * i + 1] * PR - vOff + wv;
     u -= period * Math.floor((u + PR) / period);
     v -= period * Math.floor((v + PR) / period);
-    const fade = maskFade(sf, u, v, driftU, driftV, fadeNear, fadeFar);
+    const r = seabedBilinear(sf.grid, sf.gridHalf, driftU + u, driftV + v);
+    const depth = Math.max(0, seaR - r);
+    // Keep schools offshore: fade them out in shallow water near the coast.
+    let depthFade = (depth - FISH_MIN_DEPTH) / FISH_MIN_DEPTH;
+    depthFade = depthFade < 0 ? 0 : depthFade > 1 ? 1 : depthFade;
+    const fade = maskFade(sf, u, v, driftU, driftV, fadeNear, fadeFar) * depthFade;
     if (fade <= 0.01) { grp.fadeArr[i] = 0; _gMat.makeScale(0, 0, 0); for (const m of grp.meshes) m.setMatrixAt(i, _gMat); continue; }
     grp.fadeArr[i] = fade;
     _gP.copy(up).multiplyScalar(footR).addScaledVector(right, u).addScaledVector(fwd, v);
     _gUp.copy(_gP).normalize();
-    const r = seabedBilinear(sf.grid, sf.gridHalf, driftU + u, driftV + v);
-    const depth = Math.max(0, seaR - r);
     const lift = Math.min(depth * grp.level[i], depth - eh * 0.4);
     _gP.copy(_gUp).multiplyScalar(r + Math.max(eh * 0.4, lift));
     // Face the tangent velocity of the circular weave.

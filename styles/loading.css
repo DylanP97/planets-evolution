@@ -1,0 +1,223 @@
+/* Boot loader — full-screen sci-fi loading screen shown on refresh until the
+   first frame of the scene renders (main.js dismisses #bootLoader). Lives in
+   <head> so it paints before the ES-module / CDN-Three.js load completes.
+   Fully opaque: nothing of the scene shows through while it is up. */
+
+#bootLoader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 54px;
+  /* Solid base first — guarantees zero transparency — then opaque gradients. */
+  background-color: #02030a;
+  background-image:
+    radial-gradient(ellipse 70% 55% at 50% 40%, #08243a 0%, #04101d 48%, #02030a 100%);
+  font-family: 'Share Tech Mono', monospace;
+  color: #00f2ff;
+  cursor: default;
+  overflow: hidden;
+}
+
+#bootLoader.is-done { display: none; }
+
+/* Slowly drifting starfield. */
+#bootLoader::before {
+  content: "";
+  position: absolute;
+  inset: -50%;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255, 255, 255, 0.9), transparent),
+    radial-gradient(1px 1px at 70% 65%, rgba(160, 230, 255, 0.8), transparent),
+    radial-gradient(1px 1px at 40% 80%, rgba(255, 255, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 85% 22%, rgba(160, 230, 255, 0.7), transparent),
+    radial-gradient(2px 2px at 55% 45%, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1px 1px at 10% 60%, rgba(160, 230, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 90% 78%, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1px 1px at 30% 12%, rgba(255, 255, 255, 0.7), transparent);
+  background-size: 540px 540px;
+  opacity: 0.65;
+  animation: boot-stars 140s linear infinite;
+}
+@keyframes boot-stars {
+  from { transform: rotate(0deg)   scale(1.1); }
+  to   { transform: rotate(360deg) scale(1.1); }
+}
+
+/* ---- Orbit system centerpiece ---- */
+
+.boot-system {
+  position: relative;
+  width: 280px;
+  height: 280px;
+  perspective: 760px;          /* gives the tilted orbits real depth */
+  transform-style: preserve-3d;
+}
+
+/* Central star: layered core + breathing corona. */
+.boot-star {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, #fffdf2 0%, #ffe7a6 28%, #ffb347 58%, #ff7a2c 80%, rgba(255, 110, 40, 0) 100%);
+  animation: boot-star-pulse 3s ease-in-out infinite;
+}
+@keyframes boot-star-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+    box-shadow: 0 0 26px 6px rgba(255, 185, 90, 0.7), 0 0 70px 20px rgba(255, 120, 45, 0.32);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.1);
+    box-shadow: 0 0 40px 12px rgba(255, 205, 120, 0.85), 0 0 100px 30px rgba(255, 130, 55, 0.42);
+  }
+}
+
+/* Each orbit is a circle tilted into an ellipse; spinning it carries the
+   planet pinned to its top edge all the way around. translate(-50%,-50%) keeps
+   it centred on the star regardless of size. */
+.boot-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 242, 255, 0.22);
+  box-shadow: 0 0 18px rgba(0, 242, 255, 0.08), inset 0 0 18px rgba(0, 242, 255, 0.06);
+  transform-style: preserve-3d;
+}
+.boot-ring--1 { width: 130px; height: 130px; animation: boot-orbit-1 7s  linear infinite; }
+.boot-ring--2 { width: 196px; height: 196px; animation: boot-orbit-2 12s linear infinite; }
+.boot-ring--3 { width: 262px; height: 262px; animation: boot-orbit-3 20s linear infinite; }
+
+/* Distinct inclinations + directions so the system reads as 3D, not flat. */
+@keyframes boot-orbit-1 {
+  from { transform: translate(-50%, -50%) rotateX(68deg) rotateZ(0deg); }
+  to   { transform: translate(-50%, -50%) rotateX(68deg) rotateZ(360deg); }
+}
+@keyframes boot-orbit-2 {
+  from { transform: translate(-50%, -50%) rotateX(74deg) rotateZ(360deg); }
+  to   { transform: translate(-50%, -50%) rotateX(74deg) rotateZ(0deg); }
+}
+@keyframes boot-orbit-3 {
+  from { transform: translate(-50%, -50%) rotateX(63deg) rotateZ(0deg); }
+  to   { transform: translate(-50%, -50%) rotateX(63deg) rotateZ(360deg); }
+}
+
+/* Planets ride the top edge of their ring. */
+.boot-planet {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+}
+.boot-ring--1 .boot-planet {
+  background: radial-gradient(circle at 34% 32%, #bdf0ff, #3fb6e8 65%, #1d6f9c);
+  box-shadow: 0 0 12px 2px rgba(95, 208, 255, 0.85);
+}
+.boot-ring--2 .boot-planet {
+  width: 16px; height: 16px; margin-left: -8px; top: -8px;
+  background: radial-gradient(circle at 34% 32%, #d6ffe6, #5fd99a 60%, #2c9a63);
+  box-shadow: 0 0 14px 2px rgba(120, 240, 175, 0.85);
+}
+.boot-ring--3 .boot-planet {
+  width: 10px; height: 10px; margin-left: -5px; top: -5px;
+  background: radial-gradient(circle at 34% 32%, #ffd9ee, #ff8fc6 60%, #c85a96);
+  box-shadow: 0 0 12px 2px rgba(255, 154, 212, 0.85);
+}
+
+/* A little ring around the green planet, for flavour. */
+.boot-planet__ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 30px;
+  height: 12px;
+  transform: translate(-50%, -50%) rotate(-20deg);
+  border: 1.5px solid rgba(210, 255, 230, 0.6);
+  border-radius: 50%;
+}
+
+/* ---- Text + progress ---- */
+
+.boot-text {
+  position: relative;
+  text-align: center;
+  z-index: 1;
+}
+
+.boot-title {
+  font-size: 28px;
+  letter-spacing: 12px;
+  text-transform: uppercase;
+  text-shadow: 0 0 14px rgba(0, 242, 255, 0.6);
+  animation: boot-flicker 6s linear infinite;
+}
+@keyframes boot-flicker {
+  0%, 91%, 100% { opacity: 1; }
+  92%  { opacity: 0.4; }
+  93%  { opacity: 1; }
+  95%  { opacity: 0.7; }
+  96%  { opacity: 1; }
+}
+
+.boot-subtitle {
+  margin-top: 12px;
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.7);
+  min-height: 14px;
+}
+.boot-subtitle::after {
+  content: "";
+  animation: boot-ellipsis 1.4s steps(4, end) infinite;
+}
+@keyframes boot-ellipsis {
+  0%   { content: ""; }
+  25%  { content: "."; }
+  50%  { content: ".."; }
+  75%  { content: "..."; }
+}
+
+.boot-meter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 320px;
+  margin: 22px auto 0;
+}
+.boot-bar {
+  position: relative;
+  flex: 1;
+  height: 5px;
+  background: rgba(0, 242, 255, 0.12);
+  border: 1px solid rgba(0, 242, 255, 0.28);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.boot-bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(0, 242, 255, 0.4), #00f2ff);
+  box-shadow: 0 0 12px rgba(0, 242, 255, 0.7);
+  border-radius: 3px;
+  transition: width 0.12s linear;
+}
+.boot-percent {
+  font-size: 14px;
+  letter-spacing: 1px;
+  min-width: 44px;
+  text-align: right;
+  color: #00f2ff;
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.5);
+}

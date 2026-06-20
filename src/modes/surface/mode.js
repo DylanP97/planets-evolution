@@ -21,8 +21,9 @@ import { attachGrass, detachGrass, grassField } from './grass.js';
 import { attachGroundPatch, detachGroundPatch, groundPatch } from './ground.js';
 import { attachProps, detachProps, propField } from './props.js';
 import { attachRocks, detachRocks } from './rocks.js';
+import { attachSlabs, detachSlabs } from './slabs.js';
 import { attachSeabed, detachSeabed } from './seabed.js';
-import { SURFACE_STAR_OPACITY, setUnderwaterOverlay } from './sky.js';
+import { SURFACE_STAR_OPACITY, clearSkyBodies, setUnderwaterOverlay } from './sky.js';
 import { clearSurfaceKeys } from './walk.js';
 import { detachWaterPatch } from './water.js';
 
@@ -106,10 +107,15 @@ export function enterSurfaceMode(body, hitPoint) {
   }).catch(() => { /* avatar optional — surface view still works without it */ });
 
   // Reset and mount the grass field (gated to green ground by sampleGrassGround).
+  // Martian (desert) worlds never grow grass — don't even mount the field, so
+  // no painted band can sprout a single blade regardless of grass.js's state.
   surfaceState.grassU = 0;
   surfaceState.grassV = 0;
-  attachGrass(body);
+  if (body.archetype === 'desert') detachGrass(); else attachGrass(body);
   attachRocks(body);
+  // Flat flagstone bedrock plates on the Martian Flats (desert only; attachSlabs
+  // self-gates and detaches on any other archetype).
+  attachSlabs(body);
   // Submerged kelp/algae beds + schooling fish (water worlds only; gated to
   // cells whose floor sits below the waterline).
   attachSeabed(body);
@@ -139,7 +145,7 @@ export function enterSurfaceMode(body, hitPoint) {
   // Diagnostic: confirms the new surface-detail code is live (look for this in
   // the console after landing). If you DON'T see it, the browser is running an
   // old/cached/deployed build, not these edits.
-  console.info('[surface-detail v3] groundDetail=%s patch=%s — on %s (%s)',
+  console.info('[surface-detail v6 · martian-slabs] groundDetail=%s patch=%s — on %s (%s)',
     !!body.mesh.material.userData.detailShader, !!groundPatch || 'pending',
     body.name, body.archetype);
   // Auto-diagnostic 2s after landing: tells us why grass/trees may be absent
@@ -242,7 +248,15 @@ export function enterSurfaceMode(body, hitPoint) {
   }
 
   camera.fov = surfaceState.fov;
-  camera.near = 0.001;
+  // The near plane is an absolute world distance, but every surface distance
+  // scales with the body's group.scale. A fixed 0.001 is a harmless sliver on
+  // normal bodies (Earth ~0.27, Titan ~0.45) but slices off the foreground
+  // ground on a microscopic body (the moonlet Pan ~0.06) — the surface reads
+  // as a thin slab with space showing "below" it. Shrink near in lockstep with
+  // the body so small worlds clip just as little of their ground; bodies at or
+  // above ~0.25 scale keep the original 0.001 (no regression).
+  const bodyScale = body.group.scale.x || 1;
+  camera.near = 0.001 * Math.min(1, bodyScale / 0.25);
   camera.far = surfaceState.savedFar;
   camera.updateProjectionMatrix();
 
@@ -325,6 +339,7 @@ export function exitSurfaceMode() {
   detachSeabed();
   detachBubbles();
   detachWaterPatch();
+  detachSlabs();
   detachGroundPatch();
   detachFootLayer();
   detachProps();
@@ -333,6 +348,9 @@ export function exitSurfaceMode() {
   if (surfaceState.body && surfaceState.body.mesh.material.userData.detailShader) {
     surfaceState.body.mesh.material.userData.detailShader.uniforms.uSurfaceDetail.value = 0;
   }
+  // Reset the sky-disc treatment on every other body (relief + night floor)
+  // so the orbit view renders exactly as before.
+  clearSkyBodies();
   // Restore the global ocean sphere we hid for the surface visit (water worlds)
   // and make sure it's back to the plain opaque sphere for the orbit view.
   if (surfaceState.body && surfaceState.body.oceanMesh) {

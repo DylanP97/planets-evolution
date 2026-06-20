@@ -24,6 +24,14 @@ canvas {
     cursor: none;
 }
 
+/* HUD hidden via the H key (ui/hud-toggle.js): clear the orbit-view panels so
+   the scene fills the screen. Mirrors the surface-mode hide of the same set. */
+body.hud-hidden #ui,
+body.hud-hidden #infoPanel,
+body.hud-hidden #bottomNav {
+  display: none;
+}
+
 /* Orbit-mode hover tooltip: names the biome of the terrain under the cursor.
    Positioned at the pointer by interaction/pointer.js. */
 #hoverBiomeTip {

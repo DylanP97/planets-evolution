@@ -121,7 +121,11 @@
       "PowerShell(git status --short; \"----\"; git log --oneline -1; \"----\"; git branch --show-current)",
       "Read(//c/c/Users/dylan/Code/planet tiles/assets/**)",
       "Read(//c/c/Users/dylan/Code/planet tiles/**)",
-      "Bash(xxd)"
+      "Bash(xxd)",
+      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__deploy_to_vercel",
+      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_teams",
+      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_projects",
+      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_deployments"
     ]
   }
 }

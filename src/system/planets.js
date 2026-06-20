@@ -28,9 +28,35 @@ export const SOLAR_SYSTEM_SPEC = [
     ] },
   { name: 'Saturn',  archetype: 'gas_giant',   size: 0.63, distance:  720, speed: 0.0025,  inclination: -0.04, angle: 5.10, seed: 'saturn',
     rings: { enabled: true, intensity: 0.80 },
-    moons: [ { name: 'Titan', size: 0.45, distance: 24, seed: 'titan' } ] },
+    moons: [
+      // Pan — a microscopic shepherd moonlet orbiting inside the rings (in a
+      // gap, like the real Pan in the Encke Gap). inclination 0 keeps it
+      // coplanar with the ring disk; distance 13.6 falls between the ring's
+      // inner (~10.6) and outer (~17.4) world radii, in the shader's gap.
+      { name: 'Pan', size: 0.06, distance: 13.6, seed: 'pan', inclination: 0, node: 0 },
+      { name: 'Titan', size: 0.45, distance: 24, seed: 'titan' },
+    ] },
   { name: 'Uranus',  archetype: 'ice_giant',   size: 0.45, distance:  920, speed: 0.00175, inclination:  0.08, angle: 0.60, seed: 'uranus',  moons: [] },
   { name: 'Neptune', archetype: 'ice_giant',   size: 0.43, distance: 1120, speed: 0.00125, inclination: -0.06, angle: 5.80, seed: 'neptune', moons: [] },
+];
+
+// Alpha Centauri — the nearest star system, a second immutable preset.
+// Same spec shape as SOLAR_SYSTEM_SPEC; the central star is the shared Sun
+// mesh, so only the planets are listed. Named after the real Proxima/Centauri
+// worlds and candidates, with a couple of thematic bodies for variety.
+export const ALPHA_CENTAURI_SPEC = [
+  { name: 'Proxima d',   archetype: 'lava',      size: 0.13, distance:  110, speed: 0.0190,  inclination:  0.05, angle: 0.40, seed: 'proxima-d',   moons: [] },
+  { name: 'Proxima b',   archetype: 'ocean',     size: 0.28, distance:  200, speed: 0.0120,  inclination: -0.03, angle: 1.60, seed: 'proxima-b',
+    moons: [ { name: 'Hesperus', size: 0.26, distance: 9, seed: 'proxima-b-m1' } ] },
+  { name: 'Centauri Bb', archetype: 'desert',    size: 0.20, distance:  320, speed: 0.0072,  inclination:  0.07, angle: 2.90, seed: 'centauri-bb', moons: [] },
+  { name: 'Proxima c',   archetype: 'ice_giant', size: 0.46, distance:  560, speed: 0.0034,  inclination: -0.04, angle: 4.10, seed: 'proxima-c',
+    rings: { enabled: true, intensity: 0.60 },
+    moons: [
+      { name: 'Phylos', size: 0.30, distance: 22, seed: 'proxima-c-m1' },
+      { name: 'Kr5',    size: 0.28, distance: 30, seed: 'proxima-c-m2' },
+    ] },
+  { name: 'Centauri Ab', archetype: 'gas_giant', size: 0.66, distance:  820, speed: 0.0022,  inclination:  0.03, angle: 5.50, seed: 'centauri-ab',
+    moons: [ { name: 'Riga', size: 0.34, distance: 26, seed: 'centauri-ab-m1' } ] },
 ];
 
 export const DEFAULT_SPIN = (Math.PI * 2) / 360;

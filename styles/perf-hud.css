@@ -1,0 +1,77 @@
+/* Developer performance HUD (#perfHud): the full-width status strip pinned to
+   the very bottom edge. Stats hug the left/right edges, leaving the centre
+   clear for the floating #bottomNav. Sits above the surface / star-map overlays
+   (z-index 40) so the readout stays visible in every mode; pointer-events:none
+   so it never intercepts clicks. Loaded by index.html. */
+#perfHud {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  pointer-events: none;
+  font-family: 'Consolas', 'SF Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: rgba(150, 200, 220, 0.7);
+  background: linear-gradient(to top, rgba(4, 10, 18, 0.92), rgba(4, 10, 18, 0));
+  user-select: none;
+}
+
+#perfHud .perf-left,
+#perfHud .perf-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#perfHud .perf-sep { color: rgba(0, 242, 255, 0.22); }
+#perfHud .perf-gpu,
+#perfHud .perf-status { white-space: nowrap; }
+
+/* Each stat is "<value><unit>" — the unit is dimmer and a touch smaller. */
+#perfHud .perf-stat {
+  white-space: nowrap;
+  color: rgba(190, 225, 240, 0.92);
+}
+#perfHud .perf-stat i {
+  margin-left: 3px;
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0;
+  color: rgba(0, 242, 255, 0.4);
+}
+
+/* FPS sparkline: a small graph that scrolls left every frame. */
+#perfHud .perf-graph {
+  display: block;
+  border: 1px solid rgba(0, 242, 255, 0.18);
+  border-radius: 2px;
+  background: rgba(0, 242, 255, 0.04);
+}
+
+.perf-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #3ad07a;
+  box-shadow: 0 0 6px #3ad07a;
+  vertical-align: middle;
+}
+
+#perfHud .perf-fps {
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 600;
+  border: 1px solid currentColor;
+}
+.perf-fps.is-good { color: #3ad07a; }
+.perf-fps.is-mid  { color: #e0b341; }
+.perf-fps.is-bad  { color: #e0533f; }

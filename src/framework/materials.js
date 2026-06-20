@@ -46,6 +46,12 @@ export function setupBodyMaterial(mat) {
     shader.uniforms.uDetailAmp     = { value: 0.18 };
     shader.uniforms.uDetailMottle  = { value: 0.05 };
     shader.uniforms.uBodyToView    = { value: new THREE.Matrix3() };
+    // Night-side colour floor for bodies seen as distant discs in the surface
+    // sky (the Moon, other planets). 0 in orbit and on the body underfoot; set
+    // per-frame by modes/surface/sky.js → updateSkyBodies so the unlit limb of
+    // a far moon reads as a dim version of its own colour instead of black —
+    // the solid-body analogue of the gas shader's day/night floor.
+    shader.uniforms.uSkyBodyFill   = { value: 0 };
     addEclipseUniforms(shader);
     mat.userData.detailShader = shader;
 
@@ -57,12 +63,12 @@ export function setupBodyMaterial(mat) {
       .replace('#include <common>',
         '#include <common>\n'
       + 'uniform vec3 uGlowColor;\n'
-      + 'uniform float uSurfaceDetail;\nuniform float uDetailFreq;\nuniform float uDetailAmp;\nuniform float uDetailMottle;\nuniform mat3 uBodyToView;\n'
+      + 'uniform float uSurfaceDetail;\nuniform float uDetailFreq;\nuniform float uDetailAmp;\nuniform float uDetailMottle;\nuniform mat3 uBodyToView;\nuniform float uSkyBodyFill;\n'
       + 'varying float vGlow;\nvarying vec3 vBodyPos;\nvarying vec3 vBodyNrm;\nvarying vec3 vWorldPos;\n'
       + ECLIPSE_GLSL
       + 'float dHash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n'
       + 'float dNoise(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);\n'
-      + '  return mix(mix(mix(dHash(i), dHash(i + vec3(1.0,0.0,0.0)), f.x), mix(dHash(i + vec3(0.0,1.0,0.0)), dHash(i + vec3(1.0,1.0,0.0)), f.x), f.y),\n'  
+      + '  return mix(mix(mix(dHash(i), dHash(i + vec3(1.0,0.0,0.0)), f.x), mix(dHash(i + vec3(0.0,1.0,0.0)), dHash(i + vec3(1.0,1.0,0.0)), f.x), f.y),\n'
       + '             mix(mix(dHash(i + vec3(0.0,0.0,1.0)), dHash(i + vec3(1.0,0.0,1.0)), f.x), mix(dHash(i + vec3(0.0,1.0,1.0)), dHash(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z); }\n'
       + 'float dFbm(vec3 p){ float a = 0.5; float s = 0.0; for(int k = 0; k < 4; k++){ s += a * dNoise(p); p *= 2.02; a *= 0.5; } return s; }')
       .replace('#include <normal_fragment_maps>',
@@ -82,9 +88,24 @@ export function setupBodyMaterial(mat) {
       + '  }')
       .replace('#include <color_fragment>',
         '#include <color_fragment>\n'
-      + '  if (uSurfaceDetail > 0.001) { diffuseColor.rgb *= 1.0 - uDetailMottle * uSurfaceDetail * (dFbm(vBodyPos * uDetailFreq * 0.5) - 0.5); }')
+      + '  if (uSurfaceDetail > 0.001) { diffuseColor.rgb *= 1.0 - uDetailMottle * uSurfaceDetail * (dFbm(vBodyPos * uDetailFreq * 0.5) - 0.5); }\n'
+      // Sky-disc maria: a gentle broad albedo variation so a body seen as a far
+      // disc in the surface sky (the Moon, Mars) reads as a real world with
+      // subtle light/dark regions rather than a flat coin. Kept soft on purpose
+      // — the body still shows mostly its own generated terrain colour. Gated to
+      // sky discs only by uSkyBodyFill; normalize(vBodyPos) keeps the basin
+      // scale the same on any-sized body.
+      + '  if (uSkyBodyFill > 0.0001) {\n'
+      + '    vec3 _skd = normalize(vBodyPos);\n'
+      + '    float _skMaria = smoothstep(0.40, 0.60, dFbm(_skd * 3.0 + 4.0));\n'
+      + '    diffuseColor.rgb *= mix(1.06, 0.66, _skMaria);\n'
+      + '  }')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += uGlowColor * vGlow;')
-      .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\n  { float _ecl = eclipseShadow(vWorldPos);\n    reflectedLight.directDiffuse *= _ecl;\n    reflectedLight.directSpecular *= _ecl; }');
+      .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\n  { float _ecl = eclipseShadow(vWorldPos);\n    reflectedLight.directDiffuse *= _ecl;\n    reflectedLight.directSpecular *= _ecl; }')
+      // Lift the unlit limb of a distant sky body to a dim floor of its own
+      // albedo (max, so the sunlit side is untouched) — like the gas shell's
+      // night floor. uSkyBodyFill is 0 everywhere but for sky discs.
+      .replace('#include <opaque_fragment>', '  outgoingLight = max(outgoingLight, diffuseColor.rgb * uSkyBodyFill);\n#include <opaque_fragment>');
   };
   mat.customProgramCacheKey = () => 'bodyGlowDetail';
 }

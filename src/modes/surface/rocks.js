@@ -1,8 +1,9 @@
 // Instanced rock field for desert/venusian worlds + rock collision push-out.
 import * as THREE from 'three';
 import {
-  BIOME, BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, ROCK_TOP, SAND_TOP
+  BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT
 } from '../../core/constants.js';
+import { compKeyAt } from '../../framework/body.js';
 import { viewMode } from '../../framework/state.js';
 import { surfaceState } from './core.js';
 import { GRASS_GN, grassGroundRadius } from './grass.js';
@@ -163,13 +164,14 @@ export const ROCK_GROUND_TINT = {
 };
 
 // True when terrain face `f` is dry rocky ground on a boulder-field archetype:
-// unpainted, above the basin/slab line and below the snow/tessera peaks.
-export const ROCK_TOP_CAP = ROCK_TOP + 0.6;
+// the flats + mesa bands (not basins/dunes/peaks). Classified through the
+// canonical compKeyAt so a PAINTED Flats/Mesa band grows the same boulders as
+// the natural band it reproduces — natural and painted ground must match
+// (compKeyAt folds BAND_GRASS→'grass', BAND_ROCK→'rock', etc.).
 export function groundIsRockFace(body, f) {
   if (body.kind !== 'planet' || !ROCK_GROUND_TINT[body.archetype]) return false;
-  if (body.biomes[f.a] !== BIOME.AUTO) return false;         // painted faces: leave bare
-  const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
-  return h >= SAND_TOP && h < ROCK_TOP_CAP;                  // flats -> mesa, not basins/peaks
+  const key = compKeyAt(body, f.a);
+  return key === 'grass' || key === 'rock';                 // flats + mesa, natural OR painted
 }
 
 // Throttled biome probe: is the avatar on rocky ground, and what colour?

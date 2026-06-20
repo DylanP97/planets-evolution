@@ -244,7 +244,9 @@ export function renderConstellationMap() {
   mapField.appendChild(svg);
   systems.forEach(sys => {
     const isCurrent = sys.id === currentSystemId;
-    const planetCount = sys.isPreset ? SOLAR_SYSTEM_SPEC.length : (sys.planetSpecs || []).length;
+    // Sol has no attached planetSpecs (it's the SOLAR_SYSTEM_SPEC constant);
+    // every other system (preset or procedural) carries its own planetSpecs.
+    const planetCount = sys.planetSpecs ? sys.planetSpecs.length : SOLAR_SYSTEM_SPEC.length;
     const pt = document.createElement('button');
     pt.type = 'button';
     pt.className = 'map-point'

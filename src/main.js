@@ -23,20 +23,23 @@ import { updateEruptions } from './background/eruptions.js';
 import { updateSunLightForFocus, updateMoonLight, updateEclipseShadows } from './system/lighting.js';
 import { updateFocusTracking } from './modes/focus.js';
 import { updateLiveInfo } from './ui/info-panel.js';
+import { beginPerfFrame, updatePerfHud } from './ui/perf-hud.js';
 import './ui/controls.js';
 import './ui/atmo-rings.js';
 import './ui/left-panel.js';
 import './ui/orbit-sliders.js';
 import './ui/roster.js';
 import './ui/nav.js';
+import './ui/hud-toggle.js';
 import './modes/surface/core.js';
 import './modes/surface/avatar.js';
 import './modes/surface/mode.js';
-import { updateSurfaceSkyEffects, SURFACE_STAR_OPACITY } from './modes/surface/sky.js';
+import { updateSurfaceSkyEffects, updateSkyBodies, SURFACE_STAR_OPACITY } from './modes/surface/sky.js';
 import { updateSurfaceOrigin, updateSurfaceCamera } from './modes/surface/camera.js';
 import { updateAstronaut } from './modes/surface/swim.js';
 import { updateGrass } from './modes/surface/grass.js';
 import { updateRocks } from './modes/surface/rocks.js';
+import { updateSlabs } from './modes/surface/slabs.js';
 import { updateWaterPatch } from './modes/surface/water.js';
 import { updateGroundPatch } from './modes/surface/ground.js';
 import { updateFootprints } from './modes/surface/footprints.js';
@@ -72,6 +75,55 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ====== Boot loader dismissal ======
+// The #bootLoader overlay (index.html) covers the page from first paint. We
+// drive its progress counter + status line while the scene warms up, then
+// remove it on the first rendered frame — but never before BOOT_MIN_MS, so the
+// loader always stays up long enough to read (and never flashes by).
+const BOOT_MIN_MS = 3000;
+const _bootStart = performance.now();
+let _bootDone = false;
+{
+  const statusEl = document.getElementById('bootStatus');
+  const pctEl    = document.getElementById('bootPercent');
+  const barEl    = document.getElementById('bootBarFill');
+  const msgs = [
+    'Igniting stellar core',
+    'Seeding planetary crust',
+    'Calibrating orbital mechanics',
+    'Painting biomes',
+    'Charting the star map',
+  ];
+  // Ease the bar toward ~92% over the warm-up; dismissal snaps it to 100%.
+  // The displayed status follows the progress, not a separate timer.
+  let pct = 0;
+  const tick = setInterval(() => {
+    pct += Math.max(0.6, (92 - pct) * 0.06);
+    if (pct > 92) pct = 92;
+    const shown = Math.floor(pct);
+    if (pctEl)    pctEl.textContent = shown;
+    if (barEl)    barEl.style.width = pct + '%';
+    if (statusEl) statusEl.textContent = msgs[Math.min(msgs.length - 1, Math.floor((shown / 100) * msgs.length))];
+  }, 80);
+  dismissBootLoader._finish = () => {
+    clearInterval(tick);
+    if (pctEl) pctEl.textContent = '100';
+    if (barEl) barEl.style.width = '100%';
+  };
+}
+function dismissBootLoader() {
+  if (_bootDone) return;
+  _bootDone = true;
+  const wait = Math.max(0, BOOT_MIN_MS - (performance.now() - _bootStart));
+  setTimeout(() => {
+    if (dismissBootLoader._finish) dismissBootLoader._finish();
+    const el = document.getElementById('bootLoader');
+    if (!el) return;
+    // Let 100% paint for one frame, then cut straight to the scene (no fade).
+    requestAnimationFrame(() => el.remove());
+  }, wait);
+}
+
 // ====== 36. Animate ======
 const clock = new THREE.Clock();
 // Light updates (clock + orbit values) refresh several times per second; we
@@ -86,6 +138,9 @@ let plasmaTime = 0;
 (function loop() {
   requestAnimationFrame(loop);
   const dt = clock.getDelta();
+  // Reset the renderer's per-frame draw counters before anything renders, so
+  // the perf HUD tallies the true total across every pass this frame.
+  beginPerfFrame();
   // Drive the Sun's photosphere + corona and every star body's plasma.
   plasmaTime += dt;
   for (const u of plasmaTickUniforms) u.uTime.value = plasmaTime;
@@ -147,6 +202,7 @@ let plasmaTime = 0;
     updateAstronaut(dt);
     updateGrass(dt);
     updateRocks(dt);
+    updateSlabs(dt);
     updateWaterPatch(dt);
     updateGroundPatch(dt);
     updateFootprints(dt);
@@ -155,6 +211,9 @@ let plasmaTime = 0;
     updateBubbles(dt);
     updateMinimap(dt);
     updateSurfaceSkyEffects();
+    // Make the Moon / other solid planets in the sky read as lit globes
+    // (broad albedo patches + night-side floor) rather than flat grey discs.
+    updateSkyBodies();
     // Keep the visited water world's ocean sphere in wave mode every frame.
     // The one-time set in enterSurfaceMode is a no-op on a cold first visit
     // (the ocean material compiles lazily, so userData.shader is still null
@@ -200,4 +259,9 @@ let plasmaTime = 0;
   // the white aerial haze; everywhere else renders straight to the canvas.
   if (underwaterPassActive()) renderUnderwater();
   else renderer.render(scene, camera);
+  // Refresh the dev perf HUD AFTER rendering, so renderer.info holds the
+  // triangle / draw-call counts for the frame just drawn.
+  updatePerfHud(dt);
+  // First frame is on screen — the scene is interactive, so retire the loader.
+  if (!_bootDone) dismissBootLoader();
 })();

@@ -14,7 +14,7 @@ import { bodies, planets, viewMode } from '../framework/state.js';
 import { exitPickMode } from '../modes/surface/core.js';
 import { exitSurfaceMode } from '../modes/surface/mode.js';
 import { emit } from '../core/bus.js';
-import { SOLAR_SYSTEM_SPEC, spawnSolarPlanet } from './planets.js';
+import { ALPHA_CENTAURI_SPEC, SOLAR_SYSTEM_SPEC, spawnSolarPlanet } from './planets.js';
 import { removePlanetBody } from './teardown.js';
 
 // ====== 34. Star-system load / unload ======
@@ -37,6 +37,10 @@ export const galaxy = {
   constellations: [
     { id: 'helios-sector', name: 'Helios Sector', mapX: 0.50, mapY: 0.52, starSystems: [
       { id: 'sol', name: 'Sol', isPreset: true, constellationId: 'helios-sector', mapX: 0.50, mapY: 0.50 },
+    ] },
+    { id: 'centaurus',   name: 'Centaurus',    mapX: 0.40, mapY: 0.44, starSystems: [
+      { id: 'alpha-centauri', name: 'Alpha Centauri', isPreset: true, constellationId: 'centaurus',
+        mapX: 0.50, mapY: 0.50, planetSpecs: ALPHA_CENTAURI_SPEC, homeIndex: 1 },
     ] },
     { id: 'orion',       name: 'Orion',        mapX: 0.30, mapY: 0.34, starSystems: [] },
     { id: 'lyra',        name: 'Lyra',         mapX: 0.70, mapY: 0.30, starSystems: [] },
@@ -275,6 +279,16 @@ export function finalizeSystemLoad() {
   emit('ui:info');
 }
 
+// Build a non-Sol preset (e.g. Alpha Centauri) from the planetSpecs attached
+// to its immutable catalog entry. homeIndex picks the default/home body
+// (the habitable world), falling back to the innermost planet.
+export function bootstrapPresetSystem(system) {
+  setSystemNameValue(system.name);
+  const spawned = buildSystemFromSpec(system.planetSpecs || []);
+  const home = system.homeIndex != null ? spawned[system.homeIndex] : spawned[0];
+  setPlanet(home || spawned[0] || null);
+}
+
 // Build a user-created system from the planetSpecs cached on its catalog
 // entry (generated once, at create time, so revisiting in the same session
 // reproduces it exactly). planet (home/default) is the innermost planet.
@@ -289,7 +303,8 @@ export function bootstrapProceduralSystem(system) {
 // phase). Hooked up to the map overlays once those exist.
 export function loadStarSystem(system) {
   unloadStarSystem();
-  if (!system || system.isPreset) bootstrapSolSystem();
+  if (!system || system.id === 'sol') bootstrapSolSystem();
+  else if (system.isPreset && system.planetSpecs) bootstrapPresetSystem(system);
   else bootstrapProceduralSystem(system);
   currentSystemId = (system && system.id) || 'sol';
   finalizeSystemLoad();

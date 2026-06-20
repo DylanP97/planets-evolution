@@ -102,6 +102,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `surface/scratch.js` | Shared per-frame scratch (one raycaster + `_gr*`/`_g*` vectors) used by grass/ground/rocks/props — zero imports besides THREE, so no cycles. |
 | `surface/grass.js`   | Instanced grass, treadmill grid, ground sampling (`sampleGrassGround`, `grassGroundRadius`). Reads the canonical `groundBiomeOfFace`/`FACE_BIOME` classifier (now in `framework/body.js`) for per-blade variants (meadow/forest/tundra) via `grassZoneOfFace` + `GRASS_ZONE_STYLE`. |
 | `surface/rocks.js`   | Instanced rocks (desert/venusian), `resolveRockCollision`. |
+| `surface/slabs.js`   | Instanced flat bedrock plates (flagstone) on the Martian (desert) **Flats** biome: a jittered-lattice treadmill of large, long, low slabs laid flush with the terrain (`attachSlabs`/`updateSlabs`, `groundIsFlatsFace`). Desert grows no grass — these pave the flats instead. |
 | `surface/water.js`   | Local water patch: waves, depth shading, crest/shore foam, `waveHeightAtAvatar`. |
 | `surface/seabed.js`  | Submerged dressing on water worlds: procedural swaying kelp/algae fronds + schooling fish (`fish.glb`), on the grass treadmill grid, gated to below-waterline cells; patchiness (distinct beds/schools with open water between) comes from the cluster scatter (`attachSeabed`/`updateSeabed`, `window.seabedDiag`). |
 | `surface/ground.js`  | Ground micro-relief patch (currently disabled — `ENABLE_GROUND_PATCH`). |

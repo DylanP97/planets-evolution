@@ -10,7 +10,7 @@ import { COL } from '../../core/constants.js';
 import { camera, scene, surfaceSkyLight } from '../../core/scene.js';
 import { coronaMesh, sunMesh } from '../../core/sun.js';
 import { smoothstep } from '../../core/utils.js';
-import { viewMode } from '../../framework/state.js';
+import { bodies, probes, viewMode } from '../../framework/state.js';
 import { _sunWorldTmp, _toSunTmp } from '../../system/lighting.js';
 import { surfaceState } from './core.js';
 import { cameraSubmerged } from './underwater-pass.js';
@@ -108,6 +108,111 @@ export function updateSurfaceSkyEffects() {
     scene.fog = aerialFog;
   }
 }
+
+// Bodies hanging in the surface sky (the Moon, other planets) are the same
+// solid icosphere meshes used in orbit. The catch: the surface-mode aerial fog
+// (updateSurfaceSkyEffects) is GLOBAL with a very short far distance, tuned to
+// haze the near-field ground props. Distant bodies sit far beyond that far
+// plane, so three.js blends them to 100% fog colour — a flat grey disc, no
+// matter what their surface actually looks like (the very same grey that eats
+// far-off trees and probes). The fix mirrors what the sky already does for the
+// starfield/galaxy: exclude these bodies from fog so they render as their real
+// lit selves. While we're here, add a soft night-side colour floor + gentle
+// maria (materials.js, driven by uSkyBodyFill) so a far body reads as a world
+// rather than a flat coin. Surface mode only; reverted by clearSkyBodies. The
+// visited body underfoot is skipped — its ground SHOULD still take the haze.
+// Toggle scene-fog response across a mesh subtree (probe GLBs are multi-mesh,
+// sometimes multi-material). Only flips + recompiles materials that actually
+// change, so it's cheap to call every frame.
+function setSubtreeFog(root, fogOn) {
+  root.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) if (m.fog !== fogOn) { m.fog = fogOn; m.needsUpdate = true; }
+  });
+}
+
+export function updateSkyBodies() {
+  const here = surfaceState.body;
+  if (!here) return;
+  for (const b of bodies) {
+    if (b === here) continue;
+    if (b.kind !== 'planet' && b.kind !== 'moon') continue;
+    if (!b.matter || !b.matter.solid) continue;
+    const mat = b.mesh.material;
+    // Drop fog on this far body's surface mesh (recompiles once; guarded).
+    if (mat.fog) { mat.fog = false; mat.needsUpdate = true; }
+    const sh = mat.userData.detailShader;
+    if (sh) sh.uniforms.uSkyBodyFill.value = 0.12;
+  }
+  // Probes (orbiting GLB satellites) sit past the fog far-plane too, so they'd
+  // otherwise read as the same flat grey blobs. Drop fog on their meshes. Done
+  // every frame so probes whose GLB resolves AFTER we entered surface mode get
+  // caught the moment they load.
+  for (const p of probes) {
+    if (p.mesh) setSubtreeFog(p.mesh, false);
+  }
+}
+
+// Revert the sky-body treatment on leaving surface mode so the orbit view is
+// unchanged: re-enable fog (only on the meshes we cleared, to avoid needless
+// recompiles) and drop the night floor + any leftover detail flag.
+export function clearSkyBodies() {
+  for (const b of bodies) {
+    if (b.kind !== 'planet' && b.kind !== 'moon') continue;
+    const mat = b.mesh && b.mesh.material;
+    if (!mat) continue;
+    if (!mat.fog) { mat.fog = true; mat.needsUpdate = true; }
+    const sh = mat.userData.detailShader;
+    if (sh) {
+      sh.uniforms.uSurfaceDetail.value = 0;
+      sh.uniforms.uSkyBodyFill.value   = 0;
+    }
+  }
+  // Re-enable fog on probe meshes for the orbit view.
+  for (const p of probes) {
+    if (p.mesh) setSubtreeFog(p.mesh, true);
+  }
+}
+
+// Console diagnostic: window.skyDiag() — what is actually hanging in the
+// surface sky and why a body reads the way it does. For every body it prints
+// kind, matter phase, whether a gas SHELL is drawn over it (a thin night-side
+// shell renders as a soft grey halo — easily mistaken for the solid disc),
+// its apparent radius in screen pixels, and the sky-disc uniforms this module
+// is (or isn't) applying. Run it while standing on a surface looking at the disc.
+const _sdCamPos = new THREE.Vector3();
+const _sdBodyPos = new THREE.Vector3();
+window.skyDiag = function skyDiag() {
+  const here = surfaceState.body;
+  camera.getWorldPosition(_sdCamPos);
+  const pxPerRad = window.innerHeight / (camera.fov * Math.PI / 180);
+  const rows = [];
+  for (const b of bodies) {
+    b.group.getWorldPosition(_sdBodyPos);
+    const dist = _sdCamPos.distanceTo(_sdBodyPos);
+    const rWorld = b.baseRadius * (b.group.scale.x || 1);
+    const apxPx = Math.atan(rWorld / Math.max(1e-6, dist)) * pxPerRad;
+    const sh = b.mesh.material.userData.detailShader;
+    const gasOn = !!(b.gasMesh && b.gasMesh.visible);
+    rows.push({
+      name: b.name,
+      kind: b.kind,
+      phase: b.matter ? (b.matter.solid ? 'solid' : b.matter.gas ? 'gas' : b.matter.liquid ? 'liquid' : '?') : '?',
+      isUnderfoot: b === here,
+      gasShellDrawn: gasOn,
+      apparentRadiusPx: +apxPx.toFixed(1),
+      detailShader: !!sh,
+      uSkyBodyFill: sh ? +sh.uniforms.uSkyBodyFill.value.toFixed(3) : 'n/a',
+      uSurfaceDetail: sh ? +sh.uniforms.uSurfaceDetail.value.toFixed(2) : 'n/a',
+    });
+  }
+  rows.sort((a, b) => b.apparentRadiusPx - a.apparentRadiusPx);
+  console.table(rows);
+  console.info('[skyDiag] standing on: %s | viewMode=%s — biggest discs are at the top of the table.',
+    here ? here.name : '(not on a surface)', viewMode);
+  return rows;
+};
 
 // Per-frame: rebuild the camera transform from the body's current world
 // matrix. The body spins on its axis and orbits the sun; by transforming
