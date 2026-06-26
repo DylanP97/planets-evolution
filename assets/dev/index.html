@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Asset Library · Dev Scene</title>
+  <!--
+    Standalone asset development scene. NOT part of the main app (src/main.js) —
+    it shares nothing with it except the GLB files in ../ (the assets/ folder).
+    Run it with the bundled launcher (serves the project root on its own port
+    and opens the library; main app on 8000 untouched):
+
+        python assets/dev/serve.py        # opens http://localhost:8001/assets/dev/
+
+    Or by hand: serve the PROJECT ROOT (not assets/dev/) on any free port, then
+    open /assets/dev/. The .glb files live in assets/, one level up — if the
+    server root is assets/dev/ those files sit outside it and every model 404s.
+
+    It loads three.js from the same
+    CDN/importmap the main app uses (three@0.160) so what you see here matches
+    how a model will render in-app.
+
+    Add a new model to ASSETS below (or just drag-and-drop a .glb onto the page).
+  -->
+  <link rel="stylesheet" href="dev-scene.css" />
+</head>
+
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="side-head">
+        <div class="eyebrow">Planet Tiles</div>
+        <h1>Asset Library</h1>
+        <p class="sub">Standalone dev scene · drop a <code>.glb</code> anywhere to load it</p>
+      </header>
+
+      <div class="side-section">
+        <div class="section-title">Models</div>
+        <ul id="assetList" class="asset-list"></ul>
+      </div>
+
+      <div class="side-section">
+        <div class="section-title">Animation</div>
+        <select id="clipSelect" class="control"><option>—</option></select>
+      </div>
+
+      <div class="side-section">
+        <div class="section-title">View</div>
+        <label class="toggle"><input type="checkbox" id="optGrid" checked /> Grid &amp; axes</label>
+        <label class="toggle"><input type="checkbox" id="optWire" /> Wireframe</label>
+        <label class="toggle"><input type="checkbox" id="optSpin" /> Auto-rotate</label>
+        <label class="toggle"><input type="checkbox" id="optBox" /> Bounding box</label>
+        <label class="slider">Background
+          <input type="range" id="optBg" min="0" max="100" value="9" />
+        </label>
+        <label class="slider">Light
+          <input type="range" id="optLight" min="0" max="300" value="130" />
+        </label>
+      </div>
+
+      <footer class="side-foot">
+        <button id="resetCam" class="btn">Reset camera</button>
+      </footer>
+    </aside>
+
+    <main id="stage">
+      <canvas id="c"></canvas>
+      <div id="info" class="info-card">
+        <div class="info-name" id="infoName">—</div>
+        <div class="info-grid">
+          <span>Size</span><span id="infoSize">—</span>
+          <span>Meshes</span><span id="infoMeshes">—</span>
+          <span>Verts</span><span id="infoVerts">—</span>
+          <span>Tris</span><span id="infoTris">—</span>
+          <span>Materials</span><span id="infoMats">—</span>
+          <span>Clips</span><span id="infoClips">—</span>
+        </div>
+        <div class="info-status" id="status"></div>
+      </div>
+      <div id="dropHint">Drop <code>.glb</code> to preview</div>
+    </main>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="dev-scene.js"></script>
+</body>
+
+</html>

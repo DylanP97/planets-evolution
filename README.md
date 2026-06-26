@@ -36,6 +36,36 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 Any static server on the project root works (e.g. `python -m http.server`).
 
+### Asset library (dev scene)
+
+`assets/dev/` is a standalone scene for developing and inspecting GLB models in
+isolation — it shares nothing with the main app except the `.glb` files. Serve
+it on its **own port**, independent of the main app. The simplest way is the
+bundled launcher — it serves on port `8001` and opens the library for you, while
+your main app on `8000` is untouched:
+
+```bash
+python assets/dev/serve.py        # opens http://localhost:8001/assets/dev/
+python assets/dev/serve.py 9000   # or pick another port
+```
+
+The launcher serves the **project root** (so the scene can reach the GLBs in
+`assets/`) but points the browser straight at the library. If you'd rather use
+your own static server, do the same thing by hand — serve the project root, then
+open `/assets/dev/`:
+
+```bash
+npx serve . -l 8001     # then open http://localhost:8001/assets/dev/
+```
+
+> Don't root a server at `assets/dev/` — the `.glb` files live one level up in
+> `assets/`, so they'd sit outside the server and every model would 404.
+
+Click a model in the sidebar (or drag-and-drop a `.glb` onto the page) to load
+it; toggle grid/wireframe/bounding-box, scrub animation clips, and read its
+size / vertex / triangle / material counts. Register new models by adding an
+entry to `ASSETS` in `assets/dev/dev-scene.js`.
+
 ## Project layout
 
 | Path | Role |
@@ -52,6 +82,7 @@ Any static server on the project root works (e.g. `python -m http.server`).
 | `src/modes/` | Focus + the surface-walk feature (`surface/*`) |
 | `src/ui/` | Panels, sliders, roster, nav, naming, star map |
 | `assets/` | All GLB models (props, avatar, colony, satellite) |
+| `assets/dev/` | Standalone **asset library** dev scene — preview/inspect any GLB in isolation (own server/port; see below) |
 | `ARCHITECTURE.md` | Maintainer map: modules, data model, frame lifecycle |
 | `CLAUDE.md` | Quick-start + conventions for AI coding agents |
 

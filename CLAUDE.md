@@ -12,6 +12,14 @@ npx serve . -l 3000     # any static server on the project root works
 
 Entry point: `index.html` → `src/main.js`.
 
+**Asset library (standalone dev scene):** `assets/dev/` is a self-contained GLB
+viewer for developing/inspecting models in isolation — it shares nothing with
+`src/`. Launch it on its own port (main app on 8000 untouched):
+
+```bash
+python assets/dev/serve.py     # opens http://localhost:8001/assets/dev/
+```
+
 ## Navigate the code
 
 Read **ARCHITECTURE.md** first — it has the module map, data model, frame lifecycle, and a "where is function X" table. Every `src/` module also starts with a header comment saying what it owns. Quick orientation:

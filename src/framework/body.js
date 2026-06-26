@@ -547,7 +547,7 @@ export function applyMatterToBody(body, matterCfg, oceanCol) {
       body.gasThickness = matterCfg.gasThickness ?? 1.10;
       body.gasDensity   = matterCfg.gasDensity   ?? 0.20;
       body.gasCoverage  = matterCfg.gasCoverage  ?? 0.35;
-      if (body.windMode == null)        body.windMode = !!matterCfg.windMode;
+      if (body.cloudType == null)        body.cloudType = matterCfg.cloudType ?? 0;
       if (body.coverageVariance == null) body.coverageVariance = matterCfg.coverageVariance ?? 0;
       if (body.coveragePhase == null)    body.coveragePhase = Math.random() * Math.PI * 2;
       const u = body.gasMesh.material.uniforms;
@@ -558,7 +558,7 @@ export function applyMatterToBody(body, matterCfg, oceanCol) {
       // them write depth so they properly occlude what's behind them.
       body.gasMesh.material.depthWrite = matterCfg.gas === 'full';
       u.uWindSpeed.value = matterCfg.windSpeed ?? 0.05;
-      u.uWindMode.value  = body.windMode ? 1.0 : 0.0;
+      u.uCloudType.value = body.cloudType ?? 0;
       if (matterCfg.gas === 'full') {
         const gp = ensureGasPaint(body);
         u.uBandTex.value = gp.tex;

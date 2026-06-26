@@ -3,7 +3,7 @@
 import { camera, renderer } from '../../core/scene.js';
 import { addMoon } from '../../entities/moons.js';
 import { addSatellite } from '../../entities/probes.js';
-import { focusedBody, moons, planet, probes, viewMode } from '../../framework/state.js';
+import { focusedBody, moons, paused, planet, probes, setPaused, viewMode } from '../../framework/state.js';
 import { pointer, raycaster } from '../../interaction/brush.js';
 import { setPointerFromEvent } from '../../interaction/pointer.js';
 import {
@@ -18,6 +18,7 @@ import {
 } from './core.js';
 import { enterSurfaceMode, exitSurfaceMode } from './mode.js';
 import { clearSurfaceKeys, surfaceKeys, toggleSurfaceCamera, tryJump } from './walk.js';
+import { debugCamActive } from '../debug-cam.js';
 
 // ====== 33. Surface input ======
 export let surfaceDragging = false;
@@ -136,6 +137,26 @@ renderer.domElement.addEventListener('wheel', (e) => {
 // ESC cancels pick mode or exits surface mode. Keeps a clean way out
 // when the user gets stuck without reaching the on-screen button.
 document.addEventListener('keydown', (e) => {
+  // P toggles pause everywhere — orbit, surface, even while flying the debug
+  // camera — so it runs ahead of the debug-cam guard below. Skip while typing.
+  {
+    const tp = e.target;
+    const typing = tp && (tp.tagName === 'INPUT' || tp.tagName === 'TEXTAREA' || tp.isContentEditable);
+    if (!typing && e.key.toLowerCase() === 'p') {
+      setPaused(!paused);
+      // Keep the System-tab "Pause" checkbox in sync (getElementById, not an
+      // import, to avoid a modes→ui layering edge — same pattern as 'o' below).
+      const pauseInput = document.getElementById('pauseRot');
+      if (pauseInput) pauseInput.checked = paused;
+      e.preventDefault();
+      return;
+    }
+  }
+  // While the free-fly debug camera owns the keyboard, swallow every other
+  // shortcut (orbit-mode nav, surface WASD, the 'o' orbit toggle, even Esc —
+  // debug-cam handles its own exit) so flying around can't change planets,
+  // walk the avatar, or jump systems out from under us.
+  if (debugCamActive()) return;
   if (e.key === 'Escape') {
     if (viewMode === 'pick') exitPickMode();
     else if (viewMode === 'surface') exitSurfaceMode();

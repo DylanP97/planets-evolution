@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 
+// Build marker — bump on each change so a hard-refresh can be confirmed in the
+// console (window.__BUILD). If this number doesn't update after reloading, the
+// browser is serving stale cached ES modules — hard-refresh (Ctrl+Shift+R).
+window.__BUILD = 'clouds-all-morph-1';
+console.log('[planet-tiles] build', window.__BUILD);
+
 // Module evaluation order mirrors the original script.js section order:
 // scene/shaders → framework → system → interaction → entities → background
 // → modes → ui. Imports are depth-first, so a module's own dependencies are
@@ -50,6 +56,7 @@ import { updateMinimap } from './modes/surface/minimap.js';
 import { renderUnderwater, underwaterPassActive } from './modes/surface/underwater-pass.js';
 import { stepSurfaceWalk } from './modes/surface/walk.js';
 import { surfaceState } from './modes/surface/core.js';
+import { debugCamActive, updateDebugCam } from './modes/debug-cam.js';
 import './modes/surface/input.js';
 import './ui/naming.js';
 import { loadStarSystem, findStarSystem } from './system/starsystems.js';
@@ -167,10 +174,22 @@ let plasmaTime = 0;
         if (variance > 0) {
           const base   = b.gasCoverage ?? 0.35;
           const phase  = b.coveragePhase ?? 0;
-          const drift  = Math.sin(gasTime * 0.08 + phase) * 0.35 * variance;
+          // Variance scales BOTH the swing amplitude and how fast it drifts —
+          // a high "Cloud Coverage Drift" makes the deck thicken/thin rapidly.
+          const speed  = 0.04 + 0.22 * variance;
+          const drift  = Math.sin(gasTime * speed + phase) * 0.35 * variance;
           u.uCoverage.value = Math.max(0, Math.min(1, base + drift));
         } else {
           u.uCoverage.value = b.gasCoverage ?? 0.35;
+        }
+        // Cloud Type "All" (3): morph through the three types over time. The
+        // Cloud Coverage Drift slider sets the morph speed too — high drift
+        // cycles cumulus→stratus→cirrus rapidly, low drift drifts slowly.
+        if ((b.cloudType ?? 0) === 3) {
+          const variance = b.coverageVariance ?? 0;
+          const phase    = b.coveragePhase ?? 0;
+          const speed    = 0.04 + 0.20 * variance;
+          u.uCloudBlend.value = (((gasTime * speed + phase) % 3) + 3) % 3;
         }
       }
     }
@@ -189,6 +208,35 @@ let plasmaTime = 0;
   updateSunLightForFocus();
   updateEclipseShadows();
   updateMoonLight();
+
+  // DEBUG free-fly camera (press F): the camera detaches from the focus rig /
+  // surface walker and the user flies it around. We skip the normal camera
+  // drivers (focus tracking, OrbitControls) so nothing fights it for the
+  // transform; the rest of the world keeps advancing.
+  if (debugCamActive()) {
+    // On a surface, keep the avatar glued to its body even as we fly away:
+    // updateSurfaceOrigin re-pins the floating origin and updateAstronaut
+    // replants the feet (a moon underfoot keeps orbiting even while paused, so
+    // a frozen avatar would drift off it). updateSurfaceCamera runs only to
+    // refresh the world vectors updateAstronaut reads — the debug camera
+    // overwrites its transform immediately after, below.
+    if (viewMode === 'surface' && surfaceState.body) {
+      updateSurfaceOrigin();
+      updateSurfaceCamera();
+      updateAstronaut(dt);
+    }
+    updateDebugCam(dt);
+    updateOrbitInteraction();
+    milkyway.position.copy(camera.position).sub(scene.position);
+    milkyMat.uniforms.uBrightness.value = starMat.opacity / SURFACE_STAR_OPACITY;
+    liveInfoAccum += dt;
+    if (liveInfoAccum >= 0.1) { liveInfoAccum = 0; updateLiveInfo(); }
+    renderer.render(scene, camera);
+    updatePerfHud(dt);
+    if (!_bootDone) dismissBootLoader();
+    return;
+  }
+
   updateFocusTracking();
 
   controls.update();

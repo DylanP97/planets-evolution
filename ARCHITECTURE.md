@@ -332,7 +332,7 @@ Anything referenced from JS by id, grouped by panel:
 | Tabs (left)        | `tab-classify`, `tab-sculpt`, `tab-environment`, `tab-colonies`, `tab-satellites`, `tab-system`                                 |
 | Classify           | `archetypeSelect`, `seedInput`, `randomSeedBtn`, `genAmp`, `genSea`, `regenBtn`                                                  |
 | Sculpt             | `sculptRaise`, `sculptLower`, `brushRadius`, `brushStrength`                                                                    |
-| Environment        | `biomeSelect`, `brushRadiusB`, `atmoThick`, `atmoDensity`, `atmoCoverage`, `atmoComplexWinds`, `atmoCloudDrift`, `ringsEnabled`, `ringsIntensity` |
+| Environment        | `biomeSelect`, `brushRadiusB`, `atmoThick`, `atmoDensity`, `atmoCoverage`, `atmoCloudType`, `atmoCloudDrift`, `ringsEnabled`, `ringsIntensity` |
 | Colonies           | `cityNameInput`, `cityList`                                                                                                     |
 | Satellites         | `moonsList`, `addMoon`, `probesList`, `addProbe`                                                                                |
 | System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`, `bodyInclInput`, `bodyNodeInput`, `bodyRetrogradeInput` |

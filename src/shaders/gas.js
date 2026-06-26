@@ -38,10 +38,13 @@ export const GAS_FRAG = /* glsl */ `
   uniform float uMode;
   uniform float uCoverage;
   uniform float uOpaqueSky;
+  uniform float uSkyVeil;
+  uniform vec3  uVeilColor;
   uniform float uShellScale;
   uniform float uTime;
   uniform float uWindSpeed;
-  uniform float uWindMode;
+  uniform float uCloudType;   // 0 cumulus · 1 stratus · 2 cirrus · 3 all (morph)
+  uniform float uCloudBlend;  // for "all": phase 0..3 crossfading the three types
   uniform sampler2D uBandTex;
   uniform float uUseBands;
 
@@ -105,9 +108,8 @@ export const GAS_FRAG = /* glsl */ `
     float cloud = 0.0;
 
     if (uMode < 0.5) {
-      float lat       = vLocalNormal.y;
-      float bandRate  = mix(1.0, sin(lat * 3.14159 * 1.5) * 1.8, uWindMode);
-      float ang       = uTime * uWindSpeed * bandRate;
+      int   ctype     = int(uCloudType + 0.5);
+      float ang       = uTime * uWindSpeed;
       float wc        = cos(ang);
       float ws        = sin(ang);
       vec3  windDir = vec3(
@@ -115,10 +117,42 @@ export const GAS_FRAG = /* glsl */ `
               vLocalNormal.y,
         -ws * vLocalNormal.x + wc * vLocalNormal.z
       );
-      windDir.y += uWindMode * sin(uTime * uWindSpeed * 0.6 + lat * 4.0) * 0.08;
-      float n      = fbm(windDir * 3.5);
-      float thresh = 0.95 - uCoverage * 0.90;
-      cloud = smoothstep(thresh - 0.10, thresh + 0.28, n);
+      float cov = uCoverage;
+      float thr = 0.95 - cov * 0.90;
+
+      // Each cloud type shares the same coverage threshold (so none is denser
+      // than another at equal Opacity), differing only in noise shape.
+      // Cumulus: puffy, isolated rounded clumps.
+      float cumulus = smoothstep(thr - 0.10, thr + 0.28, fbm(windDir * 3.5));
+      // Stratus: smooth broad overcast — large soft flat cells, no banding.
+      float stratus = smoothstep(thr - 0.05, thr + 0.40, fbm(windDir * 1.7));
+      // Cirrus: wind-stretched streaks (jet-stream look). Sample the noise
+      // anisotropically — high frequency across latitude, low along the wind —
+      // so it forms east-west streaks, then warp it so the bands waver
+      // organically instead of drawing perfect rings.
+      float warp   = fbm(windDir * 2.0) * 0.45;
+      vec3  sp     = vec3(windDir.x * 1.3, windDir.y * 7.0 + warp * 6.0, windDir.z * 1.3);
+      float cirrus = smoothstep(thr - 0.04, thr + 0.30, fbm(sp));
+
+      if (ctype == 1) {
+        cloud = stratus;
+      } else if (ctype == 2) {
+        cloud = cirrus;
+      } else if (ctype == 3) {
+        // All: smoothly morph cumulus → stratus → cirrus → cumulus on a cycle.
+        // uCloudBlend wraps 0..3; triangular weights crossfade adjacent types
+        // (the wrap from 3 back to 0 feeds cumulus, so the loop is seamless).
+        float t  = uCloudBlend;
+        float w0 = max(0.0, 1.0 - abs(t - 0.0)) + max(0.0, 1.0 - abs(t - 3.0));
+        float w1 = max(0.0, 1.0 - abs(t - 1.0));
+        float w2 = max(0.0, 1.0 - abs(t - 2.0));
+        cloud = cumulus * w0 + stratus * w1 + cirrus * w2;
+      } else {
+        cloud = cumulus;
+      }
+      // As coverage approaches its max, force a complete deck so a fully-clouded
+      // world (e.g. Venus) leaves no static uncovered gaps at the poles.
+      cloud = max(cloud, smoothstep(0.92, 1.0, cov));
 
       vec3  viewDir = normalize(-vViewDir);
       float sunDot  = max(0.0, dot(normalize(uSunDir), viewDir));
@@ -238,7 +272,13 @@ export const GAS_FRAG = /* glsl */ `
     if (uOpaqueSky > 0.5) {
       if (a < 0.02) discard;
     }
-    gl_FragColor = vec4(col, a);
+    // Daytime sky-glow veil (driven only for distant bodies in surface mode).
+    // uSkyVeil 1 = fully visible. As it drops we both fade the colour INTO the
+    // sky tint and cut the alpha — fading colour matters because gas giants are
+    // transparent meshes with depthWrite, so an alpha cut alone doesn't reliably
+    // hide them; blending them toward the sky colour camouflages them regardless.
+    col = mix(uVeilColor, col, uSkyVeil);
+    gl_FragColor = vec4(col, a * mix(0.22, 1.0, uSkyVeil));
   }
 `;
 
@@ -303,10 +343,13 @@ export function makeGasMaterial() {
       uMode:     { value: 0.0 },
       uCoverage: { value: 0.35 },
       uOpaqueSky:{ value: 0.0 },
+      uSkyVeil:  { value: 1.0 },
+      uVeilColor:{ value: new THREE.Color(0xb8c6d4) },
       uShellScale:{ value: 1.10 },
       uTime:     { value: 0.0 },
       uWindSpeed:{ value: 0.05 },
-      uWindMode: { value: 0.0 },
+      uCloudType: { value: 0.0 },
+      uCloudBlend: { value: 0.0 },
       uBandTex:  { value: DEFAULT_BAND_TEX },
       uUseBands: { value: 0.0 },
       uFeatureCount:     { value: 0 },

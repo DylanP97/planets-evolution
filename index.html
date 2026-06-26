@@ -125,11 +125,16 @@
 
       <div id="atmoSection">
         <div class="section-header" style="margin-top:14px" id="atmoHeader">Atmosphere</div>
-        <label>Size <input id="atmoThick" type="range" min="100" max="140" value="110"><span class="val" id="atmoThickVal">1.10</span></label>
-        <label>Density <input id="atmoDensity" type="range" min="0" max="100" value="20"><span class="val" id="atmoDensityVal">0.20</span></label>
+        <label>Closeness <input id="atmoThick" type="range" min="100" max="140" value="110"><span class="val" id="atmoThickVal">1.10</span></label>
+        <label>Opacity <input id="atmoDensity" type="range" min="0" max="100" value="20"><span class="val" id="atmoDensityVal">0.20</span></label>
         <label>Coverage <input id="atmoCoverage" type="range" min="0" max="100" value="35"><span class="val" id="atmoCoverageVal">0.35</span></label>
-        <label>Complex Winds <input id="atmoComplexWinds" type="checkbox"></label>
-        <label>Cloud Drift <input id="atmoCloudDrift" type="range" min="0" max="100" value="0"><span class="val" id="atmoCloudDriftVal">0.00</span></label>
+        <label>Cloud Type <select id="atmoCloudType">
+          <option value="0">Cumulus</option>
+          <option value="1">Stratus</option>
+          <option value="2">Cirrus</option>
+          <option value="3">All</option>
+        </select></label>
+        <label>Cloud Coverage Drift <input id="atmoCloudDrift" type="range" min="0" max="100" value="0"><span class="val" id="atmoCloudDriftVal">0.00</span></label>
         <p class="hint" id="atmoHint">No atmosphere on this body</p>
       </div>
 

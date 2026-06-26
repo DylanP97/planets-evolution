@@ -152,6 +152,34 @@ export function updateSkyBodies() {
   for (const p of probes) {
     if (p.mesh) setSubtreeFog(p.mesh, false);
   }
+  // Daytime sky-glow veil on distant ATMOSPHERES (gas giants + thick-air worlds
+  // like Venus). Their gas shells are fog-less ShaderMaterials, so unlike the
+  // rocky surface meshes above they ignore the aerial haze and punch through the
+  // daytime sky at full brightness. Fade them by how bright the sky you stand
+  // under actually is: the glow scales with daylight AND the visited world's own
+  // air opacity, so an airless/thin-atmosphere world still shows them clearly —
+  // and lowering this body's Opacity reveals them even at noon (the real reason
+  // you only rarely catch a planet in daylight is sky brightness, not opacity).
+  const air = here.matter && here.matter.gas === 'atmosphere' ? (here.gasDensity ?? 0) : 0;
+  const dayFactor = 1 - Math.min(1, starMat.opacity / SURFACE_STAR_OPACITY);
+  // Daytime sky brightness is what hides planets, not the air's opacity — so the
+  // veil tracks DAYLIGHT, exactly like the dim rocky discs (Moon/Mars) already
+  // do. Any world with a real atmosphere washes distant gas planets down to a
+  // faint daytime ghost regardless of the Opacity slider; only when the air is
+  // nearly a vacuum (< ~0.1) does the daytime sky go dark enough to reveal them.
+  // A 0.04 floor keeps a trace rather than popping straight to zero.
+  const hasAir = smoothstep(0.04, 0.12, air);
+  const veil = 1 - 0.96 * dayFactor * hasAir;
+  // Bodies fade toward the colour of the sky they sit against — the visited
+  // world's own sky tint — so they camouflage into it rather than just dimming.
+  const skyTint = here.gasMesh ? here.gasMesh.material.uniforms.uSkyTint.value : null;
+  for (const b of bodies) {
+    if (b === here || !b.gasMesh) continue;
+    if (b.kind !== 'planet' && b.kind !== 'moon') continue;
+    const u = b.gasMesh.material.uniforms;
+    u.uSkyVeil.value = veil;
+    if (skyTint) u.uVeilColor.value.copy(skyTint);
+  }
 }
 
 // Revert the sky-body treatment on leaving surface mode so the orbit view is
@@ -172,6 +200,10 @@ export function clearSkyBodies() {
   // Re-enable fog on probe meshes for the orbit view.
   for (const p of probes) {
     if (p.mesh) setSubtreeFog(p.mesh, true);
+  }
+  // Clear the daytime sky-glow veil so gas shells render full-strength in orbit.
+  for (const b of bodies) {
+    if (b.gasMesh) b.gasMesh.material.uniforms.uSkyVeil.value = 1.0;
   }
 }
 

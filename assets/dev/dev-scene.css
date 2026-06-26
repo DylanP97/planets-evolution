@@ -1,0 +1,116 @@
+/* Asset Library dev scene — self-contained styles (no dependency on the app's
+   styles/ folder). Dark instrument-panel look loosely echoing the main UI. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0e16;
+  --panel: #10151f;
+  --panel-2: #161d2b;
+  --line: #1e2737;
+  --txt: #c9d4e6;
+  --txt-dim: #6c7a92;
+  --accent: #4fd1c5;
+  --accent-2: #7aa2ff;
+}
+
+html, body { height: 100%; }
+
+body {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--txt);
+  overflow: hidden;
+}
+
+#app { display: flex; height: 100vh; }
+
+/* ---- Sidebar ---- */
+#sidebar {
+  width: 280px;
+  flex: 0 0 280px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.side-head { padding: 20px 18px 16px; border-bottom: 1px solid var(--line); }
+.eyebrow {
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--accent); font-weight: 700;
+}
+.side-head h1 { font-size: 19px; font-weight: 700; margin: 4px 0 6px; }
+.sub { font-size: 11px; color: var(--txt-dim); line-height: 1.5; }
+.sub code, .info-card code, #dropHint code {
+  background: var(--panel-2); padding: 1px 5px; border-radius: 4px;
+  color: var(--accent-2); font-size: 11px;
+}
+
+.side-section { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.section-title {
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--txt-dim); margin-bottom: 10px; font-weight: 600;
+}
+
+.asset-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.asset-list li {
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--txt); transition: background .12s, color .12s;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.asset-list li:hover { background: var(--panel-2); }
+.asset-list li.active { background: var(--accent); color: #04121a; font-weight: 600; }
+.asset-list li .tag { font-size: 10px; color: var(--txt-dim); }
+.asset-list li.active .tag { color: #04121a; }
+
+.control {
+  width: 100%; background: var(--panel-2); color: var(--txt);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font-size: 13px;
+}
+
+.toggle {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  padding: 5px 0; cursor: pointer; color: var(--txt);
+}
+.toggle input { accent-color: var(--accent); cursor: pointer; }
+
+.slider {
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+  color: var(--txt-dim); margin-top: 10px;
+}
+.slider input { width: 100%; accent-color: var(--accent); }
+
+.side-foot { padding: 16px 18px; margin-top: auto; }
+.btn {
+  width: 100%; background: var(--panel-2); color: var(--txt);
+  border: 1px solid var(--line); border-radius: 6px; padding: 9px;
+  font-size: 13px; cursor: pointer; transition: border-color .12s, color .12s;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- Stage ---- */
+#stage { position: relative; flex: 1; min-width: 0; }
+#c { display: block; width: 100%; height: 100%; }
+
+.info-card {
+  position: absolute; top: 16px; right: 16px; width: 210px;
+  background: rgba(16, 21, 31, .82); backdrop-filter: blur(6px);
+  border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+  font-size: 12px; pointer-events: none;
+}
+.info-name { font-size: 14px; font-weight: 700; margin-bottom: 10px; color: var(--accent); }
+.info-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 10px;
+  color: var(--txt-dim);
+}
+.info-grid span:nth-child(even) { color: var(--txt); text-align: right; font-variant-numeric: tabular-nums; }
+.info-status { margin-top: 10px; color: var(--accent-2); min-height: 14px; font-size: 11px; }
+
+#dropHint {
+  position: absolute; inset: 0; display: none; place-items: center;
+  background: rgba(4, 8, 14, .7); font-size: 18px; color: var(--accent);
+  border: 2px dashed var(--accent); pointer-events: none;
+}
+#stage.dragging #dropHint { display: grid; }

@@ -18,7 +18,7 @@ export const atmoDensityInput    = document.getElementById('atmoDensity');
 export const atmoDensityValEl    = document.getElementById('atmoDensityVal');
 export const atmoCoverageInput   = document.getElementById('atmoCoverage');
 export const atmoCoverageValEl   = document.getElementById('atmoCoverageVal');
-export const atmoComplexWindsInput = document.getElementById('atmoComplexWinds');
+export const atmoCloudTypeInput  = document.getElementById('atmoCloudType');
 export const atmoCloudDriftInput   = document.getElementById('atmoCloudDrift');
 export const atmoCloudDriftValEl   = document.getElementById('atmoCloudDriftVal');
 export const atmoHintEl          = document.getElementById('atmoHint');
@@ -48,17 +48,19 @@ atmoCoverageInput.oninput = applyAtmoSliderToFocus;
 atmoThickInput.onchange   = () => { refreshClimateColoring(focusedBody); updateInfoPanel(); };
 atmoDensityInput.onchange = () => { refreshClimateColoring(focusedBody); updateInfoPanel(); };
 
-// Per-body realism toggles for the cloud layer.
-//   atmoComplexWinds → flips the shader's uWindMode, swapping uniform
-//     zonal drift for latitude-banded flow (Hadley/Ferrel/Polar).
-//   atmoCloudDrift   → body.coverageVariance (0..1). The animation
-//     loop modulates uCoverage around the slider's base value at this
-//     amplitude, so total cloud cover slowly waxes and wanes.
-atmoComplexWindsInput.onchange = () => {
+// Per-body cloud-layer controls.
+//   atmoCloudType  → body.cloudType (0 cumulus · 1 stratus · 2 cirrus ·
+//     3 all). Drives the shader's uCloudType, which selects a distinct cloud
+//     morphology (puffy clumps / flat overcast / wispy streaks); "all" morphs
+//     smoothly through the three over time. Stratus & cirrus follow zonal wind.
+//   atmoCloudDrift → body.coverageVariance (0..1). The animation loop
+//     modulates uCoverage around the slider's base value at this amplitude (and
+//     paces the "all" morph speed), so cloud cover slowly waxes and wanes.
+atmoCloudTypeInput.onchange = () => {
   const b = focusedBody;
   if (!b || !b.gasMesh || !b.matter || !b.matter.gas) return;
-  b.windMode = !!atmoComplexWindsInput.checked;
-  b.gasMesh.material.uniforms.uWindMode.value = b.windMode ? 1.0 : 0.0;
+  b.cloudType = parseInt(atmoCloudTypeInput.value, 10) || 0;
+  b.gasMesh.material.uniforms.uCloudType.value = b.cloudType;
 };
 atmoCloudDriftInput.oninput = () => {
   const b = focusedBody;

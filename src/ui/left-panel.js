@@ -11,7 +11,7 @@ import {
 import { ORBIT_DEG, applySatelliteOrbitPlane } from '../system/orbits.js';
 import { DEFAULT_SPIN } from '../system/planets.js';
 import {
-  atmoCloudDriftInput, atmoCloudDriftValEl, atmoComplexWindsInput, atmoCoverageInput, atmoCoverageValEl, atmoDensityInput, atmoDensityValEl, atmoHintEl, atmoThickInput, atmoThickValEl, ringsEnabledInput, ringsHintEl, ringsIntensityInput, ringsIntensityValEl
+  atmoCloudDriftInput, atmoCloudDriftValEl, atmoCloudTypeInput, atmoCoverageInput, atmoCoverageValEl, atmoDensityInput, atmoDensityValEl, atmoHintEl, atmoThickInput, atmoThickValEl, ringsEnabledInput, ringsHintEl, ringsIntensityInput, ringsIntensityValEl
 } from './atmo-rings.js';
 import {
   archetypeSelect, genAmpInput, genSeaInput, refreshActiveTool, refreshGasBiomeOptions, regenBtn, satellitesContext, seedInput, syncGenLabels, tabBtns
@@ -312,25 +312,25 @@ export function syncAtmoSlidersToFocus() {
   atmoCoverageInput.disabled = !coverageApplies;
   // Wind & drift only meaningful on atmosphere-mode bodies — gas-giant
   // mode draws bands directly into the gas color, no separate cloud layer.
-  atmoComplexWindsInput.disabled = !coverageApplies;
+  atmoCloudTypeInput.disabled    = !coverageApplies;
   atmoCloudDriftInput.disabled   = !coverageApplies;
-  const atmoComplexWindsRow = atmoComplexWindsInput.closest('label');
+  const atmoCloudTypeRow    = atmoCloudTypeInput.closest('label');
   const atmoCloudDriftRow   = atmoCloudDriftInput.closest('label');
   if (atmoThickRow)    atmoThickRow.classList.toggle('is-disabled-section', !hasGas);
   if (atmoDensityRow)  atmoDensityRow.classList.toggle('is-disabled-section', !hasGas);
   if (atmoCoverageRow) atmoCoverageRow.classList.toggle('is-disabled-section', !coverageApplies);
-  if (atmoComplexWindsRow) atmoComplexWindsRow.classList.toggle('is-disabled-section', !coverageApplies);
+  if (atmoCloudTypeRow)    atmoCloudTypeRow.classList.toggle('is-disabled-section', !coverageApplies);
   if (atmoCloudDriftRow)   atmoCloudDriftRow.classList.toggle('is-disabled-section', !coverageApplies);
   if (hasGas) {
     const t = b.gasThickness ?? 1.10;
     const d = b.gasDensity ?? 0.20;
     const c = b.gasCoverage ?? 0.35;
-    const cw = !!b.windMode;
+    const ct = b.cloudType ?? 0;
     const cd = b.coverageVariance ?? 0;
     atmoThickInput.value      = Math.round(t * 100);
     atmoDensityInput.value    = Math.round(d * 100);
     atmoCoverageInput.value   = Math.round(c * 100);
-    atmoComplexWindsInput.checked = cw;
+    atmoCloudTypeInput.value      = String(ct);
     atmoCloudDriftInput.value     = Math.round(cd * 100);
     atmoThickValEl.textContent    = t.toFixed(2);
     atmoDensityValEl.textContent  = d.toFixed(2);
@@ -344,7 +344,7 @@ export function syncAtmoSlidersToFocus() {
     atmoDensityValEl.textContent  = '—';
     atmoCoverageValEl.textContent = '—';
     atmoCloudDriftValEl.textContent = '—';
-    atmoComplexWindsInput.checked = false;
+    atmoCloudTypeInput.value = '0';
     atmoHintEl.textContent = (b && b.kind === 'planet')
       ? `${b.name} has no atmosphere`
       : 'No atmosphere on this body';
