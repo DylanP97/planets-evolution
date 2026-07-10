@@ -2,7 +2,7 @@
 // facing, and animation update.
 import * as THREE from 'three';
 import { scene } from '../../core/scene.js';
-import { ASTRO_FACING, ASTRO_TURN_RATE, astronaut } from './avatar.js';
+import { ASTRO_TURN_RATE, astronaut, updateAvatarNightLook } from './avatar.js';
 import {
   _astroMat, _astroQuat, _astroX, _astroZ, _footLocal, _footWorld, _worldHeading, _worldUp
 } from './camera.js';
@@ -46,10 +46,16 @@ export function updateAstronaut(dt) {
   // carries the same locoScale) — keeps the feet planted instead of sliding,
   // and sells the floaty moonwalk feel alongside the lofted jump.
   // Ease the swim pose in/out so wading into deep water reads as a lean
-  // into the stroke, not a snap. Treading water (no input) stays half-
-  // upright; an active stroke goes fully prone.
+  // into the stroke, not a snap. A model with its own real treadWater clip
+  // (upright, legs sculling below) needs none of the procedural prone
+  // lift/tilt while idle in water — that lift is tuned for pitching the
+  // body FORWARD onto its front, and stacking it under an already-upright
+  // clip just floats the character above the waterline. Models without a
+  // dedicated treadWater clip keep the old half-tilt approximation instead.
   const swimInput = surfaceKeys.w || surfaceKeys.a || surfaceKeys.s || surfaceKeys.d;
-  const swimTarget = surfaceState.swimming ? (swimInput ? 1 : 0.5) : 0;
+  const hasTread = astronaut.animated && !!astronaut.actions.treadWater;
+  let swimTarget = 0;
+  if (surfaceState.swimming) swimTarget = swimInput ? 1 : (hasTread ? 0 : 0.5);
   surfaceState.swimBlend += (swimTarget - surfaceState.swimBlend) * Math.min(1, dt * 4);
   const sb = surfaceState.swimBlend;
 
@@ -81,6 +87,21 @@ export function updateAstronaut(dt) {
     baseY = astronaut.footOffset.y + Math.abs(Math.sin(ph)) * bobAmp * h;
   }
 
+  // Vertical sink for models with their own treadWater/swim clip: they skip
+  // the procedural prone overlay below (swimTarget is 0 while idly treading,
+  // since the clip itself poses the body — see swimTarget above), but they
+  // still root off the same standRadius/floatR the prone fallback needs the
+  // lift to cancel. floatR (walk.js) only sinks the foot pivot by
+  // eyeHeight*0.32 — tuned for a PRONE body whose back rides the surface. An
+  // upright treadWater pose has legs dangling well below that, so without
+  // extra sink here the feet (and root) sit right at the waterline and the
+  // whole body floats on top instead of the torso riding the surface. Applied
+  // whenever swimming (not gated by sb) since the clip poses the body even
+  // while idle-treading, when sb is 0.
+  const clipSwim = astronaut.animated && !!(astronaut.actions.swim || astronaut.actions.treadWater);
+  const treadSink = clipSwim ? (surfaceState.eyeHeight * 0.55) / (astronaut.root.scale.x || 1) : 0;
+  if (surfaceState.swimming && clipSwim) baseY -= treadSink;
+
   // Swim pose overlay (rigged and unrigged alike): pitch the whole model
   // prone about the foot pivot so the head leads along the heading, lift it
   // so the back rides the waterline, slide it back so it stays centred
@@ -88,10 +109,28 @@ export function updateAstronaut(dt) {
   if (sb > 0.001) {
     surfaceState.swimPhase += dt * (swimInput ? 2.6 : 1.4);
     const swimBob = Math.sin(surfaceState.swimPhase) * 0.035 * h;
-    inner.rotation.x = baseRotX * (1 - sb) + (1.25 * ASTRO_FACING) * sb;
+    // A model with a real swim/treadWater clip already poses itself prone —
+    // the procedural tilt/slide/lift would stack on top and over-rotate (or
+    // over-lift) it. Its own bone rotations pitch the body forward about the
+    // Hips joint, well above the foot-anchored pivot, so it needs none of the
+    // compensating lift the procedural (whole-pivot-rotation) fallback does.
+    const tilt  = clipSwim ? 0 : 1.25 * astronaut.facing;
+    const slide = clipSwim ? 0 : 0.3 * h * astronaut.facing;
+    inner.rotation.x = baseRotX * (1 - sb) + tilt * sb;
     inner.rotation.z = baseRotZ * (1 - sb) + Math.sin(surfaceState.swimPhase * 0.8) * 0.1 * sb;
-    inner.position.y = baseY * (1 - sb) + (astronaut.footOffset.y + 0.5 * h + swimBob) * sb;
-    inner.position.z = astronaut.footOffset.z - 0.3 * h * sb * ASTRO_FACING;
+    // walk.js floats standRadius at (waterline - eyeHeight*0.32) so the body
+    // rides prone at the surface; that offset is in WORLD units, but this
+    // translation is in the pivot's LOCAL (pre root.scale) space. root.scale
+    // is set from ASTRO_HEIGHT_FACTOR (avatar drawn much taller than eyeHeight),
+    // so a lift expressed in native mesh units (0.5 * h) came out several times
+    // too large once scaled — the avatar visibly floated above the water.
+    // Convert back through root.scale so the lift cancels floatR's sink exactly.
+    // clipSwim models use treadSink (computed above) instead of proneLift —
+    // their own clip poses the Hips, not this whole-pivot rotation/lift.
+    const liftScale = astronaut.root.scale.x || 1;
+    const proneLift = clipSwim ? -treadSink : (surfaceState.eyeHeight * 0.32) / liftScale;
+    inner.position.y = baseY * (1 - sb) + (astronaut.footOffset.y + proneLift + swimBob) * sb;
+    inner.position.z = astronaut.footOffset.z - slide * sb;
   } else {
     inner.rotation.x = baseRotX;
     inner.rotation.z = baseRotZ;
@@ -134,11 +173,12 @@ export function updateAstronaut(dt) {
   }
 
   // Orthonormal basis: Z = facing, Y = up, X = up × Z (right-handed).
-  _astroZ.copy(_worldHeading).multiplyScalar(ASTRO_FACING);
+  _astroZ.copy(_worldHeading).multiplyScalar(astronaut.facing);
   _astroX.crossVectors(_worldUp, _astroZ).normalize();
   _astroMat.makeBasis(_astroX, _worldUp, _astroZ);
   _astroQuat.setFromRotationMatrix(_astroMat);
   // Smoothly rotate toward the target so turns read as a swivel, not a snap.
   astronaut.root.quaternion.slerp(_astroQuat, Math.min(1, dt * ASTRO_TURN_RATE));
+  updateAvatarNightLook(surfaceState.surfaceNight ?? 0);
 }
 

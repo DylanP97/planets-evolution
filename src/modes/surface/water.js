@@ -17,10 +17,25 @@ import { surfaceState } from './core.js';
 // while the waves are sampled in ground-fixed coords (the grass treadmill's
 // drift) so the swell reads as world-fixed rather than dragged along. It's only
 // attached while walking a water world, so the orbit/system view never sees it.
-// STEP 1: waves only (real up/down). Crest + shoreline foam come later.
-export const WATER_PATCH_N = 144;          // grid resolution (verts per side)
+// Wave field = the global ocean's own long swell (oceanWave, same phase/clock,
+// so the two surfaces agree) PLUS a short-wavelength chop only this fine grid
+// can resolve — that chop is what reads as actual rolling waves at avatar
+// scale. Both are evaluated in OBJECT space (like the sphere's shader), so the
+// water is world-fixed with no drift bookkeeping. KEEP chopWave IN SYNC across
+// its three copies: the GLSL here, waterChopDispAtAvatar() below (buoyancy /
+// submerged test), and the murk-boundary GLSL in underwater-pass.js.
+export const WATER_PATCH_N = 192;          // grid resolution (verts per side)
 export let waterPatch = null;
 export let waterUniforms = null;
+
+// Walking-ocean swell height as a fraction of the avatar's eye height (applied
+// to the ocean shader's uWaveAmp each frame by main.js's surface-mode loop).
+// ~0.26 -> crests ride about a quarter of the walker tall. Mutable so the dev
+// panel (ui/dev-panel.js) can retune it live — same pattern as
+// surface-lighting.js's lightingTuning; main.js reads this object fresh each
+// frame rather than a hardcoded constant, so the panel's edit actually sticks
+// instead of being clobbered by the next frame's recompute.
+export const waterTuning = { waveAmpMul: 0.26 };
 
 // Per-body water params captured by attachWaterPatch. The material compiles
 // lazily on its first render — which happens AFTER the first attach — so on a
@@ -36,7 +51,8 @@ function applyWaterParams() {
   const p = pendingWaterParams;
   waterUniforms.uPR.value       = p.pr;
   waterUniforms.uBodyR.value    = p.bodyR;
-  waterUniforms.uWaveAmp.value  = p.waveAmp;
+  waterUniforms.uSwellAmp.value = p.swellAmp;
+  waterUniforms.uChopAmp.value  = p.chopAmp;
   waterUniforms.uLift.value     = p.lift;
   waterUniforms.uWaveTime.value = 0;
   waterUniforms.uDrift.value.set(0, 0);
@@ -71,21 +87,24 @@ export function buildWaterPatch() {
     sh.uniforms.uPFwd   = { value: new THREE.Vector3(0, 0, 1) };
     sh.uniforms.uPR     = { value: 0.4 };           // patch half-size (body-local units)
     sh.uniforms.uBodyR  = { value: 12 };            // sea-level radius (curvature)
-    sh.uniforms.uLift   = { value: 0.004 };         // tiny outward bias over the sphere ocean
-    sh.uniforms.uDrift  = { value: new THREE.Vector2(0, 0) };  // ground-fixed wave offset
-    sh.uniforms.uWaveTime = { value: 0 };
-    sh.uniforms.uWaveAmp  = { value: 0.004 };
-    // STEP 2 — crest foam: white foam riding the tops of the waves.
+    sh.uniforms.uLift   = { value: 0.004 };         // outward bias ≥ uChopAmp so the patch never dips below the sphere ocean it rides
+    sh.uniforms.uDrift  = { value: new THREE.Vector2(0, 0) };  // ground-fixed offset for the fragment foam/ripple NOISE (waves are object-space now)
+    sh.uniforms.uWaveTime = { value: 0 };           // synced to the sphere ocean's clock every frame
+    sh.uniforms.uSwellAmp = { value: 0.0 };         // long oceanWave swell amp (matches the sphere's uWaveAmp)
+    sh.uniforms.uChopAmp  = { value: 0.0 };         // short chop amp — the visible rolling waves
+    // Crest foam: white caps riding the chop crests, faded well before the
+    // patch rim — at grazing distance the noise aliased into a white horizon
+    // band when it ran unfaded.
     sh.uniforms.uFoamColor = { value: FOAM_COLOR };
-    sh.uniforms.uCrestFoam = { value: 0.0 };        // crest foam strength (0 = off) — off: it aliased into a white horizon band; shoreline foam below carries the foam look
+    sh.uniforms.uCrestFoam = { value: 0.4 };
     // Depth-based look (clearer shallows → deeper blue) + STEP 3 shoreline foam.
     // uSeabedTex is the equirect seabed-height map (built by bakeOceanShore);
     // the shader reads water depth under each fragment from it.
     sh.uniforms.uSeabedTex  = { value: null };
     sh.uniforms.uShallowCol = { value: new THREE.Color(0x9fe0ee) };  // clear shallow tint
     sh.uniforms.uDeepCol    = { value: new THREE.Color(0x2f7fc0) };  // deeper open-water tint
-    sh.uniforms.uShallowA   = { value: 0.72 };      // alpha in the shallows (only slightly see-through)
-    sh.uniforms.uDeepA      = { value: 0.95 };      // alpha in deep water (near opaque)
+    sh.uniforms.uShallowA   = { value: 0.38 };      // alpha in the shallows — genuinely see-through from above (the fresnel term below still opaques the grazing-angle distance)
+    sh.uniforms.uDeepA      = { value: 0.88 };      // alpha in deep water (near opaque)
     sh.uniforms.uDepthFade  = { value: 0.65 };      // seabed-height units over which it deepens
     sh.uniforms.uShoreFoam  = { value: 0.0 };       // shoreline crash-foam strength — OFF: the global seabed map (~44x22) is far coarser than this sub-texel local patch, so depth reads one flat ~0 value near any coast and the foam fills the whole character-centred patch. Proper coast foam belongs on the global ocean's per-vertex aShore data, not here.
     sh.uniforms.uShoreW     = { value: 0.16 };      // shoreline foam band width (depth units)
@@ -103,31 +122,44 @@ export function buildWaterPatch() {
     applyWaterParams();   // replay any params captured before this first compile
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>',
-        '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uWaveAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n'
-      + 'float wv(vec2 p){\n  float t = uWaveTime;\n  float h = 0.0;\n'
-      + '  h += sin(dot(p, vec2(1.0, 0.25)) * 60.0 + t * 1.6) * 0.50;\n'
-      + '  h += sin(dot(p, vec2(-0.35, 1.0)) * 85.0 - t * 1.9) * 0.32;\n'
-      + '  h += sin(dot(p, vec2(0.80, 0.60)) * 130.0 + t * 2.6) * 0.18;\n'
-      + '  return h;\n}')
+        '#include <common>\nuniform vec3 uPUp;\nuniform vec3 uPRight;\nuniform vec3 uPFwd;\nuniform float uPR;\nuniform float uBodyR;\nuniform float uLift;\nuniform vec2 uDrift;\nuniform float uWaveTime;\nuniform float uSwellAmp;\nuniform float uChopAmp;\nvarying float vEdge;\nvarying float vWaveH;\nvarying vec2 vW;\nvarying vec3 vDir;\nvarying vec3 vTanR;\nvarying vec3 vTanF;\n'
+      // Long swell — IDENTICAL to the sphere ocean's oceanWave() (materials.js)
+      // and clocked by the same uWaveTime, so patch and sphere are one surface.
+      + 'float oceanWave(vec3 p){\n  float t = uWaveTime;\n  float h = 0.0;\n'
+      + '  h += sin(dot(p.xz, vec2(0.990, 0.139)) * 2.0 + t * 1.0) * 0.42;\n'
+      + '  h += sin(dot(p.xz, vec2(0.719, 0.695)) * 2.7 + t * 1.3) * 0.30;\n'
+      + '  h += sin(dot(p.xz, vec2(0.174, 0.985)) * 3.6 + t * 1.7) * 0.20;\n'
+      + '  h += sin(dot(p.xz, vec2(-0.438, 0.899)) * 4.6 + t * 2.1) * 0.15;\n'
+      + '  h += sin(dot(p.xz, vec2(-0.883, 0.469)) * 5.8 + t * 2.6) * 0.10;\n'
+      + '  return h;\n}\n'
+      // Short chop — the rolling waves at walking scale. Mirrored in
+      // waterChopDispAtAvatar() and underwater-pass.js; keep the three in sync.
+      + 'float chopWave(vec3 p){\n  float t = uWaveTime;\n  float h = 0.0;\n'
+      + '  h += sin(p.x * 46.0 + p.z * 28.0 + t * 2.0) * 0.55;\n'
+      + '  h += sin(p.z * 61.0 - p.x * 21.0 + t * 2.5) * 0.30;\n'
+      + '  h += sin((p.x + p.z) * 90.0 - t * 3.1) * 0.15;\n'
+      + '  return h;\n}\n'
+      + 'float seaDisp(vec3 p){ return oceanWave(p) * uSwellAmp + chopWave(p) * uChopAmp; }')
       // Project the grid point onto the sea sphere, bump the normal from the
       // wave slope (finite differences), then displace radially by wave height.
       .replace('#include <beginnormal_vertex>',
         '#include <beginnormal_vertex>\n'
       + '  vec2 _uv = position.xz;\n'
       + '  float _u = _uv.x * uPR;\n  float _v = _uv.y * uPR;\n'
-      + '  vec2 _w = vec2(_u, _v) + uDrift;\n'
-      + '  float _h = wv(_w);\n'
       + '  vec3 _dir = normalize(uPUp * uBodyR + uPRight * _u + uPFwd * _v);\n'
-      + '  float _e = 0.004;\n'
-      + '  float _hR = wv(_w + vec2(_e, 0.0));\n  float _hF = wv(_w + vec2(0.0, _e));\n'
-      + '  vec3 _grad = (uPRight * (_hR - _h) + uPFwd * (_hF - _h)) / _e;\n'
-      + '  objectNormal = normalize(_dir - _grad * uWaveAmp * 1.2);\n')
+      + '  vec3 _op = _dir * uBodyR;\n'
+      + '  float _h = seaDisp(_op);\n'
+      + '  float _e = 0.02;\n'
+      + '  vec3 _opR = normalize(uPUp * uBodyR + uPRight * (_u + _e) + uPFwd * _v) * uBodyR;\n'
+      + '  vec3 _opF = normalize(uPUp * uBodyR + uPRight * _u + uPFwd * (_v + _e)) * uBodyR;\n'
+      + '  vec3 _grad = (uPRight * (seaDisp(_opR) - _h) + uPFwd * (seaDisp(_opF) - _h)) / _e;\n'
+      + '  objectNormal = normalize(_dir - _grad);\n')
       .replace('#include <begin_vertex>',
         '#include <begin_vertex>\n'
-      + '  transformed = _dir * (uBodyR + uLift + _h * uWaveAmp);\n'
+      + '  transformed = _dir * (uBodyR + uLift + _h);\n'
       + '  vEdge = max(abs(_uv.x), abs(_uv.y));\n'
-      + '  vWaveH = _h;\n'      // wave height ∈[-1,1] (crest ≈ +1) → crest foam
-      + '  vW = _w;\n'          // ground-fixed coords → foam noise rides the wave
+      + '  vWaveH = chopWave(_op);\n'   // chop height ∈[-1,1] (crest ≈ +1) → crest foam
+      + '  vW = vec2(_u, _v) + uDrift;\n'  // ground-fixed coords for the fragment foam/ripple noise
       + '  vDir = _dir;\n'      // unit body-local dir → equirect seabed-depth lookup
       // View-space patch tangents for the fragment micro-ripples (the
       // fragment normal is view-space, so its perturbation axes must be too).
@@ -163,10 +195,11 @@ export function buildWaterPatch() {
       // the foam below) still melt away at the patch edge.
       + '  float _rim = 1.0 - smoothstep(0.86, 1.0, vEdge);\n'
       + '  _alpha *= _rim;\n'
-      // Crest foam (Step 2): white caps on the upper part of each wave crest.
-      + '  float _crest = smoothstep(0.45, 0.92, vWaveH);\n'
+      // Crest foam: white caps on the tallest chop crests only, faded out
+      // toward the rim so the noise can't alias into a white horizon band.
+      + '  float _crest = smoothstep(0.55, 0.95, vWaveH);\n'
       + '  float _ctex = fFbm(vW * 240.0 + vec2(uWaveTime * 0.5, -uWaveTime * 0.4));\n'
-      + '  float _crestFoam = uCrestFoam * _crest * smoothstep(0.30, 0.75, _ctex);\n'
+      + '  float _crestFoam = uCrestFoam * _crest * smoothstep(0.40, 0.85, _ctex) * (1.0 - smoothstep(0.30, 0.55, vEdge));\n'
       // Shoreline crash foam (Step 3): a foam band hugging the waterline whose
       // width pulses with time (waves rushing up the sand, then drawing back),
       // broken into lacy streaks. Strongest right at depth 0, gone past uShoreW.
@@ -230,15 +263,21 @@ export function attachWaterPatch(body) {
   // R is ≈ √(2·R·h); size the patch to ~1.9× that so the rim (and its fade) sit
   // safely below the visible horizon where curvature hides them.
   const horizon = Math.sqrt(2 * body.baseRadius * Math.max(1e-4, surfaceState.eyeHeight));
+  const eh = surfaceState.eyeHeight;
+  const chopAmp = eh * 0.30;
   pendingWaterParams = {
     pr:      horizon * 1.9,
     bodyR:   body.baseRadius,
-    // uLift MUST be ≥ uWaveAmp so wave TROUGHS never dip below sea level —
-    // otherwise the shallow seabed pokes up through the troughs near shore and
-    // the water looks blotchy. The whole sea then rides slightly above true sea
-    // level (negligible) with troughs ≈ sea level and crests ≈ +2·amp.
-    waveAmp: surfaceState.eyeHeight * 0.012,
-    lift:    surfaceState.eyeHeight * 0.018,
+    // Long-swell amp: main.js retunes the sphere's uWaveAmp to eyeHeight·0.26
+    // every surface frame, and updateWaterPatch mirrors it live — this is just
+    // the matching first-frame value.
+    swellAmp: eh * 0.26,
+    // The visible rolling waves. uLift MUST be ≥ uChopAmp so chop TROUGHS never
+    // dip below the sphere ocean the patch rides on — otherwise the sphere
+    // pokes up through the troughs and the water looks blotchy. The whole sea
+    // then rides ~a third of an eye height above the sphere's waterline.
+    chopAmp,
+    lift:    chopAmp * 1.05,
     seabedTex: body.seabedTex || null,
     // Shallow vs deep tint kept nearly equal on purpose: the seabed depth map
     // (~44x22) is coarser than this sub-texel local patch, so `depth` reads one
@@ -261,9 +300,10 @@ export function detachWaterPatch() {
   if (waterPatch && waterPatch.mesh.parent) waterPatch.mesh.parent.remove(waterPatch.mesh);
 }
 
-// Per-frame: re-centre the patch on the avatar (current tangent frame) and
-// scroll the wave field by the walker's drift so it stays world-fixed. Waves
-// freeze while the sim is paused, matching the sphere ocean's clock.
+// Per-frame: re-centre the patch on the avatar (current tangent frame), keep
+// the fragment noise ground-fixed via the walker's drift, and sync the wave
+// clock to the SPHERE ocean's (main.js advances that one and freezes it on
+// pause) so patch, sphere, buoyancy and murk boundary all share one time.
 export function updateWaterPatch(dt) {
   if (!waterPatch || !waterPatch.mesh.visible || viewMode !== 'surface' || !surfaceState.body) return;
   if (!waterUniforms) return;
@@ -271,19 +311,32 @@ export function updateWaterPatch(dt) {
   waterUniforms.uPRight.value.copy(surfaceState.localRight);
   waterUniforms.uPFwd.value.copy(surfaceState.localFwd);
   waterUniforms.uDrift.value.set(surfaceState.grassU, surfaceState.grassV);
-  if (!paused) waterUniforms.uWaveTime.value += dt;
+  const osh = surfaceState.body.oceanMesh && surfaceState.body.oceanMesh.material.userData.shader;
+  if (osh) {
+    waterUniforms.uWaveTime.value = osh.uniforms.uWaveTime.value;
+    // main.js retunes the sphere's uWaveAmp to the avatar every frame —
+    // mirror it live so the two surfaces never drift apart.
+    waterUniforms.uSwellAmp.value = osh.uniforms.uWaveAmp.value;
+  } else if (!paused) {
+    waterUniforms.uWaveTime.value += dt;
+  }
 }
 
-// JS mirror of the water-patch vertex shader's wv() evaluated at the avatar.
-// The avatar sits at the patch centre, so its wave coords are exactly the
-// drift (grassU, grassV) — keep the three sine terms in lockstep with the
-// shader or the buoyancy bob will detach from the visible swell.
-export function waveHeightAtAvatar() {
-  if (!waterUniforms) return 0;
+// JS mirror of the patch's chopWave() + lift, evaluated at the avatar's spot on
+// the sea sphere. Added on top of oceanSwellDisp() (the long swell) by the
+// swimmer's buoyancy (walk.js) and the submerged test (underwater-pass.js) so
+// they ride the SAME crests the patch draws. 0 whenever the patch is off.
+// KEEP the three sine terms in lockstep with the chopWave GLSL above.
+export function waterChopDispAtAvatar() {
+  if (!waterUniforms || !waterPatch || !waterPatch.mesh.visible) return 0;
+  const b = surfaceState.body;
+  if (!b) return 0;
   const t = waterUniforms.uWaveTime.value;
-  const x = surfaceState.grassU, y = surfaceState.grassV;
-  return Math.sin((x + y * 0.25) * 60 + t * 1.6) * 0.50
-       + Math.sin((y - x * 0.35) * 85 - t * 1.9) * 0.32
-       + Math.sin((x * 0.80 + y * 0.60) * 130 + t * 2.6) * 0.18;
+  const x = surfaceState.localUp.x * b.baseRadius;
+  const z = surfaceState.localUp.z * b.baseRadius;
+  const chop = Math.sin(x * 46.0 + z * 28.0 + t * 2.0) * 0.55
+             + Math.sin(z * 61.0 - x * 21.0 + t * 2.5) * 0.30
+             + Math.sin((x + z) * 90.0 - t * 3.1) * 0.15;
+  return waterUniforms.uLift.value + chop * waterUniforms.uChopAmp.value;
 }
 

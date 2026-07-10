@@ -70,6 +70,36 @@ body {
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font-size: 13px;
 }
 
+/* ---- Collapsible "Source material" box ---- */
+.section-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--txt-dim);
+}
+.section-toggle:hover .section-title,
+.section-toggle[aria-expanded="true"] .section-title { color: var(--accent); }
+.section-toggle .chevron { color: var(--txt-dim); font-size: 11px; transition: transform .15s; }
+.section-toggle[aria-expanded="true"] .chevron { transform: rotate(90deg); color: var(--accent); }
+
+.mat-panel { margin-top: 12px; }
+.mat-caption { font-size: 11px; color: var(--txt-dim); line-height: 1.5; margin-bottom: 10px; }
+.mat-caption a { color: var(--accent-2); text-decoration: none; }
+.mat-caption a:hover { text-decoration: underline; }
+.mat-maps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mat-map { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mat-map img {
+  display: block; width: 100%; max-width: 100%; aspect-ratio: 1;
+  object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel-2);
+}
+.mat-map.used img { border-color: var(--accent); }
+.mat-map .mat-label {
+  font-size: 10px; color: var(--txt-dim); display: flex;
+  justify-content: space-between; align-items: center;
+}
+.mat-map.used .mat-label { color: var(--txt); }
+.mat-map .mat-flag { font-size: 9px; color: var(--accent); letter-spacing: .5px; }
+
 .toggle {
   display: flex; align-items: center; gap: 8px; font-size: 13px;
   padding: 5px 0; cursor: pointer; color: var(--txt);

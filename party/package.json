@@ -1,0 +1,12 @@
+{
+  "name": "planet-tiles-relay",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "partykit dev",
+    "deploy": "partykit deploy"
+  },
+  "devDependencies": {
+    "partykit": "latest"
+  }
+}

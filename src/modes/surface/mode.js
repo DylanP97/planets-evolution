@@ -1,7 +1,7 @@
 // enterSurfaceMode / exitSurfaceMode: camera snap + restore, atmosphere
 // reconfiguration, sun-disc handling, and attaching/detaching every surface
 // field (grass, rocks, water, ground patch, props).
-import { setViewMode } from '../../framework/state.js';
+import { setSurfaceVisitBody, setViewMode } from '../../framework/state.js';
 import { setPickTargetBody } from './core.js';
 
 import * as THREE from 'three';
@@ -17,11 +17,15 @@ import {
 } from './core.js';
 import { attachBubbles, detachBubbles } from './bubbles.js';
 import { attachFootLayer, detachFootLayer } from './footprints.js';
+import { attachGlobeMarkers, detachGlobeMarkers } from './globe-markers.js';
 import { attachGrass, detachGrass, grassField } from './grass.js';
 import { attachGroundPatch, detachGroundPatch, groundPatch } from './ground.js';
+import { attachAurora, detachAurora } from './aurora.js';
+import { attachMeteors, detachMeteors } from './meteors.js';
 import { attachProps, detachProps, propField } from './props.js';
 import { attachRocks, detachRocks } from './rocks.js';
 import { attachSlabs, detachSlabs } from './slabs.js';
+import { restoreOrbitLighting } from './surface-lighting.js';
 import { attachSeabed, detachSeabed } from './seabed.js';
 import { SURFACE_STAR_OPACITY, clearSkyBodies, setUnderwaterOverlay } from './sky.js';
 import { clearSurfaceKeys } from './walk.js';
@@ -35,20 +39,22 @@ export function enterSurfaceMode(body, hitPoint) {
   // vertices form the visible "ground", and we want the camera to ride
   // their height field, not float over the click coordinate.
   surfaceState.body = body;
+  surfaceState.menuOpen = false;   // stale from a previous visit, in case it lingered
   // The global ocean sphere stays visible while walking — it IS the water now.
   // Put it into surface wave mode (uSurface=1) so up close it rolls with the
   // stock swell and goes see-through near the avatar (the light, lively water).
-  // The dark local water patch is NOT attached — it read as a flat navy layer
-  // fighting the sphere. Restored to 0 on exit.
+  // The local water patch is NOT attached — tried twice (June + July 2026),
+  // both times it read as a second water layer fighting the sphere (wrong
+  // lighting, visible seams). Restored to 0 on exit.
   surfaceState.oceanHidden = false;
-  if (body.oceanMesh && body.matter && body.matter.liquid && body.oceanIsWater) {
-    const osh = body.oceanMesh.material.userData.shader;
-    if (osh) osh.uniforms.uSurface.value = 1;
-  }
   // Shrink the character scale on planets so the world feels larger and
   // traversal takes longer without needing slow-motion animations.
   const sizeMult = (body.kind === 'planet') ? 0.4 : 1.0;
   surfaceState.eyeHeight = Math.max(0.012, body.baseRadius * 0.003 * sizeMult);
+  if (body.oceanMesh && body.matter && body.matter.liquid && body.oceanIsWater) {
+    const osh = body.oceanMesh.material.userData.shader;
+    if (osh) osh.uniforms.uSurface.value = 1;
+  }
   buildLocalFrame(localHit, surfaceState.localUp, surfaceState.localFwd, surfaceState.localRight);
   surfaceState.faceLocal.copy(surfaceState.localFwd);
   // Place the eye at (vertex height + eyeHeight) along the surface normal.
@@ -119,14 +125,21 @@ export function enterSurfaceMode(body, hitPoint) {
   // Submerged kelp/algae beds + schooling fish (water worlds only; gated to
   // cells whose floor sits below the waterline).
   attachSeabed(body);
-  // (Local dark water patch intentionally not attached — the wave-mode global
-  // ocean sphere above is the water now.)
+  // (Local water patch intentionally not attached — the wave-mode global
+  // ocean sphere above is the water now. See the note at the top of enter.)
   // High-res near-field ground patch (real micro-relief over the coarse mesh).
   attachGroundPatch(body);
   // Footprint decal layer (soft-soil worlds only — venusian/desert/moon_like).
   attachFootLayer(body);
   // Scattered GLB trees + rocks (terrestrial only; loads lazily on first visit).
   attachProps(body);
+  // Sky-space meteor shower (every world; frequency follows how dark the sky is).
+  attachMeteors();
+  // Avatar/waypoint marker meshes the globe widgets (minimap, planet map) render.
+  attachGlobeMarkers(body);
+  setSurfaceVisitBody(body);
+  // Polar aurora (atmosphere worlds only; fades in near the poles at night).
+  attachAurora(body);
   // Switch the body material's procedural ground detail on for this visit
   // (perturbed relief normals + albedo mottle); off again on exit. Guarded —
   // the shader is always compiled here since the body has been on screen.
@@ -209,10 +222,10 @@ export function enterSurfaceMode(body, hitPoint) {
   surfaceSkyLight.intensity = 0;
 
   // Atmosphere from inside — flip the shell to DoubleSide so the inside
-  // faces render, and if the atmosphere is dense enough to read as a
-  // solid sky, promote it to the opaque queue with depthWrite on so it
-  // properly occludes other bodies in the scene. We snapshot the prior
-  // material state per visit so re-entering can't compound the change.
+  // faces render. We snapshot the prior material state per visit so
+  // re-entering can't compound the change; the opaque/alpha-blended queue
+  // itself is toggled live, per-frame, by updateGasOpaqueMode (sky.js) —
+  // see the note there for why this can't just be decided once here.
   if (body.gasMesh && body.gasMesh.visible) {
     const mat = body.gasMesh.material;
     surfaceState.gasMeshAdjusted = body.gasMesh;
@@ -225,26 +238,18 @@ export function enterSurfaceMode(body, hitPoint) {
     };
     mat.side = THREE.DoubleSide;
 
-    // Opaque-shell promotion: any atmosphere thick enough to paint a
-    // visible sky (Earth 0.45 included) needs depthWrite-backed
-    // occlusion or the far gas planets keep bleeding through.
-    // alphaToCoverage dithers the shell's smooth alpha across MSAA
-    // samples, so the day→night transition fades through partial
-    // sample coverage instead of snapping at a discard threshold —
-    // sunset/sunrise gradients actually read as gradients. ice_planet
-    // (0.30) stays transparent so Mars-like atmospheres still show
-    // stars at noon.
-    const density = mat.uniforms.uDensity.value;
-    if (density > 0.40) {
-      mat.transparent     = false;
-      mat.depthWrite      = true;
-      mat.alphaToCoverage = true;
-      mat.uniforms.uOpaqueSky.value = 1.0;
-    }
+    // Any atmosphere thick enough to paint a visible sky (Earth 0.45
+    // included) needs depthWrite-backed occlusion during the day or the far
+    // gas planets bleed through — but only eligible for that opaque
+    // treatment at all above this density; ice_planet (0.30) stays
+    // transparent always so Mars-like atmospheres show stars at noon too.
+    surfaceState.gasOpaqueEligible = mat.uniforms.uDensity.value > 0.40;
+    surfaceState.gasOpaqueLive = false; // force updateGasOpaqueMode to sync on the next frame
     mat.needsUpdate = true;
   } else {
     surfaceState.gasMeshAdjusted = null;
     surfaceState.savedGas = null;
+    surfaceState.gasOpaqueEligible = false;
   }
 
   camera.fov = surfaceState.fov;
@@ -296,6 +301,7 @@ export function exitSurfaceMode() {
   // Kill the surface-walk atmospheric skylight (orbit view keeps the stock rig).
   surfaceSkyLight.intensity = 0;
   surfaceState.skyLightBase = 0;
+  restoreOrbitLighting();
   // Restore the body's shadow sampling (hidden during the walk — see enter).
   if (surfaceState.body && surfaceState.savedBodyRecvShadow != null) {
     surfaceState.body.mesh.receiveShadow = surfaceState.savedBodyRecvShadow;
@@ -314,6 +320,8 @@ export function exitSurfaceMode() {
     mat.needsUpdate = true;
     surfaceState.gasMeshAdjusted = null;
     surfaceState.savedGas = null;
+    surfaceState.gasOpaqueEligible = false;
+    surfaceState.gasOpaqueLive = false;
   }
   if (surfaceState.savedSunVisible) {
     sunMesh.visible = surfaceState.savedSunVisible.mesh;
@@ -343,6 +351,10 @@ export function exitSurfaceMode() {
   detachGroundPatch();
   detachFootLayer();
   detachProps();
+  detachMeteors();
+  detachAurora();
+  detachGlobeMarkers();
+  setSurfaceVisitBody(null);
   // Turn the body's procedural ground detail back off so the orbit view is
   // unchanged (uSurfaceDetail = 0 skips every detail branch in the shader).
   if (surfaceState.body && surfaceState.body.mesh.material.userData.detailShader) {

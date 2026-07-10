@@ -28,6 +28,9 @@ const server = http.createServer((req, res) => {
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3000);
 
+  const newGameBtn = await page.$('#startNewBtn');
+  if (newGameBtn) { await newGameBtn.click(); await page.waitForTimeout(2500); }
+
   await page.click('#navDown');
   await page.waitForTimeout(1500);
   for (let i = 0; i < 9; i++) {

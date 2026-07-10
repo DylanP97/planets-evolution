@@ -1,9 +1,8 @@
 // Inline renaming of bodies / the system, with the re-render fan-out.
 import { setSystemNameValue } from '../core/names.js';
 
-import { generateName, systemName } from '../core/names.js';
-import { renderCityList } from '../entities/cities.js';
-import { focusedBody, focusedCity, focusedProbe } from '../framework/state.js';
+import { generateName } from '../core/names.js';
+import { focusedBody, focusedProbe } from '../framework/state.js';
 import { updateBiomeTools } from './controls.js';
 import { focusNameEl, navNameEl, navRandomBtn } from './dom.js';
 import { updateInfoPanel } from './info-panel.js';
@@ -14,18 +13,17 @@ import { renderMoonsList, renderProbesList } from './roster.js';
 // ====== 34. Renaming ======
 // Inline edit (click the focused name in the nav) + a 🎲 button that
 // pulls from generateName(). Renaming touches a lot of surfaces — moon
-// cards, city list, info panel, nav, biome hint — so setBodyName is the
-// single fan-out point that re-renders all of them.
+// cards, info panel, nav, biome hint — so setBodyName is the single
+// fan-out point that re-renders all of them.
 export function setBodyName(body, newName) {
   if (!body || !newName) return;
   body.name = newName;
   if (focusedBody === body) {
-    focusNameEl.textContent = focusedCity ? `${focusedCity.name} · ${body.name}` : body.name;
+    focusNameEl.textContent = body.name;
   }
   renderNavBodies();
   renderMoonsList();
   renderProbesList();
-  renderCityList();
   updateInfoPanel();
   updateBiomeTools();
   applyFocusToLeftPanel();
@@ -48,11 +46,6 @@ export function commitFocusName(newName) {
     renderNavBodies();
     renderProbesList();
     updateInfoPanel();
-  } else if (focusedCity) {
-    focusedCity.name = cleaned;
-    focusNameEl.textContent = `${cleaned} · ${focusedCity.body.name}`;
-    renderNavBodies();
-    renderCityList();
   } else if (focusedBody) {
     setBodyName(focusedBody, cleaned);
   } else {
@@ -86,11 +79,6 @@ navRandomBtn.addEventListener('click', () => {
     renderNavBodies();
     renderProbesList();
     updateInfoPanel();
-  } else if (focusedCity) {
-    focusedCity.name = generateName('moon');
-    focusNameEl.textContent = `${focusedCity.name} · ${focusedCity.body.name}`;
-    renderNavBodies();
-    renderCityList();
   } else if (focusedBody) {
     const kind = focusedBody.kind === 'moon' ? 'moon' : 'planet';
     setBodyName(focusedBody, generateName(kind));

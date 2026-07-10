@@ -11,32 +11,36 @@
 import * as THREE from 'three';
 import { scene } from '../../core/scene.js';
 import { viewMode } from '../../framework/state.js';
+import { oceanSwellDisp } from '../../framework/materials.js';
 import { astronaut } from './avatar.js';
 import { surfaceState } from './core.js';
-import { cameraSubmerged } from './underwater-pass.js';
 
 const BUBBLE_COUNT = 22;
 let bubbles = null;          // { points, mat, geo, pos, aScale, aAlpha, ang, rad, prog, speed, wob, sizeJ, vis }
 
-// Soft bubble sprite: translucent core with a slightly brighter rim + a small
-// highlight, so it reads as a rounded air pocket rather than a flat dot.
+// Soft bubble sprite: an almost-invisible body with a thin, faint refraction
+// rim — real underwater bubbles read mostly as a subtle lens distortion, not a
+// bright painted ring, so alpha is kept low throughout and the rim is a
+// narrow band rather than a hard-edged circle (which is what read as a flat
+// cartoon sticker before).
 function buildBubbleTexture() {
   const cnv = document.createElement('canvas');
   cnv.width = cnv.height = 64;
   const ctx = cnv.getContext('2d');
   const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
-  g.addColorStop(0.0, 'rgba(220,240,255,0.10)');
-  g.addColorStop(0.62, 'rgba(200,230,255,0.16)');
-  g.addColorStop(0.84, 'rgba(235,248,255,0.55)');   // bright rim
-  g.addColorStop(1.0, 'rgba(235,248,255,0.0)');
+  g.addColorStop(0.0, 'rgba(210,230,255,0.04)');
+  g.addColorStop(0.55, 'rgba(200,225,255,0.07)');
+  g.addColorStop(0.80, 'rgba(220,238,255,0.22)');   // thin rim, much dimmer
+  g.addColorStop(0.92, 'rgba(230,244,255,0.28)');
+  g.addColorStop(1.0, 'rgba(230,244,255,0.0)');
   ctx.fillStyle = g;
   ctx.beginPath(); ctx.arc(32, 32, 30, 0, Math.PI * 2); ctx.fill();
-  // little specular highlight, upper-left
-  const h = ctx.createRadialGradient(24, 22, 0, 24, 22, 8);
-  h.addColorStop(0, 'rgba(255,255,255,0.7)');
+  // faint specular fleck, upper-left — small and soft, not a glossy highlight
+  const h = ctx.createRadialGradient(23, 21, 0, 23, 21, 6);
+  h.addColorStop(0, 'rgba(255,255,255,0.35)');
   h.addColorStop(1, 'rgba(255,255,255,0.0)');
   ctx.fillStyle = h;
-  ctx.beginPath(); ctx.arc(24, 22, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(23, 21, 6, 0, Math.PI * 2); ctx.fill();
   const tex = new THREE.CanvasTexture(cnv);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -104,6 +108,7 @@ export function detachBubbles() {
 }
 
 const _up = new THREE.Vector3(), _t1 = new THREE.Vector3(), _t2 = new THREE.Vector3(), _pick = new THREE.Vector3();
+const _center = new THREE.Vector3();
 let _time = 0;
 
 export function updateBubbles(dt) {
@@ -112,10 +117,15 @@ export function updateBubbles(dt) {
     return;
   }
   const b = bubbles;
-  // Only fizz while the avatar is actually BELOW the surface (diving) — not while
-  // bobbing at the waterline, where `swimming` is already true but the body is
-  // in the air. Ease in/out so breaking the surface fades the stream off.
-  const target = cameraSubmerged() ? 1 : 0;
+  // Only fizz while the AVATAR's own head is actually below the surface — not
+  // while bobbing at the waterline, where `swimming` is already true but the
+  // body is in the air. Gate on surfaceState.headUnderwater (avatar-position
+  // based, set in walk.js) rather than cameraSubmerged() — the third-person
+  // camera trails behind/above the avatar and can independently dip below the
+  // local sea sphere (e.g. near shore terrain) while the avatar itself stands
+  // on dry land, which showed bubbles floating in open air over the beach.
+  // Ease in/out so breaking the surface fades the stream off.
+  const target = surfaceState.headUnderwater ? 1 : 0;
   b.vis += (target - b.vis) * Math.min(1, dt * 4);
   if (b.vis <= 0.01 && target === 0) { b.points.visible = false; return; }
   b.points.visible = true;
@@ -133,7 +143,27 @@ export function updateBubbles(dt) {
 
   const charH = surfaceState.charWorldH || (surfaceState.eyeHeight * 0.9);
   const base = astronaut.root.position;                // scene-local foot point
-  const riseBase = charH * 0.1, riseSpan = charH * 0.9;
+  const riseBase = charH * 0.1;
+
+  // Clamp the rise to the REAL water surface above the avatar, not a fixed
+  // fraction of character height — otherwise, near the surface, bubbles keep
+  // climbing past the waterline and end up animating in open air, which is
+  // what read as "outside the water" before. Compute the sea radius directly
+  // above the avatar (same math as underwater-pass.js) and cap the available
+  // rise distance to how far below that surface the avatar actually is.
+  let riseSpan = charH * 0.9;
+  const bodyForSea = surfaceState.body;
+  if (bodyForSea && bodyForSea.oceanMesh) {
+    const scale = bodyForSea.group.scale.x || 1;
+    bodyForSea.group.getWorldPosition(_center);
+    const px = surfaceState.localUp.x * bodyForSea.baseRadius;
+    const pz = surfaceState.localUp.z * bodyForSea.baseRadius;
+    const seaR = (bodyForSea.baseRadius + oceanSwellDisp(bodyForSea, px, pz)) * scale;
+    const avatarR = base.distanceTo(_center);
+    const depthBelowSurface = seaR - avatarR;             // world units, >0 underwater
+    const available = Math.max(charH * 0.15, depthBelowSurface - riseBase);
+    riseSpan = Math.min(riseSpan, available);
+  }
   _time += dt;
   const t = _time;
 

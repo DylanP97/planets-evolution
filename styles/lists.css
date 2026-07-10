@@ -1,7 +1,7 @@
-/* Roster rows and cards: cities, moons/probes, planets, hints, focus name.
+/* Roster rows and cards: locations, moons/probes, planets, hints, focus name.
    Loaded by index.html; file order preserves the original cascade. */
 
-.city-row {
+.location-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -13,14 +13,14 @@
   color: #00f2ff;
 }
 
-.city-row span {
+.location-row span {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.city-row button {
+.location-row button {
   padding: 2px 8px;
   font-size: 9px;
   margin-left: 8px;
@@ -29,9 +29,27 @@
   background: rgba(255, 0, 0, 0.05);
 }
 
-.city-row button:hover {
+.location-row button:hover {
   background: rgba(255, 0, 0, 0.2);
   box-shadow: 0 0 10px rgba(255, 0, 0, 0.3);
+}
+
+.location-row .location-target {
+  border-color: rgba(0, 242, 255, 0.3);
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.05);
+}
+
+.location-row .location-target:hover {
+  background: rgba(0, 242, 255, 0.2);
+  box-shadow: 0 0 10px rgba(0, 242, 255, 0.3);
+}
+
+.location-row .location-target.active {
+  background: rgba(255, 204, 51, 0.25);
+  border-color: #ffcc33;
+  color: #ffcc33;
+  box-shadow: 0 0 10px rgba(255, 204, 51, 0.4);
 }
 
 /* ---------- Moon / satellite cards ---------- */

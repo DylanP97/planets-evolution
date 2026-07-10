@@ -13,7 +13,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `index.html`      | Canvas, tabbed left panel, info panel (right), bottom nav, surface overlay, importmap. |
 | `styles/`         | All styling, split by panel: `base` (variables/theme), `left-panel`, `controls`, `lists`, `info-panel`, `bottom-nav`, `surface`, `star-map`, `effects`. CSS variables in `base.css` drive the sci-fi HUD theme. |
 | `src/`            | The whole runtime, ~55 ES modules (map below).                                 |
-| `assets/`         | All GLB models: `character.glb` (avatar, three.js RobotExpressive), `satellite.glb` (probes), `lunar_base.glb` (colonies), `tree.glb`/`pine.glb`/`rock.glb` (surface props), `fish.glb` (seabed schools). |
+| `assets/`         | All GLB models: `character.glb` (avatar, three.js RobotExpressive), `satellite.glb` (probes), `tree.glb`/`pine.glb`/`rock.glb` (surface props), `fish.glb` (seabed schools). |
 | `ARCHITECTURE.md` | This file. Update the module map when modules move.                            |
 
 ---
@@ -47,7 +47,7 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 
 | Module          | Responsibility |
 | --------------- | -------------- |
-| `state.js`      | **Central shared mutable state** (`bodies`, `planets`, `moons`, `probes`, `cities`, `focusedBody`, `viewMode`, brush/tool state, …) behind `set*` functions. See Conventions. |
+| `state.js`      | **Central shared mutable state** (`bodies`, `planets`, `moons`, `probes`, `locations`, `focusedBody`, `viewMode`, brush/tool state, …) behind `set*` functions. See Conventions. |
 | `archetypes.js` | `ARCHETYPES` (palette/amp/sea) + `ARCHETYPE_MATTER` (solid/liquid/gas/plasma + atmosphere tuning). |
 | `terrain.js`    | `hashSeed`, `makeRNG`, sum-of-sines FBM basis (`buildTerrainBasis` / `sampleTerrainNoise`). |
 | `materials.js`  | `onBeforeCompile` patches: ice self-glow, surface-walk ground detail, ocean waves + shoreline foam. |
@@ -62,22 +62,22 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `planets.js`     | `SOLAR_SYSTEM_SPEC`, planet registry, orbit advance, `updatePlanetRotation`, `spawnSolarPlanet`. |
 | `lighting.js`    | `updateSunLightForFocus` (per-body `uSunDir`, shadow framing), `updateMoonLight`. |
 | `starsystems.js` | `galaxy` catalog, procedural system generation, `loadStarSystem` / `unloadStarSystem` / `bootstrapSolSystem`, `viewLevel`. |
-| `teardown.js`    | `removePlanetBody` — cascade-delete a planet + its moons/probes/cities/orbit line. Used by both the roster's remove button and `unloadStarSystem`. |
+| `teardown.js`    | `removePlanetBody` — cascade-delete a planet + its moons/probes/locations/orbit line. Used by both the roster's remove button and `unloadStarSystem`. |
 
 ### `interaction/` — canvas input (orbit mode)
 
 | Module       | Responsibility |
 | ------------ | -------------- |
 | `brush.js`   | Brush cursor ring, shared `raycaster`/`pointer`, `isBrushTool`. |
-| `pointer.js` | Canvas pointerdown/move/up: raycast → brush strokes, city placement, gas whirlpools. |
+| `pointer.js` | Canvas pointerdown/move/up: raycast → brush strokes, location placement, gas whirlpools. |
 
-### `entities/` — satellites + colonies
+### `entities/` — satellites + waypoints
 
 | Module      | Responsibility |
 | ----------- | -------------- |
 | `moons.js`  | Moons (full editable bodies): slots/orbit planes, `addMoon`, `updateMoons`. |
 | `probes.js` | GLB satellites: template cache, `addSatellite`, `updateSatellites`. |
-| `cities.js` | `lunar_base.glb` colonies pinned by unit-direction, day-side dimming. |
+| `locations.js` | Named surface waypoints pinned by unit-direction — no 3D marker, just minimap dot + label. The Locations tab list is filtered to the focused body. |
 
 ### `background/` — sky dressing
 
@@ -91,9 +91,9 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 
 | Module               | Responsibility |
 | -------------------- | -------------- |
-| `focus.js`           | `setFocus`/`setCityFocus`/`setProbeFocus` (the camera-moving setters; the `focused*` state itself lives in `framework/state.js`), `updateFocusTracking`. |
+| `focus.js`           | `setFocus`/`setProbeFocus` (the camera-moving setters; the `focused*` state itself lives in `framework/state.js`), `updateFocusTracking`. |
 | `surface/core.js`    | `surfaceState` (the big shared state object), pick mode, visit button, `buildLocalFrame`. |
-| `surface/avatar.js`  | `character.glb` loading, clip state machine, blob shadow. |
+| `surface/avatar.js`  | `CHARACTERS` registry (switchable avatars, pick persisted to `localStorage`), GLB loading/normalizing, `setCharacter` in-place swap, clip state machine, blob shadow. |
 | `surface/mode.js`    | `enterSurfaceMode`/`exitSurfaceMode` — camera snap/restore, atmosphere reconfig, attach/detach all fields. |
 | `surface/sky.js`     | Aerial-perspective fog + atmospheric skylight ramp (underwater fog moved to the pass below). |
 | `surface/underwater-pass.js` | Per-pixel underwater depth fog as a post-process pass: scene → offscreen target → fullscreen shader that fogs each pixel by its view ray's chord below the sea-level sphere (`renderUnderwater`/`underwaterPassActive`; live knobs at `window.uwFog`). |
@@ -109,7 +109,11 @@ The app is a **no-build** Three.js sandbox: `index.html` pulls Three.js from a C
 | `surface/footprints.js` | Footprint decal layer (`stampFootprint*`, `FOOTPRINT_GROUND`, `window.footDiag`). |
 | `surface/bubbles.js` | Soft air bubbles that fizz up around the avatar while submerged (`surfaceState.swimming`): a scene-local Points cloud anchored to the avatar's foot point, eased in/out on dive/surface (`attachBubbles`/`updateBubbles`). |
 | `surface/props.js`   | Real GLB props gated per surface biome: pines→forest, boulders→tundra, palm+understory→jungle (`groundBiomeOfFace`). |
-| `surface/minimap.js` | Corner minimap (`updateMinimap`): top-down terrain-colour radar around the avatar + biome name (via `biomeNameOfFace`) + a rotating N/E/S/W compass (chips track true planetary north each frame). |
+| `surface/minimap.js` | Corner minimap (`updateMinimap`): top-down terrain-colour radar around the avatar + biome name (via `biomeNameOfFace`) + a rotating N/E/S/W compass (chips track true planetary north each frame); underwater cells blend to the body's real ocean tint. Expand/zoom are keybinds (`toggleMinimapExpand`/`zoomMinimapIn`/`zoomMinimapOut`, wired in `input.js`) — mouse can't reach it while pointer is locked. |
+| `surface/pause-menu.js` | Pause overlay shown whenever pointer lock drops mid-walk (Esc/alt-tab/focus loss) instead of silently exiting to orbit (`openPauseMenu`/`closePauseMenu`/`resumeFromPauseMenu`); freezes movement via `surfaceState.menuOpen`, read by `main.js`'s animate loop. Has "Controls" and "Character" buttons into `controls-page.js` / `character-page.js`. |
+| `surface/controls-page.js` | Rebindable-keys page reached from the pause menu: lists every action from `keybinds.js`, click-to-rebind (captures the next keydown; Esc cancels rather than binding). `surfaceState.pauseView` tracks which panel ('pause'/'controls'/'character'/'map') is showing. |
+| `surface/character-page.js` | Character-select page reached from the pause menu: lists `avatar.js`'s `CHARACTERS`, click to swap the controlled avatar in-place (`setCharacter`); active entry highlighted, pick persists across sessions. |
+| `surface/keybinds.js` | Rebindable surface keymap (`keybinds` object + `setKeybind`/`resetKeybinds`), persisted to `localStorage`; `input.js` reads it live instead of hardcoded key literals. Also derives the `#surfaceHint` bar text. |
 | `surface/weather.js` | Storm-world weather: frequent lightning (sky flash + bolt), tornado funnels, rain (`attachWeather`/`updateWeather`). |
 | `surface/walk.js`    | `stepSurfaceWalk` (WASD/sprint/jump/swim buoyancy/free C-dive+Space-rise), `sampleGroundRadius`, `tryJump`. |
 | `surface/input.js`   | Surface-mode listeners: drag/pointer-lock look, wheel zoom, key handling, deploy buttons. |
@@ -160,7 +164,7 @@ bodies[]   // every renderable rock/gas/ice sphere (planets + moons). Index in t
 planets[]  // entries that wrap a body and add an orbit { distance, angle, speed, inclination, line }
 moons[]    // entries that wrap a body and add an orbit around a parent body
 probes[]   // GLB satellites in orbit around a planet (mesh-only — no editable surface)
-cities[]   // markers pinned to a body via a unit-direction localPos
+locations[] // named waypoints pinned to a body via a unit-direction localPos
 ```
 
 ### Body — the core unit (planets and moons)
@@ -221,9 +225,9 @@ Moons are built at `MOON_BASE_RADIUS = 1` and scaled via `group.scale` so the si
 
 `mesh` is a clone of the loaded GLB (or a tiny fallback box until the GLB resolves).
 
-### City entry — `{ body, name, localPos, mesh }`
+### Location entry — `{ body, name, localPos }`
 
-`mesh` is a `lunar_base.glb` clone, Y-up along `localPos` at `baseRadius + CITY_SURFACE_LIFT`.
+Pure data — no 3D marker, only a dot + label on the surface minimap and a row in the Locations tab (filtered to the focused body).
 
 ---
 
@@ -233,7 +237,7 @@ The loop is the bottom of `src/main.js`. Read it top to bottom for the canonical
 
 1. `dt = clock.getDelta()`; `plasmaTime` always advances (stars never freeze).
 2. If not `paused`: advance planet orbits, rotations, `gasTime` (cloud drift + ocean waves).
-3. Always: `updateMoons`, `updateSatellites`, `updateEruptions`, `updateCityMarkers`, `updateSunLightForFocus`, `updateMoonLight`.
+3. Always: `updateMoons`, `updateSatellites`, `updateEruptions`, `updateSunLightForFocus`, `updateMoonLight`.
 4. `updateFocusTracking` keeps the camera chasing the focused body's world position.
 5. `controls.update()` (OrbitControls).
 6. If `viewMode === 'surface'`: `updateSurfaceOrigin` → `stepSurfaceWalk` → `updateSurfaceCamera` → `updateAstronaut` → grass/rocks/water/ground/props/seabed updates → `updateSurfaceSkyEffects` → `updateWeather` (storm worlds; runs last so its lightning pulse adds on top of the skylight).
@@ -293,7 +297,7 @@ Single state variable, `viewMode` (`framework/state.js`): `'orbit' | 'pick' | 's
 - **pick**: OrbitControls disabled; next left-click on the focused body → `enterSurfaceMode` (`surface/mode.js`). Bodies with `matter.solid === false` fail eligibility.
 - **surface**: camera rides the body in body-local coords (`surfaceState`). Mouse-look (Pointer Lock), scroll = FOV zoom, WASD walks (Shift sprints). `stepSurfaceWalk` (`surface/walk.js`) moves along the tangent plane; `sampleGroundRadius` raycasts the real terrain height; the local frame is parallel-transported so yaw stays consistent. `updateSurfaceCamera` re-reads the body's world matrix every frame, so spin/orbit wheel the sky overhead.
 
-**Avatar** (`surface/avatar.js`): `character.glb`, clip state machine `idle | walk | run | jump | swim` with fuzzy clip-name matching; blob shadow disc does the grounding.
+**Avatar** (`surface/avatar.js`): switchable `CHARACTERS` registry (`character.glb` robot and the Mixamo-rigged `astronaut-c.glb` with Idle/Walking/Running/Jump/Swimming/Wave clips), swapped from the start menu's or pause menu's Character page. Clip state machine `idle | walk | run | jump | swim` with fuzzy clip-name matching — unrigged models fall back to procedural bob/lean, and the procedural swim tilt is skipped for models with a real swim clip; blob shadow disc does the grounding.
 
 **Swimming** (`surface/walk.js` + `surface/swim.js`): when the seabed drops > ~1 eye-height below sea level (hysteresis), `surfaceState.swimming` flips; `standRadius` eases to just under the waterline and rides `waveHeightAtAvatar` (`surface/water.js`) so the swimmer bobs with the rolling waves. Prone paddling pose; jumps disabled.
 
@@ -311,15 +315,15 @@ Single state variable, `viewMode` (`framework/state.js`): `'orbit' | 'pick' | 's
 
 ### Focus → left panel (`modes/focus.js`, `ui/left-panel.js`)
 
-`focusedBody` (+ `focusedCity`/`focusedProbe`, all in `framework/state.js`) drive everything visible. `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute in `index.html`. `setFocus`/`setCityFocus`/`setProbeFocus` retarget OrbitControls and end with `emit('focus:changed')`, whose wire-up handler re-renders the badges, biome tools, info panel, and left panel (in that order — the left panel runs last so its gas-band hint wins).
+`focusedBody` (+ `focusedProbe`, both in `framework/state.js`) drive everything visible. `applyFocusToLeftPanel()` shows/hides tabs based on each tab button's `data-focus` attribute in `index.html`. `setFocus`/`setProbeFocus` retarget OrbitControls and end with `emit('focus:changed')`, whose wire-up handler re-renders the badges, biome tools, info panel, left panel, and the Locations tab list (in that order — the left panel runs last so its gas-band hint wins).
 
 ### Star systems + maps (`system/starsystems.js`, `ui/star-map.js`)
 
-The scene holds one star system at a time. `galaxy` is a constellations → star-systems catalog (session-only); Sol is the immutable preset rebuilt from `SOLAR_SYSTEM_SPEC`, procedural systems cache their generated `planetSpecs`. `loadStarSystem` = unload (dispose every planet/moon/probe/city) + bootstrap + `finalizeSystemLoad`. The maps are DOM overlays; `viewLevel` (`'system' | 'constellation' | 'galaxy'`) tracks where the user is; Esc steps down a level.
+The scene holds one star system at a time. `galaxy` is a constellations → star-systems catalog (session-only); Sol is the immutable preset rebuilt from `SOLAR_SYSTEM_SPEC`, procedural systems cache their generated `planetSpecs`. `loadStarSystem` = unload (dispose every planet/moon/probe) + bootstrap + `finalizeSystemLoad`. The maps are DOM overlays; `viewLevel` (`'system' | 'constellation' | 'galaxy'`) tracks where the user is; Esc steps down a level.
 
 ### GLB loading
 
-All models live in `assets/`: `satellite.glb` (probes), `lunar_base.glb` (cities), `character.glb` (avatar), `tree/pine/rock.glb` (props) — all lazily loaded once, normalized/grounded, then `.clone(true)`d per instance. Fallback primitives show until the load resolves.
+All models live in `assets/`: `satellite.glb` (probes), `character.glb` (avatar), `tree/pine/rock.glb` (props) — all lazily loaded once, normalized/grounded, then `.clone(true)`d per instance. Fallback primitives show until the load resolves.
 
 ---
 
@@ -329,11 +333,11 @@ Anything referenced from JS by id, grouped by panel:
 
 | Panel              | ids                                                                                                                             |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Tabs (left)        | `tab-classify`, `tab-sculpt`, `tab-environment`, `tab-colonies`, `tab-satellites`, `tab-system`                                 |
+| Tabs (left)        | `tab-classify`, `tab-sculpt`, `tab-environment`, `tab-locations`, `tab-satellites`, `tab-system`                                 |
 | Classify           | `archetypeSelect`, `seedInput`, `randomSeedBtn`, `genAmp`, `genSea`, `regenBtn`                                                  |
 | Sculpt             | `sculptRaise`, `sculptLower`, `brushRadius`, `brushStrength`                                                                    |
 | Environment        | `biomeSelect`, `brushRadiusB`, `atmoThick`, `atmoDensity`, `atmoCoverage`, `atmoCloudType`, `atmoCloudDrift`, `ringsEnabled`, `ringsIntensity` |
-| Colonies           | `cityNameInput`, `cityList`                                                                                                     |
+| Locations          | `locationNameInput`, `locationList`                                                                                             |
 | Satellites         | `moonsList`, `addMoon`, `probesList`, `addProbe`                                                                                |
 | System             | `planetList`, `deployPlanetBtn`, `bodyDistInput`, `bodySpeedInput`, `bodyMoonSpeedInput`, `bodySpinInput`, `bodySizeInput`, `bodyInclInput`, `bodyNodeInput`, `bodyRetrogradeInput` |
 | Dynamics           | `showOrbits`, `showSatelliteOrbits`, `pauseRot`                                                                                 |
@@ -357,7 +361,7 @@ Anything referenced from JS by id, grouped by panel:
 | `refreshOrbitLine`, `setSatelliteOrbitLinesVisible` | `system/orbits.js` |
 | `updateSunLightForFocus`, `updateMoonLight` | `system/lighting.js` |
 | `loadStarSystem`, `createStarSystem`, `generateStarSystemSpec`, `bootstrapSolSystem` | `system/starsystems.js` |
-| `addMoon` / `addSatellite` / `addCity` | `entities/moons.js` / `probes.js` / `cities.js` |
+| `addMoon` / `addSatellite` / `addLocation` | `entities/moons.js` / `probes.js` / `locations.js` |
 | `setFocus`, `updateFocusTracking` | `modes/focus.js` |
 | `enterPickMode`, `surfaceState`, `isBodyVisitable` | `modes/surface/core.js` |
 | `enterSurfaceMode` / `exitSurfaceMode` | `modes/surface/mode.js` |

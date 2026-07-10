@@ -15,7 +15,7 @@ function isTyping() {
 addEventListener('keydown', (e) => {
   if (e.key !== 'h' && e.key !== 'H') return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (viewMode === 'surface' || viewMode === 'pick') return;
+  if (viewMode !== 'orbit') return;
   if (isTyping()) return;
   document.body.classList.toggle('hud-hidden');
 });

@@ -142,9 +142,11 @@ function ensure() {
       float oceanWave(vec3 p){
         float t = uWaveTime;
         float h = 0.0;
-        h += sin(p.x * 3.3 + p.z * 1.8 + t * 1.3) * 0.60;
-        h += sin(p.z * 4.6 - p.x * 1.3 + t * 1.6) * 0.40;
-        h += sin((p.x + p.z) * 6.9 + t * 2.2) * 0.25;
+        h += sin(dot(p.xz, vec2(0.990, 0.139)) * 2.0 + t * 1.0) * 0.42;
+        h += sin(dot(p.xz, vec2(0.719, 0.695)) * 2.7 + t * 1.3) * 0.30;
+        h += sin(dot(p.xz, vec2(0.174, 0.985)) * 3.6 + t * 1.7) * 0.20;
+        h += sin(dot(p.xz, vec2(-0.438, 0.899)) * 4.6 + t * 2.1) * 0.15;
+        h += sin(dot(p.xz, vec2(-0.883, 0.469)) * 5.8 + t * 2.6) * 0.10;
         return h;
       }
       // World-space sea radius at a world point P: convert to object space,

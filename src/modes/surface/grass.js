@@ -1,11 +1,15 @@
 // Instanced grass on vegetated worlds — treadmill grid that wraps around the
-// walker, ground sampling, wind sway. One shared blade geometry renders three
-// biome variants (meadow / forest-floor understory / tundra sedge), chosen
-// per-blade from the terrain's own climate zone: each blade picks its tint,
-// height, width and density from GRASS_ZONE_STYLE, so the lawn changes character
-// as you cross from grassland into forest or tundra rather than being one flat
-// green everywhere.
+// walker, ground sampling, wind sway. One shared blade geometry (a small
+// GLB tuft model, assets/grass-blade.glb) renders four biome variants
+// (meadow / tundra sedge / forest understory / jungle understory), chosen
+// per-blade from the terrain's own climate zone: each blade picks its
+// root→tip color gradient, height, width and density from GRASS_ZONE_STYLE,
+// so the lawn changes character as you cross from grassland into forest,
+// jungle or tundra rather than being one flat green everywhere. A cheap
+// procedural blade is used as an instant placeholder while the GLB loads,
+// then swapped in once ready.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT
 } from '../../core/constants.js';
@@ -41,27 +45,35 @@ export let grassField = null;
 export let grassUniforms = null;     // captured from onBeforeCompile (uTime/uWind/uReveal)
 
 // Per-zone grass look, indexed by the code grassZoneOfFace returns
-// (1 meadow · 2 tundra sedge · 3 forest/jungle understory; 0 = bare, unused).
-// One shared blade geometry serves all three — the differences are purely
-// per-instance: `color` is the blade base (multiplied by each blade's brightness
-// jitter), `hMul`/`wMul` stretch the blade taller-shorter / broader-finer, and
-// `dens` is the fraction of blades kept so tundra reads as sparse hardy sedge
-// while forest floor packs in lush and tall. Tints sit near each climate zone's
-// painted ground colour (constants COL / CLIMATE_LAND_ZONES) so blades cohere
-// with the terrain they grow on.
+// (1 meadow · 2 tundra sedge · 3 forest understory · 4 jungle understory;
+// 0 = bare, unused). One shared blade geometry serves all four — the
+// differences are purely per-instance: `rootColor`/`tipColor` set the base→tip
+// gradient (mixed in the shader by each vertex's aH, then multiplied by the
+// blade's brightness jitter), `hMul`/`wMul` stretch the blade taller-shorter /
+// broader-finer, and `dens` is the fraction of blades kept so tundra reads as
+// sparse hardy sedge while jungle floor packs in dense and tall. Tints sit near
+// each climate zone's painted ground colour (constants COL / CLIMATE_LAND_ZONES)
+// so blades cohere with the terrain they grow on.
 const GRASS_ZONE_STYLE = [
   null,
-  { color: new THREE.Color(0x6fc34a), hMul: 1.25, wMul: 1.05, dens: 1.00 }, // meadow grass — bright, taller than the flat ground so it reads
-  { color: new THREE.Color(0x9e8a4a), hMul: 0.72, wMul: 0.85, dens: 0.88 }, // tundra sedge — short & brownish, but dense enough to read as grass
-  { color: new THREE.Color(0x2f8a39), hMul: 1.55, wMul: 1.35, dens: 1.00 }, // forest/jungle understory — tall, broad, lush
+  // 1 · meadow grass — bright green, medium-tall, dense
+  { rootColor: new THREE.Color(0x35662a), tipColor: new THREE.Color(0x8fcf4a), hMul: 1.25, wMul: 1.05, dens: 1.00 },
+  // 2 · tundra sedge — short, sparse, grayish-brown
+  { rootColor: new THREE.Color(0x6b6552), tipColor: new THREE.Color(0xa68a52), hMul: 0.55, wMul: 0.75, dens: 0.55 },
+  // 3 · forest-floor understory — tall, broad, mid-dark green
+  { rootColor: new THREE.Color(0x1f4a1a), tipColor: new THREE.Color(0x4f8a3a), hMul: 1.35, wMul: 1.20, dens: 0.95 },
+  // 4 · jungle understory — very tall, broad, dense, deep-to-vivid green
+  { rootColor: new THREE.Color(0x0f3a15), tipColor: new THREE.Color(0x2fae4f), hMul: 1.70, wMul: 1.50, dens: 1.00 },
 ];
-const _grBlade = new THREE.Color();  // scratch for per-blade instanceColor writes
+const _grBlade = new THREE.Color();  // scratch for per-blade instanceColor (brightness jitter) writes
 
 // One tapered blade pointing +Y, base at y=0, tip at y=1. Normals point
 // straight up so the instance orientation lights each blade like the ground
 // patch it stands on (vertical flat normals would crush to black edge-on).
 // A base→tip grey gradient in vertex color fakes ambient occlusion at the
 // roots; the per-instance color and material tint layer green on top.
+// Used only as an instant placeholder for the very first frames, while the
+// real GLB tuft model (loadGrassBladeGeometry) loads in the background.
 export function buildGrassBladeGeometry() {
   const segs = 4, halfBase = 0.13;
   const pos = [], col = [], nrm = [], aH = [], idx = [];
@@ -88,12 +100,71 @@ export function buildGrassBladeGeometry() {
   return g;
 }
 
+export const GRASS_BLADE_URL = 'assets/grass-blade.glb';
+let grassBladeGeoPromise = null;
+
+// Load the real grass tuft model (a small multi-blade clump, unlike the flat
+// procedural placeholder above) and normalize it into the same local frame
+// the placeholder uses: base at y=0, tip at y=1, centred on X/Z. Adds the
+// 'aH' (height fraction, drives wind sway + the root→tip color gradient) and
+// 'color' (grey AO gradient, dark root → bright tip) attributes the material
+// expects, matching buildGrassBladeGeometry's contract exactly so callers can
+// swap one geometry for the other with no other changes.
+export function loadGrassBladeGeometry() {
+  if (grassBladeGeoPromise) return grassBladeGeoPromise;
+  const loader = new GLTFLoader();
+  grassBladeGeoPromise = new Promise((resolve, reject) => {
+    loader.load(GRASS_BLADE_URL, (gltf) => {
+      gltf.scene.updateMatrixWorld(true);
+      let geo = null;
+      gltf.scene.traverse((o) => { if (!geo && o.isMesh) geo = o.geometry.clone().applyMatrix4(o.matrixWorld); });
+      if (!geo) { reject(new Error('grass-blade.glb has no mesh')); return; }
+      geo.computeBoundingBox();
+      const box = geo.boundingBox;
+      const size = box.max.y - box.min.y;
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const s = 1 / (size || 1);
+      const m = new THREE.Matrix4()
+        .makeScale(s, s, s)
+        .multiply(new THREE.Matrix4().makeTranslation(-center.x, -box.min.y, -center.z));
+      geo.applyMatrix4(m);
+      geo.computeBoundingBox();
+      const yMax = geo.boundingBox.max.y || 1;
+      const posAttr = geo.getAttribute('position');
+      const n = posAttr.count;
+      const aH = new Float32Array(n), col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        const h = Math.max(0, Math.min(1, posAttr.getY(i) / yMax));
+        aH[i] = h;
+        const shade = 0.4 + 0.6 * h;
+        col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = shade;
+      }
+      geo.setAttribute('aH', new THREE.Float32BufferAttribute(aH, 1));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      resolve(geo);
+    }, undefined, reject);
+  });
+  return grassBladeGeoPromise;
+}
+
 export function buildGrassField() {
   const geo = buildGrassBladeGeometry();
   // Per-instance distance-fade (1 = full blade, 0 = melted into the ground).
   // Drives BOTH height (in the placement matrix) and shading (flatten below).
   const fadeArr = new Float32Array(GRASS_COUNT); fadeArr.fill(1);
-  geo.setAttribute('aFade', new THREE.InstancedBufferAttribute(fadeArr, 1).setUsage(THREE.DynamicDrawUsage));
+  const fadeAttr = new THREE.InstancedBufferAttribute(fadeArr, 1).setUsage(THREE.DynamicDrawUsage);
+  // Per-instance zone root/tip colors (GRASS_ZONE_STYLE), written every
+  // placement in updateGrass. The vertex shader mixes them by aH (height
+  // fraction) to paint each blade's own base→tip gradient, so the same shared
+  // geometry reads as a different plant per biome.
+  const rootArr = new Float32Array(GRASS_COUNT * 3);
+  const tipArr  = new Float32Array(GRASS_COUNT * 3);
+  const rootAttr = new THREE.InstancedBufferAttribute(rootArr, 3).setUsage(THREE.DynamicDrawUsage);
+  const tipAttr  = new THREE.InstancedBufferAttribute(tipArr, 3).setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('aFade', fadeAttr);
+  geo.setAttribute('iRootColor', rootAttr);
+  geo.setAttribute('iTipColor', tipAttr);
   const mat = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide,
   });
@@ -101,10 +172,12 @@ export function buildGrassField() {
   // Sway bends the blade in its own local X/Z (so the instance orientation
   // carries it to the right world direction), weighted by height so roots
   // stay planted; phase varies per blade from its instance translation.
-  // aFade additionally flattens the root→tip shading toward the flat ground
-  // tint as a blade recedes, so a far blade is visually identical to the bare
-  // green ground — the lawn's outer ring melts into the terrain instead of
-  // showing a moving edge where blades "grow in" ahead of the walker.
+  // The zone root/tip gradient is layered onto the geometry's baked grey AO
+  // (dark root → bright tip) and the per-instance brightness jitter, THEN
+  // aFade flattens the whole thing toward the flat ground tint as a blade
+  // recedes, so a far blade is visually identical to the bare green ground —
+  // the lawn's outer ring melts into the terrain instead of showing a moving
+  // edge where blades "grow in" ahead of the walker.
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime   = { value: 0 };
     sh.uniforms.uWind   = { value: 0.18 };
@@ -112,9 +185,11 @@ export function buildGrassField() {
     grassUniforms = sh.uniforms;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>',
-        '#include <common>\nattribute float aH;\nattribute float aFade;\nuniform float uTime;\nuniform float uWind;\nuniform float uReveal;')
+        '#include <common>\nattribute float aH;\nattribute float aFade;\nattribute vec3 iRootColor;\nattribute vec3 iTipColor;\nuniform float uTime;\nuniform float uWind;\nuniform float uReveal;')
       .replace('#include <color_vertex>',
-        '#include <color_vertex>\n  vColor = mix(vec3(1.0), vColor, clamp(aFade, 0.0, 1.0));')
+        '#include <color_vertex>\n'
+      + '  vColor *= mix(iRootColor, iTipColor, pow(clamp(aH, 0.0, 1.0), 1.4));\n'
+      + '  vColor = mix(vec3(1.0), vColor, clamp(aFade, 0.0, 1.0));')
       .replace('#include <begin_vertex>',
         '#include <begin_vertex>\n'
       + '  float _gph = instanceMatrix[3][0] * 11.0 + instanceMatrix[3][2] * 7.0;\n'
@@ -130,6 +205,17 @@ export function buildGrassField() {
   mesh.frustumCulled = false;   // the patch is always at the camera
   mesh.castShadow = false;
   mesh.receiveShadow = false;
+
+  // Swap in the real GLB tuft model once it loads, in place of the flat
+  // procedural placeholder — same attribute contract (aH/color), so the
+  // instanced attributes just move over to the new geometry unchanged.
+  loadGrassBladeGeometry().then((glbGeo) => {
+    glbGeo.setAttribute('aFade', fadeAttr);
+    glbGeo.setAttribute('iRootColor', rootAttr);
+    glbGeo.setAttribute('iTipColor', tipAttr);
+    mesh.geometry.dispose();
+    mesh.geometry = glbGeo;
+  }).catch((err) => console.warn('grass blade GLB failed to load, keeping placeholder blade', err));
 
   const baseUV    = new Float32Array(GRASS_COUNT * 2);  // normalized [-1,1], scaled by PR at runtime
   const yaw       = new Float32Array(GRASS_COUNT);
@@ -169,13 +255,13 @@ export function buildGrassField() {
   mesh.instanceColor.needsUpdate = true;
   mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);  // recoloured per zone as the walker crosses biomes
   grassField = {
-    mesh, mat, baseUV, yaw, hScale, leanAmt, leanTheta, jitter, rnd, fadeArr,
+    mesh, mat, baseUV, yaw, hScale, leanAmt, leanTheta, jitter, rnd, fadeArr, rootArr, tipArr,
     reveal: 0, targetReveal: 0, sampleTimer: 0, PR: 1, bladeH: 0.02,
     // Height grid: ground radii sampled in a snapshot tangent frame, so blades
     // read terrain height by bilinear lookup instead of one flat sphere.
     grid: new Float32Array(GRASS_GN * GRASS_GN),
     gridGrass: new Float32Array(GRASS_GN * GRASS_GN),  // 1 = grass-biome cell, 0 = bare (sand/water/rock)
-    gridZone: new Float32Array(GRASS_GN * GRASS_GN),   // grass-variant code per cell (1 meadow / 2 tundra / 3 forest)
+    gridZone: new Float32Array(GRASS_GN * GRASS_GN),   // grass-variant code per cell (1 meadow / 2 tundra / 3 forest / 4 jungle)
     gridHalf: 1, gridValid: false,
     gridU: 0, gridV: 0,
     gridUp: new THREE.Vector3(), gridRight: new THREE.Vector3(), gridFwd: new THREE.Vector3(),
@@ -235,11 +321,11 @@ window.grassDiag = () => {
       zoned: !!(body.climate && body.climate.spread > 0.5 && CLIMATE_LAND_ZONES[body.archetype]),
       isGrass: groundIsGrassFace(body, f),
       faceBiome: groundBiomeOfFace(body, f), // FACE_BIOME code (1 grass·2 forest·3 jungle·4 tundra·5 ice·6 coast·7 desert)
-      zoneCode: grassZoneOfFace(body, f),   // 0 bare · 1 meadow · 2 tundra · 3 forest
+      zoneCode: grassZoneOfFace(body, f),   // 0 bare · 1 meadow · 2 tundra · 3 forest · 4 jungle
     } : 'raycast missed';
   }
   return {
-    VERSION: 'grass-biomes-v5',
+    VERSION: 'grass-blade-glb-v1',
     body: body && body.name, archetype: body && body.archetype,
     visible: gf.mesh.visible, reveal: +gf.reveal.toFixed(3), targetReveal: gf.targetReveal,
     placed: gf.placed, gridValid: gf.gridValid, PR: gf.PR, bladeH: gf.bladeH,
@@ -249,7 +335,7 @@ window.grassDiag = () => {
 
 // True when terrain face `f` is vegetated green land — replicating
 // colorBodyVertex's land logic so the lawn only grows where the ground reads
-// green. Excludes sand/beach/water (below GRASS_FLOOR), rock/snow (above ROCK_TOP),
+// green. Excludes sand/beach/water (below SAND_TOP), rock/snow (above ROCK_TOP),
 // and the desert/tundra/ice climate zones; INCLUDES the grass + jungle zones,
 // painted forest, and the plain grass band. Moons stay bare. Only terrestrial
 // worlds have a genuine grassland mid-band — every other archetype's mid-band
@@ -261,8 +347,9 @@ window.grassDiag = () => {
 // their codes to a grass-variant style below.
 
 // Grass-variant code (GRASS_ZONE_STYLE index) for terrain face `f`: 0 bare,
-// 1 meadow, 2 tundra sedge, 3 forest/jungle understory. Grass grows on grass,
-// forest, jungle and tundra ground; coast, ice, desert and bare rock grow none.
+// 1 meadow, 2 tundra sedge, 3 forest understory, 4 jungle understory. Grass
+// grows on grass, forest, jungle and tundra ground; coast, ice, desert and
+// bare rock grow none.
 export function grassZoneOfFace(body, f) {
   // Martian (desert) worlds grow NO grass on any biome — their flats are
   // fractured bedrock, not meadow. Gate the whole field off here so even a
@@ -272,7 +359,7 @@ export function grassZoneOfFace(body, f) {
     case FACE_BIOME.GRASS:  return 1;
     case FACE_BIOME.TUNDRA: return 2;
     case FACE_BIOME.FOREST: return 3;
-    case FACE_BIOME.JUNGLE: return 3;
+    case FACE_BIOME.JUNGLE: return 4;
     default:                return 0;
   }
 }
@@ -343,7 +430,7 @@ export function refreshGrassGrid() {
       let r = footR, zone = 0;
       if (hits.length) {
         _grHit.copy(hits[0].point); body.mesh.worldToLocal(_grHit); r = _grHit.length();
-        zone = grassZoneOfFace(body, hits[0].face);   // 0 bare / 1 meadow / 2 tundra / 3 forest
+        zone = grassZoneOfFace(body, hits[0].face);   // 0 bare / 1 meadow / 2 tundra / 3 forest / 4 jungle
         if (body.matter && body.matter.liquid) r = Math.max(r, body.baseRadius);
       }
       gf.grid[iy * GN + ix] = r;
@@ -385,7 +472,7 @@ export function grassMask(gf, su, sv) {
   return a + (b - a) * ty;
 }
 
-// Nearest-cell grass-variant code (1 meadow / 2 tundra / 3 forest) from the
+// Nearest-cell grass-variant code (1 meadow / 2 tundra / 3 forest / 4 jungle) from the
 // snapshot zone grid. Categorical, so it snaps to the closest sample rather than
 // blending — a blade is wholly one kind of grass, and the variant flips cell-to-
 // cell at biome edges (the coverage mask above still feathers the lawn out where
@@ -458,10 +545,12 @@ export function updateGrass(dt) {
     let ef = (1.0 - (au > av ? au : av) / PR) * 12.5;
     ef = ef < 0 ? 0 : ef > 1 ? 1 : ef;
     // Biome mask: pull blades back from beach / sand / water so the lawn never
-    // spills onto bare ground. Tightened (full at ≥0.75 coverage, gone ≤0.30) so
-    // grass keeps clear of the shoreline; broad bare regions (water, sand, rock)
+    // spills onto bare ground. Full at ≥0.75 coverage, gone ≤0.30, so grass
+    // keeps clear of the shoreline; broad bare regions (water, sand, rock)
     // still clear it, while a stray bare face inland barely dents the meadow.
-    let mf = (grassMask(gf, driftU + u, driftV + v) - 0.15) * 1.8;
+    // (Was full at 0.706 / gone at 0.15 — too loose, left blades rooted right
+    // in the surf at the shoreline.)
+    let mf = (grassMask(gf, driftU + u, driftV + v) - 0.30) * 2.2222;
     mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
     // Which kind of grass stands on this cell, and its look. Sparse zones
     // (tundra) thin themselves out via a stable per-blade keep test, so the same
@@ -472,9 +561,14 @@ export function updateGrass(dt) {
     if (fade <= 0.004) { gf.fadeArr[i] = 0; _gMat.makeScale(0, 0, 0); gf.mesh.setMatrixAt(i, _gMat); continue; }
     fade = fade * fade * (3 - 2 * fade);                          // smoothstep ease
     gf.fadeArr[i] = fade;                                         // height (below) + shading flatten (shader)
-    // Per-blade zone tint = stored brightness jitter × the zone's base colour.
-    _grBlade.setRGB(gf.jitter[3 * i] * st.color.r, gf.jitter[3 * i + 1] * st.color.g, gf.jitter[3 * i + 2] * st.color.b);
+    // Per-blade brightness/warmth jitter (instanceColor) is layered under the
+    // zone's own root→tip gradient (iRootColor/iTipColor, mixed by aH in the
+    // shader), so each biome keeps its own base→tip character while blades
+    // still vary a little from their neighbours.
+    _grBlade.setRGB(gf.jitter[3 * i], gf.jitter[3 * i + 1], gf.jitter[3 * i + 2]);
     gf.mesh.setColorAt(i, _grBlade);
+    gf.rootArr[3 * i] = st.rootColor.r; gf.rootArr[3 * i + 1] = st.rootColor.g; gf.rootArr[3 * i + 2] = st.rootColor.b;
+    gf.tipArr[3 * i]  = st.tipColor.r;  gf.tipArr[3 * i + 1]  = st.tipColor.g;  gf.tipArr[3 * i + 2]  = st.tipColor.b;
     // Tangent offset → surface direction, then lift to the real ground height
     // (blade position in the snapshot frame = drift since snapshot + uv).
     _gP.copy(up).multiplyScalar(footR).addScaledVector(right, u).addScaledVector(fwd, v);
@@ -499,5 +593,7 @@ export function updateGrass(dt) {
   gf.mesh.instanceMatrix.needsUpdate = true;
   gf.mesh.instanceColor.needsUpdate = true;
   gf.mesh.geometry.getAttribute('aFade').needsUpdate = true;
+  gf.mesh.geometry.getAttribute('iRootColor').needsUpdate = true;
+  gf.mesh.geometry.getAttribute('iTipColor').needsUpdate = true;
 }
 

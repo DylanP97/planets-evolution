@@ -1,11 +1,64 @@
 // Atmosphere + full-gas-giant shader (GLSL), the latitudinal band-paint LUT,
 // gas biome catalog, and whirlpool/vortex feature stamping.
 import * as THREE from 'three';
-import { 
-  brushRadius, brushStrength, currentArchetype, 
-  gasPaintColor, selectedGasBiomeId 
+import {
+  bodies, brushRadius, brushStrength, currentArchetype,
+  gasPaintColor, selectedGasBiomeId
 } from '../framework/state.js';
 import { makeRNG, hashSeed } from '../framework/terrain.js';
+
+// Bounds of the dusk/dawn horizon-glow BUMP (the "inside" twilightSky term
+// below): 0 above TWILIGHT_DAY (still plain daylight/night-blue, no warm
+// tint), rises approaching TWILIGHT_PEAK_HI, holds near-full warmth between
+// the two PEAK edges, then fades back to 0 by TWILIGHT_NIGHT — a proper bump,
+// not a one-sided ramp, so the orange/pink tint doesn't linger for hours into
+// what should already read as a plain darkening night sky.
+//
+// The rise/fall edges (NIGHT→PEAK_LO and PEAK_HI→DAY) were 0.20 wide each
+// with a full 0.30-wide flat plateau in between — quick ramp, long hold, quick
+// ramp, which reads as a snap rather than a fade. Now each ramp is 0.30 wide
+// (most of the window) around a narrow 0.10 peak, so the colour genuinely
+// eases in and out across nearly the whole transition. The whole family is
+// also shifted outward (was NIGHT -0.55 / DAY 0.15) so the pure-black core
+// night gets longer without touching the dusk/dawn window's total width —
+// shifting both ends by the same amount only moves where night starts,
+// leaving how gradual the ramp itself is unchanged elsewhere.
+export const TWILIGHT_NIGHT   = -0.35; // bump reaches 0 here (going toward night)
+export const TWILIGHT_PEAK_LO = -0.05; // bump reaches ~1 here (start of the held peak)
+export const TWILIGHT_PEAK_HI =  0.05; // bump starts falling from ~1 here (toward day)
+export const TWILIGHT_DAY     =  0.35; // bump reaches 0 here (going toward day)
+
+// Mutable copies of the four constants above, fed into the sky dome shader as
+// uniforms (see uTwilightNight/PeakLo/PeakHi/Day in GAS_FRAG) so the dev panel
+// (ui/dev-panel.js) can retune the dusk/dawn window live without a shader
+// recompile. The exported consts above stay the compile-time DEFAULTS (used
+// to seed new materials and by the few consumers — aerial fog, minimap
+// day/night labels — that read a plain number rather than a per-body
+// uniform); applyTwilightTuning pushes edits out to every existing gas mesh.
+export const twilightTuning = {
+  night:  TWILIGHT_NIGHT,
+  peakLo: TWILIGHT_PEAK_LO,
+  peakHi: TWILIGHT_PEAK_HI,
+  day:    TWILIGHT_DAY,
+};
+
+// Sun-elevation bounds of the surface-mode sky dome's overall brightness/haze
+// fade (the "inside" skyCover ramp below). Pinned to the exact same edges as
+// the twilight bump above (rather than its own separate numbers) so colour
+// and brightness always fade in and out together across the same window —
+// no stretch where the sky has brightened but the tint hasn't caught up (or
+// vice versa), and no colourless "weak blue" gap between dark and tinted.
+export const SKY_NIGHT_ELEV = TWILIGHT_NIGHT; // sunElev at/below which skyCover reaches 0 (full night)
+export const SKY_DAY_ELEV   = TWILIGHT_DAY;   // sunElev at/above which skyCover reaches 1 (full day)
+
+// Perceptual thresholds for anything that puts a Day/Dawn/Dusk/Night WORD on
+// screen (currently just the minimap's local-time readout). Deliberately
+// reused from the bump edges above rather than a separate set of numbers, so
+// the label can't drift out of sync with what the sky is actually doing:
+// "Day"/"Night" are exactly where the warm bump is fully off on the day side
+// / night side, and "Dawn"/"Dusk" is exactly its active range.
+export const SKY_LABEL_DAY_ELEV   = TWILIGHT_DAY;
+export const SKY_LABEL_NIGHT_ELEV = TWILIGHT_NIGHT;
 
 export const GAS_VERT = /* glsl */ `
   varying vec3 vWorldNormal;
@@ -47,6 +100,10 @@ export const GAS_FRAG = /* glsl */ `
   uniform float uCloudBlend;  // for "all": phase 0..3 crossfading the three types
   uniform sampler2D uBandTex;
   uniform float uUseBands;
+  uniform float uTwilightNight;
+  uniform float uTwilightPeakLo;
+  uniform float uTwilightPeakHi;
+  uniform float uTwilightDay;
 
   #define GAS_MAX_FEATURES 8
   uniform int   uFeatureCount;
@@ -99,8 +156,11 @@ export const GAS_FRAG = /* glsl */ `
     float sunElev  = dot(camDir, normalize(uSunDir));
     float camLamb  = max(0.0, sunElev);
     float dayMix   = inside ? camLamb : shellLambert;
+    // Surface-mode sky dome day/night fade. Bounds are baked in at build time
+    // from SKY_NIGHT_ELEV/SKY_DAY_ELEV above (GLSL has no runtime access to
+    // the JS constants) — keep them numerically in sync.
     float skyCover = inside
-      ? smoothstep(-0.42, 0.12, sunElev)
+      ? smoothstep(uTwilightNight, uTwilightDay, sunElev)
       : smoothstep(-0.22, 0.05, sunElev);
 
     vec3  col = uColor;
@@ -158,15 +218,24 @@ export const GAS_FRAG = /* glsl */ `
       float sunDot  = max(0.0, dot(normalize(uSunDir), viewDir));
       float twilightWeight = inside
         ? smoothstep(0.34, -0.04, sunElev) * smoothstep(-0.30, 0.04, sunElev)
-        : smoothstep(0.30, 0.0, dayMix);
+        // Widened from 0.30 so the dusk/sunset tint starts while the day
+        // side is still well lit, instead of only right at the terminator.
+        : smoothstep(0.42, 0.0, dayMix);
       vec3  duskTint  = vec3(1.00, 0.42, 0.08);
       vec3  bleachCol = mix(vec3(1.0), duskTint, twilightWeight);
       vec3  skyCol    = mix(uSkyTint, bleachCol, pow(sunDot, 6.0) * 0.72);
       if (inside) {
         float horizonness = pow(1.0 - NdotV, 0.38);
         vec3  horizonWarm = vec3(1.00, 0.34, 0.05);
-        float twilightSky = smoothstep(0.48, -0.14, sunElev)
-                          * (1.0 - smoothstep(-0.48, -0.14, sunElev));
+        // A proper BUMP, not a one-sided ramp: the old formula rose toward
+        // sunset and then stayed pinned at full warmth forever afterward
+        // (it never had a falling edge), so the sky read as a lingering
+        // orange/grey evening for hours after sunset instead of settling
+        // into a plain darkening sky on the way to true night. Now it rises
+        // approaching the horizon, peaks just after, and fades back to 0
+        // over the following couple hours so deep night reads clean.
+        float twilightSky = smoothstep(uTwilightNight, uTwilightPeakLo, sunElev)
+                          * (1.0 - smoothstep(uTwilightPeakHi, uTwilightDay, sunElev));
         skyCol = mix(skyCol, mix(uSkyTint, horizonWarm, horizonness), twilightSky);
       }
 
@@ -193,7 +262,10 @@ export const GAS_FRAG = /* glsl */ `
         float band = clamp((b - R) / max(1e-4, shellRad - R), 0.0, 1.0);
         float overAir = step(R, b);
         float halo = overAir * pow(1.0 - band, 2.0);
-        float nightFade = mix(0.12, 1.0, shellLambert);
+        // Was floored at 0.12 — the night side of the ring never went fully
+        // dark, so it read as brighter than it should have and skewed the
+        // apparent day/night split away from a true 50/50 terminator.
+        float nightFade = mix(0.02, 1.0, shellLambert);
         skyAlpha   = uDensity * halo * 1.8 * nightFade;
         cloudAlpha = cloud * uDensity * 1.6;
       }
@@ -270,7 +342,11 @@ export const GAS_FRAG = /* glsl */ `
 
     float a = clamp(alpha, 0.0, 1.0);
     if (uOpaqueSky > 0.5) {
-      if (a < 0.02) discard;
+      // Lowered from 0.02: at the old threshold the dome was still discarding
+      // while noticeably non-transparent, so the star-filled background behind
+      // it popped in as a visible edge rather than the alpha having actually
+      // faded there first.
+      if (a < 0.004) discard;
     }
     // Daytime sky-glow veil (driven only for distant bodies in surface mode).
     // uSkyVeil 1 = fully visible. As it drops we both fade the colour INTO the
@@ -352,6 +428,10 @@ export function makeGasMaterial() {
       uCloudBlend: { value: 0.0 },
       uBandTex:  { value: DEFAULT_BAND_TEX },
       uUseBands: { value: 0.0 },
+      uTwilightNight:  { value: twilightTuning.night },
+      uTwilightPeakLo: { value: twilightTuning.peakLo },
+      uTwilightPeakHi: { value: twilightTuning.peakHi },
+      uTwilightDay:    { value: twilightTuning.day },
       uFeatureCount:     { value: 0 },
       uFeatureCenters:   { value: Array.from({ length: GAS_MAX_FEATURES }, () => new THREE.Vector3(0, 1, 0)) },
       uFeatureRadii:     { value: new Float32Array(GAS_MAX_FEATURES) },
@@ -361,6 +441,21 @@ export function makeGasMaterial() {
     depthWrite: false,
     side: THREE.FrontSide,
   });
+}
+
+// Push twilightTuning's current values out to every existing gas shell's
+// uniforms (new materials already pick them up as defaults — see
+// makeGasMaterial). Called by ui/dev-panel.js on every twilight slider edit.
+export function applyTwilightTuning() {
+  for (const b of bodies) {
+    if (!b.gasMesh) continue;
+    const u = b.gasMesh.material.uniforms;
+    if (!u.uTwilightNight) continue;
+    u.uTwilightNight.value  = twilightTuning.night;
+    u.uTwilightPeakLo.value = twilightTuning.peakLo;
+    u.uTwilightPeakHi.value = twilightTuning.peakHi;
+    u.uTwilightDay.value    = twilightTuning.day;
+  }
 }
 
 export function ensureGasPaint(body) {

@@ -11,8 +11,11 @@ import { resolvePropCollision } from './props.js';
 import { resolveRockCollision } from './rocks.js';
 
 export const surfaceKeys = { w: false, a: false, s: false, d: false, shift: false, dive: false, ascend: false };
-export const SURFACE_SPRINT_MULT = 2.0;
-export const SWIM_VERT_SPEED = 3.0;   // free-swim rise/dive rate, eye-heights per second
+// Mutable so the dev panel can retune sprint/swim pace live.
+export const walkTuning = {
+  sprintMult: 2.0,
+  swimVertSpeed: 3.0,   // free-swim rise/dive rate, eye-heights per second
+};
 const _walkHeading = new THREE.Vector3();
 const _walkStrafe  = new THREE.Vector3();
 const _walkDelta   = new THREE.Vector3();
@@ -110,11 +113,19 @@ export function stepSurfaceWalk(dt) {
       // flips cameraSubmerged and the underwater fog takes over for free.
       if (!wasSwimming) surfaceState.swimRadius = floatR;       // enter at the surface
       const vert = (surfaceKeys.ascend ? 1 : 0) - (surfaceKeys.dive ? 1 : 0);
-      surfaceState.swimRadius += vert * eh * SWIM_VERT_SPEED * dt;
+      surfaceState.swimRadius += vert * eh * walkTuning.swimVertSpeed * dt;
       surfaceState.swimRadius = Math.max(bottomR, Math.min(floatR, surfaceState.swimRadius));
       standTarget = surfaceState.swimRadius;
+      // headUnderwater must reflect the actual HEAD radius (standRadius + eh,
+      // per camera.js's eyeRadius), not standRadius alone — comparing swimRadius
+      // itself against a margin below floatR let this flip true while the head
+      // was still ~0.2eh ABOVE the water line, so bubbles fired while the
+      // avatar was only wading. Require the head to clear a margin BELOW
+      // waterR so it only trips once fully, unambiguously submerged.
+      surfaceState.headUnderwater = (surfaceState.swimRadius + eh) < waterR - eh * 0.2;
     } else {
       standTarget = surfaceState.groundRadius;
+      surfaceState.headUnderwater = false;
     }
     surfaceState.standRadius += (standTarget - surfaceState.standRadius) * Math.min(1, dt * 8);
   }
@@ -123,10 +134,11 @@ export function stepSurfaceWalk(dt) {
   const strafeInput = (surfaceKeys.d ? 1 : 0) + (surfaceKeys.a ? -1 : 0);
   const moving = fwdInput !== 0 || strafeInput !== 0;
 
-  // Drive the animation state machine: afloat → swim (covers the splash-
-  // down out of a leap too — the prone blend doubles as a dive); airborne →
-  // jump; on the ground → run (sprint) / walk / idle depending on input.
-  if (surfaceState.swimming)       setAstronautAction('swim');
+  // Drive the animation state machine: afloat → swim while actually stroking,
+  // treadWater while just holding position at the surface (covers the
+  // splash-down out of a leap too — the prone blend doubles as a dive);
+  // airborne → jump; on the ground → run (sprint) / walk / idle on input.
+  if (surfaceState.swimming)       setAstronautAction(moving ? 'swim' : 'treadWater');
   else if (!surfaceState.grounded) setAstronautAction('jump');
   else if (moving)                 setAstronautAction(surfaceKeys.shift ? 'run' : 'walk');
   else                             setAstronautAction('idle');
@@ -155,7 +167,7 @@ export function stepSurfaceWalk(dt) {
   // into water feels heavier.
   const submerged = surfaceState.body.matter && surfaceState.body.matter.liquid &&
     (surfaceState.groundRadius + surfaceState.eyeHeight) < surfaceState.body.baseRadius;
-  const sprintMult = surfaceKeys.shift ? (surfaceState.swimming ? 1.5 : SURFACE_SPRINT_MULT) : 1;
+  const sprintMult = surfaceKeys.shift ? (surfaceState.swimming ? 1.5 : walkTuning.sprintMult) : 1;
   const dragMult   = surfaceState.swimming ? 0.5 : (submerged ? 0.55 : 1);
   const speed = surfaceState.moveSpeed * sprintMult * dragMult;
   const step  = speed * dt;

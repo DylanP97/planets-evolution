@@ -65,10 +65,10 @@ export const PROP_SPECS = [
   { url: 'assets/pine.glb',           kind: 'tree', count: 95,  targetH: 9.0,  gate: 'forest', sink: 0.0,  jitter: 0.45, colR: 0.05 },
   { url: 'assets/rock.glb',           kind: 'rock', count: 55,  targetH: 1.5,  gate: 'tundra', sink: 0.28, jitter: 0.7,  colR: 0.42 },
   // Dense jungle vegetation — tropical jungle ground (climate band or painted).
-  { url: 'assets/palm.glb',           kind: 'tree', count: 120, targetH: 11.0, gate: 'jungle', sink: 0.0,  jitter: 0.4,  colR: 0.05 },
-  { url: 'assets/jungle-bush.glb',    kind: 'bush', count: 200, targetH: 2.2,  gate: 'jungle', sink: 0.06, jitter: 0.5,  colR: 0.0, noCollide: true },
-  { url: 'assets/fern.glb',           kind: 'bush', count: 220, targetH: 1.6,  gate: 'jungle', sink: 0.05, jitter: 0.5,  colR: 0.0, noCollide: true },
-  { url: 'assets/jungle-flowers.glb', kind: 'bush', count: 140, targetH: 1.8,  gate: 'jungle', sink: 0.06, jitter: 0.5,  colR: 0.0, noCollide: true },
+  { url: 'assets/palm.glb',           kind: 'tree', count: 120, targetH: 5.5,  gate: 'jungle', sink: 0.0,  jitter: 0.4,  colR: 0.05 },
+  { url: 'assets/jungle-bush.glb',    kind: 'bush', count: 200, targetH: 1.1,  gate: 'jungle', sink: 0.06, jitter: 0.5,  colR: 0.0, noCollide: true },
+  { url: 'assets/fern.glb',           kind: 'bush', count: 220, targetH: 0.8,  gate: 'jungle', sink: 0.05, jitter: 0.5,  colR: 0.0, noCollide: true },
+  { url: 'assets/jungle-flowers.glb', kind: 'bush', count: 140, targetH: 0.9,  gate: 'jungle', sink: 0.06, jitter: 0.5,  colR: 0.0, noCollide: true },
 ];
 export const propTemplateCache = {};
 export let propField = null, propBuilding = false, propPendingBody = null;
@@ -336,7 +336,10 @@ export function updateProps(dt) {
       let v = g.baseUV[2 * i + 1] * PR - vOff;
       u -= period * Math.floor((u + PR) / period);
       v -= period * Math.floor((v + PR) / period);
-      const present = propBilinear(maskArr, pf.gridHalf, driftU + u, driftV + v) > 0.4 ? 1 : 0;
+      // Raised from 0.4 — that let a prop spawn wherever even a minority of its
+      // nearby grid samples were on-biome, rooting trees/rocks right at the
+      // shoreline where the sampled cell straddled the waterline.
+      const present = propBilinear(maskArr, pf.gridHalf, driftU + u, driftV + v) > 0.65 ? 1 : 0;
       // Horizon haze: dissolve toward the skyline via dithered alpha (not scale),
       // so props never stand as a hard band and nothing visibly "grows" as you walk.
       const dist = Math.sqrt(u * u + v * v);

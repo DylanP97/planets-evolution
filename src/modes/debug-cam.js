@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { camera, controls, renderer } from '../core/scene.js';
 import { paused, setPaused, viewMode } from '../framework/state.js';
 import { surfaceState } from './surface/core.js';
+import { keybinds, keyLabel } from './surface/keybinds.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const LOOK_SPEED = 0.0028;            // radians per pixel of mouse movement
@@ -39,7 +40,7 @@ const _up    = new THREE.Vector3();
 const _move  = new THREE.Vector3();
 const _look  = new THREE.Vector3();
 
-console.log('[debug-cam] loaded — press F to toggle free-fly camera');
+console.log(`[debug-cam] loaded — press ${keyLabel(keybinds.debugCam)} to toggle free-fly camera`);
 
 export function debugCamActive() { return active; }
 
@@ -175,7 +176,7 @@ document.addEventListener('keydown', (e) => {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
   const k = e.key.toLowerCase();
-  if (k === 'f') { console.log('[debug-cam] F pressed → active:', !active); toggleDebugCam(); e.preventDefault(); return; }
+  if (k === keybinds.debugCam) { console.log('[debug-cam]', keyLabel(k), 'pressed → active:', !active); toggleDebugCam(); e.preventDefault(); return; }
   if (!active) return;
 
   if (e.key === 'Escape') { disableDebugCam(); return; }
@@ -219,7 +220,7 @@ function showHud(on) {
       'color:#cfe0ff', 'font:12px/1.3 monospace', 'letter-spacing:0.04em',
       'pointer-events:none', 'white-space:nowrap',
     ].join(';');
-    hudEl.textContent = 'DEBUG CAM — WASD move · Space/C up·down · Q/E roll · Shift fast · drag to look · F/Esc exit';
+    hudEl.textContent = `DEBUG CAM — WASD move · Space/C up·down · Q/E roll · Shift fast · drag to look · ${keyLabel(keybinds.debugCam)}/Esc exit · ${keyLabel(keybinds.devPanel)} dev panel`;
     document.body.appendChild(hudEl);
   }
   if (hudEl) hudEl.style.display = on ? 'block' : 'none';

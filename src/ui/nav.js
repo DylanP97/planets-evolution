@@ -1,14 +1,14 @@
 // Bottom-nav hierarchy navigation: up/down/sibling across system → planet →
-// moon/city, breadcrumb rendering, setSystemFocus.
-import { setFocusedBody, setFocusedCity, setFocusedProbe } from '../framework/state.js';
+// moon, breadcrumb rendering, setSystemFocus.
+import { setFocusedBody, setFocusedProbe } from '../framework/state.js';
 
 import { systemName } from '../core/names.js';
 import { camera, controls } from '../core/scene.js';
 import { ARCHETYPES } from '../framework/archetypes.js';
 import {
-  cities, focusedBody, focusedCity, focusedProbe, moons, planets, probes
+  focusedBody, focusedProbe, moons, planets, probes
 } from '../framework/state.js';
-import { setCityFocus, setFocus, setProbeFocus } from '../modes/focus.js';
+import { setFocus, setProbeFocus } from '../modes/focus.js';
 import { updateVisitButtonState } from '../modes/surface/core.js';
 import {
   findConstellation, galaxy, viewLevel, viewedConstellationId
@@ -21,7 +21,7 @@ import { closeMap, currentConstellation, openConstellationMap, openGalaxyMap } f
 
 // ====== 31. Hierarchy navigation ======
 // Levels: System (no body focused) → Planet → satellite ring (moons +
-// probes, same level) / City. Arrows: ↑ zoom out, ↓ zoom in to first child,
+// probes, same level). Arrows: ↑ zoom out, ↓ zoom in to first child,
 // ←/→ cycle siblings (moons and probes share one ring under their planet).
 export const navLevelEl = document.getElementById('navFocusLevel');
 export const navSubEl   = document.getElementById('navFocusSub');
@@ -40,11 +40,9 @@ export function setNavNameText(text) {
 
 export function setSystemFocus() {
   setFocusedBody(null);
-  setFocusedCity(null);
   setFocusedProbe(null);
   focusNameEl.textContent = 'System View';
-  const maxOrbit = planets.reduce((acc, p) => Math.max(acc, p.orbit.distance), 40);
-  const dist = Math.max(220, maxOrbit * 3.0 + 60);
+  const dist = 400;
   let dir = camera.position.clone().sub(controls.target);
   if (dir.lengthSq() < 1e-6) dir.set(0, 0.4, 1);
   dir.normalize();
@@ -75,7 +73,6 @@ export function navUp() {
   if (viewLevel === 'galaxy') return;                 // already at the top
   // --- system level (the 3D scene) ---
   if (focusedProbe) { setFocus(focusedProbe.parent); return; }
-  if (focusedCity) { setFocus(focusedBody); return; }
   if (focusedBody?.kind === 'moon') {
     const m = moons.find(mn => mn.body === focusedBody);
     if (m?.parent) { setFocus(m.parent); return; }
@@ -90,35 +87,23 @@ export function navDown() {
   // → into the loaded 3D system.
   if (viewLevel === 'galaxy') { openConstellationMap(); return; }
   if (viewLevel === 'constellation') { closeMap(); return; }
-  if (focusedCity || focusedProbe) return; // leaf nodes — nothing below
+  if (focusedProbe) return; // leaf node — nothing below
   if (!focusedBody) {
     if (planets.length) setFocus(planets[0].body);
     return;
   }
   if (focusedBody.kind === 'planet') {
     const ring = satelliteRing(focusedBody);
-    if (ring.length) { focusSatellite(ring[0]); return; }
-    const myCities = cities.filter(c => c.body === focusedBody);
-    if (myCities.length) setCityFocus(myCities[0]);
+    if (ring.length) focusSatellite(ring[0]);
     return;
   }
-  // moon
-  const myCities = cities.filter(c => c.body === focusedBody);
-  if (myCities.length) setCityFocus(myCities[0]);
+  // moon — leaf node, nothing below
 }
 
 // Cycle the focused entity to its next/previous sibling. Siblings are: other
-// cities on the same body (when a city is focused), other planets at the
-// system level, or the host planet's satellite ring — moons and probes
-// together (when a moon or probe is focused). Wraps both directions.
+// planets at the system level, or the host planet's satellite ring — moons
+// and probes together (when a moon or probe is focused). Wraps both directions.
 export function navSibling(dir) {
-  if (focusedCity) {
-    const sibs = cities.filter(c => c.body === focusedCity.body);
-    if (sibs.length < 2) return;
-    const idx = sibs.indexOf(focusedCity);
-    setCityFocus(sibs[(idx + dir + sibs.length) % sibs.length]);
-    return;
-  }
   if (focusedProbe) {
     const ring = satelliteRing(focusedProbe.parent);
     if (ring.length < 2) return;
@@ -146,7 +131,7 @@ export function navSibling(dir) {
 }
 
 // Refresh the bottom-nav focus card (level, name, sub) and the breadcrumb
-// from the current focus state. Call after any setFocus / setCityFocus /
+// from the current focus state. Call after any setFocus / setProbeFocus /
 // rename. Respects the user's caret if they're mid-edit (via setNavNameText).
 export function renderNavBodies() {
   if (!navLevelEl) return;
@@ -195,10 +180,6 @@ export function renderNavBodies() {
     navLevelEl.textContent = 'Probe';
     setNavNameText(focusedProbe.name.toUpperCase());
     navSubEl.textContent = focusedProbe.parent ? `Orbiting ${focusedProbe.parent.name}` : '';
-  } else if (focusedCity) {
-    navLevelEl.textContent = 'Settlement';
-    setNavNameText(focusedCity.name.toUpperCase());
-    navSubEl.textContent = `On ${focusedCity.body.name}`;
   } else if (focusedBody?.kind === 'planet') {
     const idx = planets.findIndex(p => p.body === focusedBody);
     navLevelEl.textContent = `Planet · N° ${idx + 1}`;
@@ -221,19 +202,17 @@ export function renderNavBodies() {
   // level, and from the system it opens the constellation map.
   navUpBtn.disabled = false;
 
-  if (focusedCity || focusedProbe) navDownBtn.disabled = true;
+  if (focusedProbe) navDownBtn.disabled = true;
   else if (focusedBody?.kind === 'planet') {
-    navDownBtn.disabled = satelliteRing(focusedBody).length === 0
-      && !cities.some(c => c.body === focusedBody);
+    navDownBtn.disabled = satelliteRing(focusedBody).length === 0;
   } else if (focusedBody?.kind === 'moon') {
-    navDownBtn.disabled = !cities.some(c => c.body === focusedBody);
+    navDownBtn.disabled = true;
   } else {
     navDownBtn.disabled = planets.length === 0;
   }
 
   let sibCount = 0;
-  if (focusedCity) sibCount = cities.filter(c => c.body === focusedCity.body).length;
-  else if (focusedProbe) sibCount = satelliteRing(focusedProbe.parent).length;
+  if (focusedProbe) sibCount = satelliteRing(focusedProbe.parent).length;
   else if (focusedBody?.kind === 'planet') sibCount = planets.length;
   else if (focusedBody?.kind === 'moon') {
     const m = moons.find(mn => mn.body === focusedBody);

@@ -46,6 +46,17 @@
       </div>
 
       <div class="side-section">
+        <button id="matToggle" class="section-toggle" aria-expanded="false">
+          <span class="section-title" style="margin:0">Source material</span>
+          <span class="chevron">▸</span>
+        </button>
+        <div id="matPanel" class="mat-panel" hidden>
+          <p class="mat-caption" id="matCaption">—</p>
+          <div id="matMaps" class="mat-maps"></div>
+        </div>
+      </div>
+
+      <div class="side-section">
         <div class="section-title">View</div>
         <label class="toggle"><input type="checkbox" id="optGrid" checked /> Grid &amp; axes</label>
         <label class="toggle"><input type="checkbox" id="optWire" /> Wireframe</label>

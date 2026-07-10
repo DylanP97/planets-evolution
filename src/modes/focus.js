@@ -1,28 +1,27 @@
-// Focus switching (body / city / probe) and the per-frame camera tracking
-// that keeps OrbitControls glued to the focused entity.
-import { setFocusedBody, setFocusedCity, setFocusedProbe } from '../framework/state.js';
+// Focus switching (body / probe) and the per-frame camera tracking that
+// keeps OrbitControls glued to the focused entity.
+import { setFocusedBody, setFocusedProbe } from '../framework/state.js';
 
 import * as THREE from 'three';
 import { emit } from '../core/bus.js';
 import { camera, controls } from '../core/scene.js';
-import { focusedBody, focusedCity, focusedProbe } from '../framework/state.js';
+import { focusedBody, focusedProbe } from '../framework/state.js';
 import { focusNameEl } from '../ui/dom.js';
 
 // ====== 22. Focus ======
-// Camera target each frame is either the focused body's center, or — if a city
-// is selected — that city marker's world position (still parented to its body,
-// so rotation/orbit naturally carries the target along).
+// Camera target each frame is either the focused body's center or the
+// focused probe's world position (still parented to its body, so
+// rotation/orbit naturally carries the target along).
 // Starts null: planets aren't spawned yet at eval time (see bootstrapSolSystem).
 // The init tail calls setSystemFocus() anyway, which leaves focusedBody null.
-// (focusedBody / focusedCity / focusedProbe all live in framework/state.js;
-// this module owns the camera-moving setters that keep them consistent.)
+// (focusedBody / focusedProbe both live in framework/state.js; this module
+// owns the camera-moving setters that keep them consistent.)
 
-// Switch the focused body. Side effects: clears focusedCity, recenters
-// OrbitControls on the new body's world position at a sensible dolly
-// distance, and re-renders the info panel, biome tools, and left panel.
+// Switch the focused body. Side effects: recenters OrbitControls on the new
+// body's world position at a sensible dolly distance, and re-renders the
+// info panel, biome tools, and left panel.
 export function setFocus(body) {
   setFocusedBody(body);
-  setFocusedCity(null);
   setFocusedProbe(null);
   focusNameEl.textContent = body.name;
   const newTarget = new THREE.Vector3();
@@ -37,31 +36,10 @@ export function setFocus(body) {
   emit('focus:changed');
 }
 
-export function setCityFocus(city) {
-  setFocusedBody(city.body);
-  setFocusedCity(city);
-  setFocusedProbe(null);
-  focusNameEl.textContent = `${city.name} · ${city.body.name}`;
-  const newTarget = new THREE.Vector3();
-  city.mesh.getWorldPosition(newTarget);
-  // Closer framing than a whole-body focus — settlement is a point, not a sphere.
-  const effRadius = city.body.baseRadius * city.body.group.scale.x;
-  const desiredDist = Math.max(effRadius * 1.2, effRadius + 2);
-  // Look at the city from "above" the local surface: prefer the surface normal
-  // direction so the city sits centered with the body curving away.
-  const normal = newTarget.clone().sub(city.body.group.getWorldPosition(new THREE.Vector3())).normalize();
-  if (normal.lengthSq() < 1e-6) normal.set(0, 1, 0);
-  camera.position.copy(newTarget).addScaledVector(normal, desiredDist);
-  controls.target.copy(newTarget);
-  emit('ui:render-city-list');
-  emit('focus:changed');
-}
-
 // Focus on a probe. Mirrors setFocus but targets the probe's mesh group and
 // keeps focusedBody on the host planet so the Sats tab stays in context.
 export function setProbeFocus(probe) {
   setFocusedProbe(probe);
-  setFocusedCity(null);
   setFocusedBody(probe.parent);
   focusNameEl.textContent = probe.name;
   const newTarget = new THREE.Vector3();
@@ -84,7 +62,6 @@ export function updateFocusTracking() {
   const newTarget = new THREE.Vector3();
   if (focusedProbe) focusedProbe.mesh.getWorldPosition(newTarget);
   else if (!focusedBody) return;
-  else if (focusedCity) focusedCity.mesh.getWorldPosition(newTarget);
   else focusedBody.group.getWorldPosition(newTarget);
   const delta = newTarget.clone().sub(controls.target);
   if (delta.lengthSq() > 1e-12) {

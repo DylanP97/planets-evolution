@@ -2,7 +2,7 @@
 // generation, and star-system load / unload / bootstrap.
 import { setSystemNameValue } from '../core/names.js';
 import {
-  setClimateReady, setFocusedBody, setFocusedCity, setFocusedProbe, setPlanet
+  setClimateReady, setFocusedBody, setFocusedProbe, setPlanet
 } from '../framework/state.js';
 
 import { ROMAN, generateName, systemName } from '../core/names.js';
@@ -70,6 +70,10 @@ export const galaxy = {
 
 // id of the system currently built into the 3D scene (set by loadStarSystem).
 export let currentSystemId = null;
+// Save/load (system/save.js) restores a system's bodies directly rather than
+// through loadStarSystem, so it needs its own way to set this without
+// reassigning the import (a TypeError).
+export function setCurrentSystemId(v) { currentSystemId = v; }
 export let systemSeq = 0; // monotonic counter for unique procedural-system ids
 // Where we are above the 3D scene. Declared here (not in 34b) because the
 // bottom-nav render reads it during the very first boot, before 34b runs.
@@ -197,8 +201,8 @@ export function loadStarSystemById(id) {
 // each entry is a planet with optional moons[]/probes[]/rings). spawnSolarPlanet
 // is archetype-agnostic, so it serves both the preset and procedural systems.
 // Returns the spawned planet bodies in spec order. Deliberately defined down
-// here: moon/probe seeding needs moons[]/probes[]/cities[] and the climate
-// model declared above. spawnSolarPlanet/addMoon/addSatellite are hoisted.
+// here: moon/probe seeding needs moons[]/probes[] and the climate model
+// declared above. spawnSolarPlanet/addMoon/addSatellite are hoisted.
 export function buildSystemFromSpec(specArray) {
   const spawned = specArray.map(spawnSolarPlanet);
   specArray.forEach((spec, i) => {
@@ -236,17 +240,16 @@ export function bootstrapSolSystem() {
 }
 
 // Tear down every body in the current system. removePlanetBody already
-// cascade-deletes a planet's moons, probes, cities, and orbit line and
-// disposes geometry/materials; with { force } it skips the keep-≥1 guard and
-// the per-planet refocus. Afterwards bodies/planets/moons/probes/cities are
-// all empty. The shared Sun, starfield, and renderer are left intact.
+// cascade-deletes a planet's moons, probes, and orbit line and disposes
+// geometry/materials; with { force } it skips the keep-≥1 guard and the
+// per-planet refocus. Afterwards bodies/planets/moons/probes are all empty.
+// The shared Sun, starfield, and renderer are left intact.
 export function unloadStarSystem() {
   if (viewMode === 'surface') exitSurfaceMode();
   else if (viewMode === 'pick') exitPickMode();
   // Drop focus first so nothing renders against a body we're about to
   // dispose (finalizeSystemLoad's list renders run before setSystemFocus).
   setFocusedBody(null);
-  setFocusedCity(null);
   setFocusedProbe(null);
   // Snapshot first: removePlanetBody mutates planets[] as it runs.
   for (const body of planets.map(p => p.body)) {

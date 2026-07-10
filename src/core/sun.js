@@ -22,10 +22,14 @@ scene.add(sunMesh);
   su.uColorLow.value.setHex(0xff8a2a);  // orange
   su.uColorMid.value.setHex(0xffd27a);  // warm yellow
   su.uColorHot.value.setHex(0xffffff);  // pure white
-  // Bleach toward white as the camera pulls away to system view.
+  // Bleach toward white as the camera pulls away — fully white well before
+  // even Mercury's orbit (distance 120), so every planet only ever sees a
+  // small white dot; the fiery detail only reads back in on a close solar
+  // orbit. Paired with the distance-based disc shrink in
+  // system/lighting.js → updateSunAppearance().
   su.uWhiten.value = 1.0;
-  su.uWhitenNear.value = SUN_RADIUS * 4.0;
-  su.uWhitenFar.value  = SUN_RADIUS * 30.0;
+  su.uWhitenNear.value = SUN_RADIUS * 2.0;
+  su.uWhitenFar.value  = SUN_RADIUS * 3.5;
 }
 
 // Restless red-orange glow dome around the Sun.

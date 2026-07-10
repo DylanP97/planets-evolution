@@ -1,10 +1,38 @@
 // Per-frame lighting refresh: per-body uSunDir uniforms, shadow-map framing,
 // and the moonlight rig that lights night-side surface walks.
 import * as THREE from 'three';
-import { moonLight, scene } from '../core/scene.js';
-import { sunMesh } from '../core/sun.js';
+import { camera, moonLight, scene, SUN_RADIUS } from '../core/scene.js';
+import { coronaMesh, sunMesh } from '../core/sun.js';
 import { bodies, focusedBody, focusedProbe, moons, viewMode } from '../framework/state.js';
 import { surfaceState } from '../modes/surface/core.js';
+
+/** Set each frame by updateMoonLight when a primary satellite lights the focus body. */
+export let moonLightActive = false;
+
+// ====== Sun apparent size ======
+// The Sun's real mesh is oversized for orbit-view drama (radius 18 vs.
+// Mercury's own orbit distance of 120), so seen at true scale from any
+// planet it fills a huge chunk of the sky. Shrink the disc with an
+// inverse-square falloff once the camera is farther than CLOSE_ORBIT_DIST —
+// that keeps it reading as a small, roughly constant white dot from every
+// planet, and only lets it bloom back up to full size (fiery plasma detail +
+// corona) if the camera actually flies in close to the star itself. The
+// corona's restless red halo only reads as a "circle" once shrunk down with
+// the disc, so instead of scaling it we just hide it outside close orbit.
+const SUN_CLOSE_ORBIT_DIST = SUN_RADIUS * 2.0;
+const SUN_MIN_SCALE = 0.09;
+const _sunAppearPos = new THREE.Vector3();
+export function updateSunAppearance() {
+  sunMesh.getWorldPosition(_sunAppearPos);
+  const dist = camera.position.distanceTo(_sunAppearPos);
+  const raw = (SUN_CLOSE_ORBIT_DIST / Math.max(1e-3, dist)) ** 2;
+  const scale = Math.min(1, Math.max(SUN_MIN_SCALE, raw));
+  sunMesh.scale.setScalar(scale);
+  // On atmosphere worlds the sky shader paints its own sun disc, so the real
+  // mesh (and its corona) stay hidden regardless of distance.
+  const atmosphereHidesSun = viewMode === 'surface' && surfaceState.paintsSunDisc;
+  coronaMesh.visible = !atmosphereHidesSun && raw >= 1;
+}
 
 // ====== 21. Sun light for focus ======
 // PointLight sits at the sun's origin, so its lighting direction is
@@ -88,6 +116,7 @@ export function updateEclipseShadows() {
 }
 
 export function updateMoonLight() {
+  moonLightActive = false;
   // Moonlight is only calculated for the current "focus" context: either the
   // planet we're walking on, or the body (planet/moon) the camera is focused on.
   const targetBody = (viewMode === 'surface' ? surfaceState.body : (focusedProbe ? null : focusedBody));
@@ -126,6 +155,8 @@ export function updateMoonLight() {
     return;
   }
 
+  moonLightActive = true;
+
   // Direction from target to satellite.
   primarySat.group.getWorldPosition(_sunWorldTmp);
   targetBody.group.getWorldPosition(_bodyPosTmp);
@@ -133,6 +164,7 @@ export function updateMoonLight() {
   
   if (_toSunTmp.lengthSq() < 1e-8) {
     moonLight.intensity = 0;
+    moonLightActive = false;
     return;
   }
   _toSunTmp.normalize();
@@ -144,7 +176,10 @@ export function updateMoonLight() {
   moonLight.target.position.copy(_bodyPosTmp).sub(scene.position);
   moonLight.position.copy(_bodyPosTmp).add(_toSunTmp).sub(scene.position);
   
-  // Subtle cool blue moonlight.
-  moonLight.intensity = 0.10;
+  // Orbit view only — surface mode scales intensity in surface-lighting.js.
+  if (viewMode !== 'surface') {
+    moonLight.intensity = 0.10;
+    moonLight.color.setHex(0xd0e7ff);
+  }
 }
 

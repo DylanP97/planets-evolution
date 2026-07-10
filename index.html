@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Planets Evolution</title>
+  <title>Planets Exploration</title>
   <!-- Order matters: files preserve the original cascade order. -->
   <link rel="stylesheet" href="styles/base.css"/>
   <link rel="stylesheet" href="styles/left-panel.css"/>
@@ -17,12 +17,17 @@
   <link rel="stylesheet" href="styles/star-map.css"/>
   <link rel="stylesheet" href="styles/loading.css"/>
   <link rel="stylesheet" href="styles/perf-hud.css"/>
+  <link rel="stylesheet" href="styles/start-menu.css"/>
+  <link rel="stylesheet" href="styles/dev-panel.css"/>
+  <link rel="stylesheet" href="styles/tutorial.css"/>
 </head>
 
 <body>
-  <!-- Boot loader: covers the page from first paint until main.js renders the
-       first frame, then is removed instantly (styles/loading.css, main.js). -->
-  <div id="bootLoader">
+  <!-- Loading transition (ui/loading-screen.js): hidden by default (is-done)
+       — the home screen below is what shows instantly on first paint,
+       plain HTML/CSS, no JS required. This curtain only appears BETWEEN
+       picking a menu action and the world being ready, not before. -->
+  <div id="bootLoader" class="is-done">
     <div class="boot-system" aria-hidden="true">
       <div class="boot-star"></div>
       <div class="boot-ring boot-ring--1"><span class="boot-planet"></span></div>
@@ -31,7 +36,7 @@
     </div>
 
     <div class="boot-text">
-      <div class="boot-title">Planets Evolution</div>
+      <div class="boot-title">Planets Exploration</div>
       <div class="boot-subtitle"><span id="bootStatus">Igniting stellar core</span></div>
       <div class="boot-meter">
         <div class="boot-bar"><div class="boot-bar__fill" id="bootBarFill"></div></div>
@@ -39,13 +44,97 @@
       </div>
     </div>
   </div>
+  <!-- Home screen: the actual landing page, visible the instant the page
+       paints (no popup-over-the-game feel — nothing behind it is loaded
+       yet). New/Continue/Load/Controls/Multiplayer/Character. Picking New/
+       Continue/Load/Host/Join hides this and hands off to the loading
+       transition above (wired in ui/wire-up.js). -->
+  <div id="startMenu" aria-hidden="true">
+    <div class="home-backdrop" aria-hidden="true">
+      <div class="boot-system home-system">
+        <div class="boot-star"></div>
+        <div class="boot-ring boot-ring--1"><span class="boot-planet"></span></div>
+        <div class="boot-ring boot-ring--2"><span class="boot-planet"><span class="boot-planet__ring"></span></span></div>
+        <div class="boot-ring boot-ring--3"><span class="boot-planet"></span></div>
+      </div>
+    </div>
+    <div id="startMenuBox">
+      <div class="home-title">PLANETS EXPLORATION</div>
+      <div class="home-subtitle">Build worlds. Walk them. Share them.</div>
+      <nav class="home-nav">
+        <button id="startFreeWorldBtn" type="button">🪐 FREE WORLD</button>
+        <button id="startTutorialBtn" type="button">🎓 EXPLORE TUTORIAL</button>
+        <button id="startContinueBtn" type="button" disabled>▶ CONTINUE</button>
+        <button id="startLoadBtn" type="button" disabled>📂 LOAD GAME</button>
+        <button id="startControlsBtn" type="button">⌨ CONTROLS</button>
+        <button id="startCharacterBtn" type="button">👤 CHARACTER</button>
+        <button id="startMultiplayerBtn" type="button" disabled>🌐 MULTIPLAYER</button>
+      </nav>
+    </div>
+    <div id="startLoadPanel">
+      <div id="startLoadBox">
+        <div class="surface-menu-title">LOAD GAME</div>
+        <div id="startLoadSlotList"><!-- rows injected by start-menu.js --></div>
+        <button id="startLoadBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
+    <div id="startCharacterPanel">
+      <div id="startCharacterBox">
+        <div class="surface-menu-title">CHARACTER</div>
+        <canvas id="startCharacterPreview" width="260" height="260"></canvas>
+        <div id="startCharacterList"><!-- rows injected by start-menu.js --></div>
+        <button id="startCharacterBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
+    <!-- Controls: rebindable keybinds, fullscreen page (not a popup), same
+         data/logic as the in-game Controls page (modes/surface/keybinds.js)
+         — this is just a second renderer over the same source of truth. -->
+    <div id="startControlsPanel">
+      <div id="startControlsBox">
+        <div class="surface-menu-title">CONTROLS</div>
+        <div id="startControlsList"><!-- rows injected by start-menu.js --></div>
+        <div id="startControlsFooter">
+          <button id="startControlsResetBtn" type="button">RESET DEFAULTS</button>
+          <button id="startControlsBackBtn" type="button">◀ BACK</button>
+        </div>
+      </div>
+    </div>
+    <!-- Multiplayer v1: room-code Host/Join, avatar presence only (no
+         terrain sync). Host loads Sol + opens a room; Join connects and
+         waits for the host's snapshot (src/net/, ui/wire-up.js). -->
+    <div id="startMultiplayerPanel">
+      <div id="startMultiplayerBox">
+        <div class="surface-menu-title">MULTIPLAYER</div>
+        <button id="startHostBtn" type="button">HOST NEW GAME</button>
+        <div id="startHostStatus"></div>
+        <div id="startRoomListLabel">AVAILABLE GAMES</div>
+        <div id="startRoomList"></div>
+        <details id="startJoinByCode">
+          <summary>Join by code instead</summary>
+          <div id="startJoinRow">
+            <input id="startJoinCodeInput" type="text" maxlength="5" placeholder="ROOM CODE" autocapitalize="characters"/>
+            <button id="startJoinBtn" type="button">JOIN</button>
+          </div>
+        </details>
+        <div id="startJoinStatus"></div>
+        <button id="startMultiplayerBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
+  </div>
+  <!-- Persistent room-code badge, shown once hosting/joined (src/ui/start-menu.js). -->
+  <div id="roomCodeBadge" aria-hidden="true"></div>
+  <!-- Host-side join Accept/Decline prompt, works in both orbit + surface
+       (releases pointer lock first) — src/ui/join-requests.js. -->
+  <div id="joinRequestOverlay" aria-hidden="true">
+    <div id="joinRequestList"></div>
+  </div>
   <div id="ui">
     <div class="scan-line"></div>
     <div class="ui-tabs">
       <button class="tab-btn is-hidden" data-tab="classify" data-focus="planet" title="Planet Type & Seed">Classify</button>
       <button class="tab-btn is-hidden" data-tab="sculpt" data-focus="planet moon" title="Terrain Shaping">Sculpt</button>
       <button class="tab-btn is-hidden" data-tab="environment" data-focus="planet moon" title="Biomes & Painting">Envir</button>
-      <button class="tab-btn is-hidden" data-tab="colonies" data-focus="planet moon" title="Settlements">Colony</button>
+      <button class="tab-btn is-hidden" data-tab="locations" data-focus="planet moon" title="Waypoints">Locations</button>
       <button class="tab-btn is-hidden" data-tab="satellites" data-focus="planet probe" title="Satellites & Probes">Sats</button>
       <button class="tab-btn active" data-tab="system" data-focus="system planet moon probe" title="Orbit & Moons">System</button>
     </div>
@@ -146,11 +235,12 @@
       </div>
     </div>
 
-    <div id="tab-colonies" class="tab-content">
-      <div class="section-header">5. Settlements</div>
-      <label>Registry <input id="cityNameInput" type="text" value="Alpha Base" class="text-input"></label>
-      <p class="hint">Right-click surface to deploy</p>
-      <div id="cityList" class="scroll-list"></div>
+    <div id="tab-locations" class="tab-content">
+      <div class="section-header">5. Locations</div>
+      <label>Name <input id="locationNameInput" type="text" value="New Location" class="text-input"></label>
+      <label><input id="locationMarkersToggle" type="checkbox"> Show markers in orbit</label>
+      <p class="hint">Right-click surface to place (poles are added automatically)</p>
+      <div id="locationList" class="scroll-list"></div>
     </div>
 
     <div id="tab-satellites" class="tab-content">
@@ -200,8 +290,8 @@
 
       <div id="dynamicsSection">
         <div class="section-header" style="margin-top:10px">Dynamics</div>
-        <label>Show Orbits (O) <input id="showOrbits" type="checkbox" checked></label>
-        <label id="showSatelliteOrbitsRow">Show Satellites Orbits (O) <input id="showSatelliteOrbits" type="checkbox" checked></label>
+        <label>Show Orbits (O) <input id="showOrbits" type="checkbox"></label>
+        <label id="showSatelliteOrbitsRow">Show Satellites Orbits (O) <input id="showSatelliteOrbits" type="checkbox"></label>
         <label>Pause <input id="pauseRot" type="checkbox"></label>
       </div>
     </div>
@@ -236,6 +326,7 @@
 
     <div class="info-section">
       <div class="info-section-title">Surface</div>
+      <div class="info-row"><span class="info-label">Diameter</span><span class="info-val" id="infoDiameter">—</span></div>
       <div class="info-row"><span class="info-label">Gravity</span><span class="info-val" id="infoGravity">—</span></div>
       <div class="info-row"><span class="info-label">Peak</span><span class="info-val" id="infoPeak">—</span></div>
       <div class="info-row"><span class="info-label">Vertices</span><span class="info-val" id="infoVerts">—</span></div>
@@ -253,7 +344,6 @@
       <div class="info-row"><span class="info-label">Distance</span><span class="info-val" id="infoOrbitDist">—</span></div>
       <div class="info-row"><span class="info-label">Ang. Velocity</span><span class="info-val" id="infoOrbitOmega">—</span></div>
       <div class="info-row"><span class="info-label">Period</span><span class="info-val" id="infoOrbitPeriod">—</span></div>
-      <div class="info-row"><span class="info-label">Diameter</span><span class="info-val" id="infoMoonSize">—</span></div>
     </div>
   </aside>
 
@@ -283,6 +373,33 @@
       </button>
     </div>
   </nav>
+
+  <!-- Orbit-view menu: Esc in orbit mode toggles this (modes/surface/input.js
+       emits 'menu:toggle-orbit-menu', handled in ui/orbit-menu.js). Same
+       overlay/.show pattern as the surface pause menu. -->
+  <div id="orbitMenu" aria-hidden="true">
+    <div id="orbitMenuBox">
+      <div class="surface-menu-title">MENU</div>
+      <button id="orbitMenuResumeBtn" type="button">▶ RESUME</button>
+      <button id="orbitMenuControlsBtn" type="button">⌨ CONTROLS</button>
+      <button id="orbitMenuSaveBtn" type="button">💾 SAVE GAME</button>
+      <button id="orbitMenuHomeBtn" type="button">🏠 MAIN MENU</button>
+    </div>
+  </div>
+  <!-- Orbit-view Controls page — reached from the orbit Esc menu
+       (orbitMenuControlsBtn); same rows/rebind logic as the surface pause
+       menu's Controls page (modes/surface/keybinds.js), rendered by
+       ui/orbit-menu.js. Same overlay pattern as #orbitMenu. -->
+  <div id="orbitControlsMenu" aria-hidden="true">
+    <div id="orbitControlsBox">
+      <div class="surface-menu-title">CONTROLS</div>
+      <div id="orbitControlsList"><!-- rows injected by orbit-menu.js --></div>
+      <div id="orbitControlsFooter">
+        <button id="orbitControlsResetBtn" type="button">RESET DEFAULTS</button>
+        <button id="orbitControlsBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Developer performance HUD: full-width status strip at the bottom edge.
        Stats hug the left/right edges so the centred #bottomNav stays clear.
@@ -318,9 +435,11 @@
       <button id="surfaceExitBtn" type="button" title="Return to orbital view">▲ RETURN TO ORBIT</button>
     </div>
     <div id="surfaceCrosshair"></div>
+    <div id="skyIdentifyToast" aria-hidden="true"></div>
     <div id="surfaceMinimapPanel">
       <div id="surfaceMinimapWrap">
         <canvas id="surfaceMinimap" width="120" height="120"></canvas>
+        <canvas id="surfaceMinimapOverlay" width="120" height="120"></canvas>
         <div id="surfaceMinimapCompass">
           <span class="mm-card" id="mmCardN">N</span>
           <span class="mm-card" id="mmCardE">E</span>
@@ -332,8 +451,62 @@
         <span class="surface-minimap-eyebrow">Biome</span>
         <span id="surfaceMinimapBiome">—</span>
       </div>
+      <div class="surface-minimap-label">
+        <span class="surface-minimap-eyebrow">Coords</span>
+        <span id="surfaceMinimapCoords">—</span>
+      </div>
+      <div class="surface-minimap-label">
+        <span class="surface-minimap-eyebrow">Time</span>
+        <span id="surfaceMinimapTime">—</span>
+      </div>
+      <div class="surface-minimap-label">
+        <span class="surface-minimap-eyebrow">Temp</span>
+        <span id="surfaceMinimapTemp">—</span>
+      </div>
+      <div class="surface-minimap-label">
+        <span class="surface-minimap-eyebrow">Air</span>
+        <span id="surfaceMinimapAir">—</span>
+      </div>
     </div>
-    <div id="surfaceHint">WASD: Walk / Swim · Shift: Run · Space: Jump / Rise · C: Dive · V: Camera · O: Orbits · Drag: Look</div>
+    <div id="surfaceHint">WASD: Walk / Swim · Shift: Run · Space: Jump / Rise · C: Dive · V: Camera · O: Orbits · M: Map Size · [ ]: Map Zoom · Drag: Look · Esc: Pause</div>
+    <div id="surfacePauseMenu" aria-hidden="true">
+      <div id="surfacePauseBox">
+        <div class="surface-menu-title">PAUSED</div>
+        <div id="surfacePauseRoomCode"></div>
+        <button id="surfaceResumeBtn" type="button">▶ RESUME</button>
+        <button id="surfaceMapBtn" type="button">🗺 MAP</button>
+        <button id="surfaceCharacterBtn" type="button">👤 CHARACTER</button>
+        <button id="surfaceControlsBtn" type="button">⚙ CONTROLS</button>
+        <button id="surfaceSaveBtn" type="button">💾 SAVE</button>
+        <button id="surfacePauseExitBtn" type="button">▲ RETURN TO ORBIT</button>
+      </div>
+    </div>
+    <div id="surfaceControlsMenu" aria-hidden="true">
+      <div id="surfaceControlsBox">
+        <div class="surface-menu-title">CONTROLS</div>
+        <div id="surfaceControlsList"><!-- rows injected by controls-page.js --></div>
+        <div id="surfaceControlsFooter">
+          <button id="surfaceControlsResetBtn" type="button">RESET DEFAULTS</button>
+          <button id="surfaceControlsBackBtn" type="button">◀ BACK</button>
+        </div>
+      </div>
+    </div>
+    <div id="surfaceCharacterMenu" aria-hidden="true">
+      <div id="surfaceCharacterBox">
+        <div class="surface-menu-title">CHARACTER</div>
+        <canvas id="surfaceCharacterPreview" width="260" height="260"></canvas>
+        <div id="surfaceCharacterList"><!-- rows injected by character-page.js --></div>
+        <button id="surfaceCharacterBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
+    <div id="surfacePlanetMapMenu" aria-hidden="true">
+      <div id="surfacePlanetMapBox">
+        <div class="surface-menu-title">PLANET MAP</div>
+        <div id="surfacePlanetMapTitle">—</div>
+        <canvas id="surfacePlanetMap" width="960" height="480"></canvas>
+        <button id="surfacePlanetMapBackBtn" type="button">◀ BACK</button>
+      </div>
+    </div>
   </div>
 
   <div id="mapOverlay" aria-hidden="true">
@@ -353,6 +526,7 @@
   <div id="systemTransition" aria-hidden="true"><div id="systemTransitionText">Entering…</div></div>
 
   <div id="hoverBiomeTip" aria-hidden="true"></div>
+  <div id="locationMarkerLabels"></div>
 
   <div id="pickHint" aria-hidden="true">Click on solid land to land there · Esc to cancel</div>
   <div id="pickToast" aria-live="polite"></div>
@@ -360,6 +534,19 @@
   <div id="underwaterOverlay" aria-hidden="true"></div>
   <div id="lightningFlash" aria-hidden="true"></div>
   <div id="scanOverlay"></div>
+
+  <div id="tutorialChecklist" aria-hidden="true">
+    <div id="tutorialChecklistHeader">
+      <span>Tutorial</span>
+      <button id="tutorialChecklistCloseBtn" type="button" title="Dismiss tutorial" aria-label="Dismiss tutorial">✕</button>
+    </div>
+    <ul id="tutorialChecklistList"></ul>
+  </div>
+  <div id="tutorialNarrationBox" aria-hidden="true">
+    <div id="tutorialNarrationText"></div>
+    <div class="tutorial-narration-hint">Click or press Space to continue</div>
+  </div>
+
   <canvas id="c"></canvas>
 
   <script type="importmap">

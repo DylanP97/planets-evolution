@@ -1,7 +1,8 @@
-/* Boot loader — full-screen sci-fi loading screen shown on refresh until the
-   first frame of the scene renders (main.js dismisses #bootLoader). Lives in
-   <head> so it paints before the ES-module / CDN-Three.js load completes.
-   Fully opaque: nothing of the scene shows through while it is up. */
+/* Loading transition — the "Planets Exploration" curtain shown between the
+   home screen (#startMenu, styles/start-menu.css) and the live game
+   (ui/loading-screen.js shows/hides it; hidden by default via `is-done`,
+   set in index.html). Fully opaque: nothing of the scene shows through
+   while it is up. */
 
 #bootLoader {
   position: fixed;

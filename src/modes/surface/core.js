@@ -4,7 +4,7 @@ import { setViewMode } from '../../framework/state.js';
 
 import * as THREE from 'three';
 import { controls } from '../../core/scene.js';
-import { focusedBody, focusedCity, focusedProbe, viewMode } from '../../framework/state.js';
+import { focusedBody, focusedProbe, viewMode } from '../../framework/state.js';
 import { brushRing } from '../../interaction/brush.js';
 
 // ====== 32. Surface walk ======
@@ -41,6 +41,7 @@ export const surfaceState = {
   // Camera rig: 'third' trails the astronaut, 'first' sits at the eye.
   cameraMode: 'third',
   camDist: 0,                          // third-person trail distance (body-local units)
+  thirdZoom: 1,                        // third-person distance multiplier (wheel zoom, independent of first-person fov)
   charWorldH: 0,                       // avatar's actual rendered world height (camera framing unit)
   // Jump physics, all in body-local radial units along localUp.
   jumpOffset: 0,                       // current height above the ground sphere
@@ -59,6 +60,7 @@ export const surfaceState = {
   // level while afloat); swimBlend eases the avatar between upright and the
   // prone paddling pose; swimPhase clocks the bob/roll.
   swimming: false,
+  headUnderwater: false,               // true once submerged well below the waterline (drains apnea)
   standRadius: 0,
   swimRadius: 0,                       // free-swim target radius (C dives / Space rises while afloat)
   swimBlend: 0,
@@ -83,8 +85,31 @@ export const surfaceState = {
   // an opaque occluder so other bodies don't bleed through the sky.
   gasMeshAdjusted: null,               // the gasMesh whose material we touched
   savedGas: null,                      // snapshot of material state to restore on exit
+  gasOpaqueEligible: false,            // true if dense enough to ever use the opaque queue (sky.js)
+  gasOpaqueLive: false,                // current live opaque/transparent state (toggled per-frame by sky.js)
   savedSunVisible: null,               // sunMesh + corona visibility before surface visit
   paintsSunDisc: false,                // true if the body's atmosphere shader draws its own sun disc
+  // True while the pause menu is up (pointer lock lost — Esc, alt-tab, focus
+  // loss — instead of dropping back to orbit). Gates movement/physics in
+  // main.js; see pause-menu.js for the menu itself.
+  menuOpen: false,
+  // Which panel the pause overlay is showing while menuOpen: 'pause',
+  // 'controls' (controls-page.js), or 'map' (planet-map.js). null when not paused.
+  pauseView: null,
+  // True while the dev editor side panel (ui/dev-panel.js, F2) is up. Set by
+  // dev-panel.js (ui/ layer, which may freely write shared modes state) and
+  // read here in input.js so it can suspend pointer-lock re-acquisition and
+  // camera drag the same way menuOpen already does — dev-panel.js also drops
+  // pointer lock itself on open so the OS cursor is free to click sliders.
+  devPanelOpen: false,
+  // Camera-drag state (left/right mouse drag orbits the third-person camera).
+  // Lives here rather than as a local in input.js so pause-menu.js can force
+  // it off + release the pointer capture without an input.js↔pause-menu.js
+  // import cycle — setPointerCapture routes events to the capturing element
+  // regardless of on-screen z-order, so a drag held through Esc would keep
+  // "clicking" the canvas instead of the pause menu's buttons.
+  dragging: false,
+  dragPointerId: null,
 };
 
 export function isBodyVisitable(body) {
@@ -95,7 +120,7 @@ export function isBodyVisitable(body) {
 
 export function updateVisitButtonState() {
   if (!navVisitBtn) return;
-  const canVisit = !focusedCity && !focusedProbe && isBodyVisitable(focusedBody);
+  const canVisit = !focusedProbe && isBodyVisitable(focusedBody);
   navVisitBtn.disabled = !canVisit;
   navVisitBtn.classList.toggle('active', viewMode === 'pick' || viewMode === 'surface');
   if (viewMode === 'surface') {

@@ -4,6 +4,7 @@ import { scene } from '../core/scene.js';
 import { BASE_RADIUS, ICO_DETAIL } from '../core/constants.js';
 import { ARCHETYPES } from '../framework/archetypes.js';
 import { createBody, regenerateBody, applyRingsToBody } from '../framework/body.js';
+import { addPolarLocations } from '../entities/locations.js';
 import {
   bodies, planets, currentArchetype, setCurrentArchetype
 } from '../framework/state.js';
@@ -98,6 +99,7 @@ export function spawnSolarPlanet(spec) {
     hasOcean: arch.hasOcean,
   });
   bodies.push(body);
+  addPolarLocations(body);
   scene.add(body.group);
   body.group.scale.setScalar(spec.size);
   // regenerateBody reads currentArchetype off the module scope; flip it

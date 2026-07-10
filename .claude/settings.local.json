@@ -125,7 +125,29 @@
       "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__deploy_to_vercel",
       "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_teams",
       "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_projects",
-      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_deployments"
+      "mcp__8ebfa50a-21a4-4a90-a57f-4fa0cc9c7f8e__list_deployments",
+      "mcp__claude_ai_vercel__deploy_to_vercel",
+      "mcp__claude_ai_vercel__list_teams",
+      "mcp__claude_ai_vercel__list_projects",
+      "mcp__claude_ai_vercel__list_deployments",
+      "Bash(node --check assets/dev/dev-scene.js)",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(git reset *)",
+      "Bash(node assets/dev/build-ice-cube.mjs)",
+      "WebFetch(domain:ambientcg.com)",
+      "PowerShell(Expand-Archive *)",
+      "Bash(mkdir -p assets/dev/ice-src)",
+      "Bash(cp .cache/ice/Ice001/Ice001_1K-JPG_NormalGL.jpg assets/dev/ice-src/ice_normal.jpg)",
+      "Bash(cp .cache/ice/Ice001/Ice001_1K-JPG_Roughness.jpg assets/dev/ice-src/ice_roughness.jpg)",
+      "Bash(python -m http.server 8777)",
+      "Bash(kill %1)",
+      "PowerShell(cd \"C:\\\\Users\\\\dylan\\\\Code\\\\planet tiles\"; $env:NODE_PATH = npm root -g; node .claude/verify-icecube.cjs)",
+      "Bash(node -e ' *)",
+      "Bash(node .claude/check-imports.cjs)",
+      "Bash(node .claude/scc-graph.cjs)",
+      "Bash(node .claude/lint-report.cjs)",
+      "Skill(run)",
+      "Bash(npx serve *)"
     ]
   }
 }

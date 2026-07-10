@@ -11,8 +11,11 @@ import { camera, scene, surfaceSkyLight } from '../../core/scene.js';
 import { coronaMesh, sunMesh } from '../../core/sun.js';
 import { smoothstep } from '../../core/utils.js';
 import { bodies, probes, viewMode } from '../../framework/state.js';
+import { SKY_DAY_ELEV } from '../../shaders/gas.js';
 import { _sunWorldTmp, _toSunTmp } from '../../system/lighting.js';
 import { surfaceState } from './core.js';
+import { updateSurfaceNightLighting } from './surface-lighting.js';
+import { updateAvatarNightLook } from './avatar.js';
 import { cameraSubmerged } from './underwater-pass.js';
 
 const _surfBodyCenter = new THREE.Vector3();
@@ -43,6 +46,40 @@ export function setUnderwaterOverlay(opacity, body) {
     underwaterOverlayEl.style.opacity = op.toFixed(3);
   }
 }
+// Dense atmospheres (uDensity > 0.40) get promoted to the OPAQUE render queue
+// during the day (mode.js snapshots this eligibility on entry) so depthWrite
+// properly occludes distant gas planets bleeding through the daytime sky.
+// That promotion relies on alphaToCoverage to still fake translucency via
+// per-sample MSAA coverage — but MSAA only offers a handful of discrete
+// coverage levels (4x ≈ 5 steps), so as the shader's alpha value eases toward
+// zero for the night fade, it visibly SNAPS between those few levels instead
+// of blending continuously — no amount of reshaping the underlying alpha
+// curve fixes that, because the quantization happens after the curve, in the
+// rasterizer. During the day that's invisible (coverage stays near 100%,
+// nowhere near a visible step), but exactly where the whole point is a smooth
+// fade — approaching night — it reads as a "pop" no matter how gradual the
+// math says it is. Fix: only stay in the opaque/alphaToCoverage queue while
+// comfortably in daylight; drop to normal alpha blending (real analog fade,
+// same underlying alpha value now blended continuously) for the whole
+// dusk/night/dawn stretch, where distant-body occlusion doesn't matter
+// anyway — a fading atmosphere sky is SUPPOSED to let background bodies
+// through. A small hysteresis band around SKY_DAY_ELEV keeps the two states
+// from flickering back and forth right at the boundary.
+function updateGasOpaqueMode(sunElev) {
+  const mesh = surfaceState.gasMeshAdjusted;
+  if (!mesh || !surfaceState.gasOpaqueEligible) return;
+  const threshold = surfaceState.gasOpaqueLive ? SKY_DAY_ELEV - 0.02 : SKY_DAY_ELEV + 0.02;
+  const wantOpaque = sunElev >= threshold;
+  if (wantOpaque === surfaceState.gasOpaqueLive) return;
+  surfaceState.gasOpaqueLive = wantOpaque;
+  const mat = mesh.material;
+  mat.transparent     = !wantOpaque;
+  mat.depthWrite      = wantOpaque;
+  mat.alphaToCoverage = wantOpaque;
+  mat.uniforms.uOpaqueSky.value = wantOpaque ? 1.0 : 0.0;
+  mat.needsUpdate = true;
+}
+
 // Aerial perspective: a linear haze that only switches on while standing on an
 // ATMOSPHERE world (vacuum has none), tinting the terrain toward a horizon haze
 // with distance. Sells the planet's scale and softly hides the rim of the
@@ -52,6 +89,7 @@ export function setUnderwaterOverlay(opacity, body) {
 // starfield + galactic band (the gas sky shell + sun are fog-less ShaderMaterials
 // already, so the sky itself stays clear — only ground-level geometry hazes).
 export const AERIAL_FOG_COLOR = new THREE.Color(0xb8c6d4);
+export const NIGHT_FOG_COLOR = new THREE.Color(0x060a14);
 export const aerialFog = new THREE.Fog(0xb8c6d4, 1, 100);
 starMat.fog = false;
 if (typeof milkyMat !== 'undefined' && milkyMat) milkyMat.fog = false;
@@ -71,18 +109,23 @@ export function updateSurfaceSkyEffects() {
   // Airless worlds: show the real Sun (occluded by the body when it sets).
   sunMesh.visible    = !surfaceState.paintsSunDisc;
   coronaMesh.visible = !surfaceState.paintsSunDisc;
-  // Airless worlds have no atmosphere to scatter daylight, so the sky stays
-  // black and the stars never wash out — the Sun just hangs among them.
-  if (!surfaceState.paintsSunDisc) {
-    starMat.opacity = SURFACE_STAR_OPACITY;
-    return;
-  }
+  // Computed unconditionally (even on airless worlds) so surfaceState.sunElev
+  // is always live for consumers like the local-time HUD (minimap.js), not
+  // just atmosphere worlds.
   surfaceState.body.group.getWorldPosition(_surfBodyCenter);
   _surfCamDir.copy(camera.position).sub(_surfBodyCenter).normalize();
   sunMesh.getWorldPosition(_sunWorldTmp);
   _toSunTmp.subVectors(_sunWorldTmp, _surfBodyCenter).normalize();
   const sunElev = _surfCamDir.dot(_toSunTmp);
   surfaceState.sunElev = sunElev;     // cached for diagnostics (day/night side)
+  updateGasOpaqueMode(sunElev);
+  const { day, night } = updateSurfaceNightLighting(sunElev);
+  // Airless worlds have no atmosphere to scatter daylight, so the sky stays
+  // black and the stars never wash out — the Sun just hangs among them.
+  if (!surfaceState.paintsSunDisc) {
+    starMat.opacity = SURFACE_STAR_OPACITY;
+    return;
+  }
   // Atmospheric skylight follows the sun: full diffuse daylight when the sun
   // is up, fading through twilight to nothing at night. Position is only a
   // direction (local up); subtract scene.position for the floating origin.
@@ -101,10 +144,10 @@ export function updateSurfaceSkyEffects() {
   // target and wash the underwater pass's blue murk toward white at the horizon.
   if (!cameraSubmerged()) {
     const eh = surfaceState.eyeHeight;
-    const dayFactor = 1 - Math.min(1, starMat.opacity / SURFACE_STAR_OPACITY);
-    aerialFog.near = eh * 8;
-    aerialFog.far  = eh * 44;
-    aerialFog.color.copy(AERIAL_FOG_COLOR).multiplyScalar(0.15 + 0.85 * dayFactor);
+    aerialFog.near = eh * (night > 0.5 ? 4 : 8);
+    aerialFog.far  = eh * (night > 0.5 ? 22 : 44);
+    aerialFog.color.copy(NIGHT_FOG_COLOR).lerp(AERIAL_FOG_COLOR, day)
+      .multiplyScalar(0.08 + 0.92 * day);
     scene.fog = aerialFog;
   }
 }
@@ -142,6 +185,25 @@ export function updateSkyBodies() {
     const mat = b.mesh.material;
     // Drop fog on this far body's surface mesh (recompiles once; guarded).
     if (mat.fog) { mat.fog = false; mat.needsUpdate = true; }
+    // Push this solid surface a hair further in the depth buffer than its own
+    // gas shell. At true orbital distance the two spheres (radius vs
+    // radius*uShellScale) differ by a fraction of a percent of camDist, so
+    // their post-projection depth values collapse into the same few
+    // representable buckets (surface mode's very small near clip — see
+    // mode.js's camera.near — leaves next to no depth precision out here).
+    // Each frame's rounding then lands on a different side of the tie,
+    // failing/passing the gas shell's depth test pixel-by-pixel — read as the
+    // cloud layer shimmering/trembling. A small constant polygonOffset on the
+    // WRITTEN depth (state-only, no shader recompile) guarantees the solid
+    // sphere always reads unambiguously farther than its shell. Confirmed
+    // fixing this on Venus; do NOT extend the same trick to ocean vs. land
+    // (Earth) — a wider or narrower offset there either did nothing or wiped
+    // out the ocean entirely, so that needs a different approach.
+    if (!mat.polygonOffset) {
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = 4;
+      mat.polygonOffsetUnits = 4;
+    }
     const sh = mat.userData.detailShader;
     if (sh) sh.uniforms.uSkyBodyFill.value = 0.12;
   }
@@ -191,6 +253,7 @@ export function clearSkyBodies() {
     const mat = b.mesh && b.mesh.material;
     if (!mat) continue;
     if (!mat.fog) { mat.fog = true; mat.needsUpdate = true; }
+    if (mat.polygonOffset) mat.polygonOffset = false;
     const sh = mat.userData.detailShader;
     if (sh) {
       sh.uniforms.uSurfaceDetail.value = 0;

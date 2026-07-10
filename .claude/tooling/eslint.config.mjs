@@ -17,6 +17,7 @@ export default [
         Image: 'readonly', URL: 'readonly', Blob: 'readonly', FileReader: 'readonly',
         getComputedStyle: 'readonly', alert: 'readonly', confirm: 'readonly', prompt: 'readonly',
         addEventListener: 'readonly', removeEventListener: 'readonly',
+        atob: 'readonly', btoa: 'readonly', WebSocket: 'readonly',
       },
     },
     rules: {

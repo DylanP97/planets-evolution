@@ -9,6 +9,7 @@ import { scene } from '../core/scene.js';
 import {
   MAX_MOONS, removeMoonAt, setMoonDistance, setMoonSize
 } from '../entities/moons.js';
+import { addPolarLocations } from '../entities/locations.js';
 import {
   MAX_PROBES, removeSatelliteAt, setSatelliteDistance, setSatelliteSize
 } from '../entities/probes.js';
@@ -55,6 +56,7 @@ export function deployNewPlanet() {
     hasOcean: archSpec.hasOcean,
   });
   bodies.push(body);
+  addPolarLocations(body);
   scene.add(body.group);
 
   const prev = currentArchetype;

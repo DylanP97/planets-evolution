@@ -1,0 +1,548 @@
+/* Home screen — the actual landing page (not a popup): full-bleed backdrop,
+   a decorative orbit system reused from the loading curtain (styles/
+   loading.css's .boot-system) for visual continuity, big title, and a plain
+   vertical nav of actions. Visible instantly on first paint (plain HTML/CSS,
+   no JS needed); sub-panels (Load/Character/Multiplayer) layer on top using
+   the same overlay + .show pattern as the surface pause menu — Controls is
+   the exception, a full page takeover rather than a dimmed popup. */
+#startMenu {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background-color: #02030a;
+  background-image: radial-gradient(ellipse 70% 55% at 50% 40%, #08243a 0%, #04101d 48%, #02030a 100%);
+  overflow: hidden;
+}
+#startMenu.show { display: flex; }
+
+.home-backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0.6;
+}
+.home-system.boot-system {
+  transform: scale(1.6);
+}
+
+#startMenuBox {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 52px;
+}
+
+.home-title {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 36px;
+  letter-spacing: 14px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  text-shadow: 0 0 18px rgba(0, 242, 255, 0.6);
+}
+.home-subtitle {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(0, 242, 255, 0.65);
+  margin-bottom: 18px;
+}
+
+.home-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 260px;
+}
+
+#startMenuBox button,
+#startLoadBox button,
+#startCharacterBox button,
+#startControlsBox button,
+#startMultiplayerBox button {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 12px 16px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#startMenuBox button:hover:not(:disabled),
+#startLoadBox button:hover:not(:disabled),
+#startCharacterBox button:hover:not(:disabled),
+#startControlsBox button:hover:not(:disabled),
+#startMultiplayerBox button:hover:not(:disabled) {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+#startMenuBox button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+#startLoadPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.8);
+}
+#startLoadPanel.show { display: flex; }
+
+#startLoadBox {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.94);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 420px;
+  max-width: 90vw;
+}
+
+#startLoadSlotList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.save-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(0, 242, 255, 0.06);
+  border: 1px solid rgba(0, 242, 255, 0.2);
+  border-radius: 3px;
+  color: #cdefff;
+  font-size: 12px;
+}
+.save-slot-name { flex: 1; font-weight: 600; }
+.save-slot-date { opacity: 0.6; font-size: 10px; }
+.save-slot-row button {
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.save-slot-load {
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.15);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.save-slot-delete {
+  color: #ff6b6b;
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+/* Character panel — same sub-panel pattern as #startLoadPanel; rows come
+   from avatar.js's CHARACTERS registry (start-menu.js renders them). */
+#startCharacterPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.8);
+}
+#startCharacterPanel.show { display: flex; }
+
+#startCharacterBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.94);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 280px;
+}
+
+#startCharacterList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#startCharacterBox .char-row.active {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+#startCharacterBox .char-row.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Controls — rebindable keybinds, same .ctrl-row/.ctrl-name/.ctrl-key classes
+   the in-game Controls page uses (styles/surface.css); this is a second
+   renderer over the same modes/surface/keybinds.js source of truth. Unlike
+   the other start-menu sub-panels, this is a full page takeover (own
+   backdrop, no dimmed overlay over the home screen) rather than a popup. */
+#startControlsPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background-color: #02030a;
+  background-image: radial-gradient(ellipse 70% 55% at 50% 40%, #08243a 0%, #04101d 48%, #02030a 100%);
+  overflow: hidden;
+}
+#startControlsPanel.show { display: flex; }
+
+#startControlsBox {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 40px 52px;
+  min-width: 420px;
+  max-width: 640px;
+  width: 90vw;
+}
+
+#startControlsList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+#startControlsFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* Multiplayer v1 (Host/Join) — same sub-panel pattern as #startLoadPanel. */
+#startMultiplayerPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.8);
+}
+#startMultiplayerPanel.show { display: flex; }
+
+#startMultiplayerBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.94);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 320px;
+}
+
+#startRoomListLabel {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: rgba(0, 242, 255, 0.55);
+  margin-top: 4px;
+}
+#startRoomList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+#startRoomList .hint {
+  font-size: 11px;
+  color: rgba(205, 239, 255, 0.5);
+  margin: 0;
+}
+.room-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(0, 242, 255, 0.06);
+  border: 1px solid rgba(0, 242, 255, 0.2);
+  border-radius: 3px;
+  color: #cdefff;
+  font-size: 12px;
+}
+.room-name { flex: 1; font-weight: 600; }
+.room-join {
+  font-family: inherit;
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.15);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 2px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+#startJoinByCode {
+  font-size: 11px;
+  color: rgba(0, 242, 255, 0.6);
+}
+#startJoinByCode summary {
+  cursor: pointer;
+  letter-spacing: 1px;
+}
+#startJoinByCode[open] summary {
+  margin-bottom: 8px;
+}
+
+#startJoinRow {
+  display: flex;
+  gap: 8px;
+}
+#startJoinCodeInput {
+  flex: 1;
+  font-family: inherit;
+  font-size: 14px;
+  letter-spacing: 3px;
+  text-align: center;
+  text-transform: uppercase;
+  padding: 10px;
+  color: #cdefff;
+  background: rgba(0, 242, 255, 0.06);
+  border: 1px solid rgba(0, 242, 255, 0.3);
+  border-radius: 2px;
+}
+#startJoinRow button {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 8px 14px;
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.15);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 2px;
+  cursor: pointer;
+}
+#startJoinStatus {
+  font-size: 11px;
+  color: #8fe8ff;
+  min-height: 14px;
+  text-align: center;
+}
+
+/* Room-code badge — persistent once hosting/joined (no disconnect UI in v1). */
+#roomCodeBadge {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 30;
+  display: none;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 8px 14px;
+  color: #00f2ff;
+  background: rgba(10, 25, 40, 0.8);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 3px;
+}
+#roomCodeBadge.show { display: block; }
+
+/* Host-side join Accept/Decline prompt (src/ui/join-requests.js) — sits
+   above the pause/orbit menus (z-index 40) so it's visible/clickable no
+   matter which mode the host is in when a request comes in. */
+#joinRequestOverlay {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: none;
+}
+#joinRequestOverlay.show { display: block; }
+
+#joinRequestList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.join-request-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: rgba(10, 25, 40, 0.96);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(0, 242, 255, 0.3);
+  color: #cdefff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.join-request-actions {
+  display: flex;
+  gap: 8px;
+}
+.join-request-actions button {
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 6px 12px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.join-accept {
+  color: #061a12;
+  background: #4be6a0;
+  border: 1px solid #4be6a0;
+}
+.join-decline {
+  color: #ff6b6b;
+  background: transparent;
+  border: 1px solid rgba(255, 107, 107, 0.6);
+}
+
+/* Orbit-view menu — Esc (in orbit mode) toggles this instead of a permanent
+   on-screen button (src/modes/surface/input.js emits the toggle, handled in
+   ui/orbit-menu.js). Same overlay pattern as the surface pause menu. */
+#orbitMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+}
+#orbitMenu.show { display: flex; }
+
+#orbitMenuBox {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 220px;
+}
+
+#orbitMenuBox button {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 10px 14px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#orbitMenuBox button:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+
+/* Orbit-view Controls page — reached from the orbit Esc menu
+   (orbitMenuControlsBtn); same .ctrl-row/.ctrl-name/.ctrl-key classes as the
+   surface pause menu's Controls page (styles/surface.css). Same overlay
+   pattern as #orbitMenu, just a wider box for the row list. */
+#orbitControlsMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+}
+#orbitControlsMenu.show { display: flex; }
+
+#orbitControlsBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 320px;
+  max-height: 80vh;
+}
+
+#orbitControlsBox button {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 10px 14px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#orbitControlsBox button:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+
+#orbitControlsList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+#orbitControlsFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}

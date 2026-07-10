@@ -1,0 +1,106 @@
+/* Developer live-tuning side panel (#devPanel), built + populated entirely by
+   src/ui/dev-panel.js. Docked to the right edge, slides in/out via .open;
+   z-index sits above the surface overlay/minimap but below the pause menu so
+   Esc always still works. Scrollable body, cyan accent to match the rest of
+   the dev-facing chrome (perf-hud, left-panel). */
+#devPanel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: rgba(6, 12, 20, 0.94);
+  border-left: 1px solid rgba(0, 242, 255, 0.35);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+  font-family: 'Consolas', 'SF Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  color: rgba(200, 225, 235, 0.92);
+  transform: translateX(100%);
+  transition: transform 0.16s ease-out;
+  pointer-events: none;
+}
+#devPanel.open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+#devPanel .dp-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(0, 242, 255, 0.25);
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #00f2ff;
+}
+#devPanel .dp-hint {
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0;
+  color: rgba(150, 200, 220, 0.55);
+}
+
+#devPanel .dp-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 0 24px;
+}
+#devPanel .dp-body::-webkit-scrollbar { width: 8px; }
+#devPanel .dp-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 242, 255, 0.25);
+  border-radius: 4px;
+}
+
+#devPanel .dp-section summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: rgba(0, 242, 255, 0.85);
+  border-bottom: 1px solid rgba(0, 242, 255, 0.10);
+  user-select: none;
+}
+#devPanel .dp-section summary::marker { color: rgba(0, 242, 255, 0.5); }
+#devPanel .dp-section-body { padding: 4px 14px 10px; }
+
+#devPanel .dp-note {
+  font-size: 10.5px;
+  color: rgba(150, 200, 220, 0.6);
+  margin: 2px 0 8px;
+  line-height: 1.4;
+}
+
+#devPanel .dp-row { margin: 8px 0; }
+#devPanel .dp-row-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+#devPanel .dp-label { color: rgba(200, 225, 235, 0.85); }
+#devPanel .dp-val {
+  color: #00f2ff;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+  text-align: right;
+}
+#devPanel .dp-row input[type="range"] {
+  width: 100%;
+  accent-color: #00f2ff;
+}
+#devPanel .dp-row.dp-disabled { opacity: 0.4; }
+
+#devPanel .dp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  cursor: pointer;
+  color: rgba(200, 225, 235, 0.85);
+}
+#devPanel .dp-toggle input { accent-color: #00f2ff; }

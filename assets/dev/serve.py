@@ -24,7 +24,17 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 URL = f"http://localhost:{PORT}/assets/dev/"
 
-Handler = partial(http.server.SimpleHTTPRequestHandler, directory=ROOT)
+
+# Tell the browser never to cache: ES modules cache aggressively, so without this
+# a plain reload serves a stale dev-scene.js while showing fresh HTML — edits
+# look like they "don't apply" (e.g. a new button renders but its handler is old).
+class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        super().end_headers()
+
+
+Handler = partial(NoCacheHandler, directory=ROOT)
 print(f"Asset library  ->  {URL}")
 print(f"Serving root   :  {ROOT}")
 print("Ctrl+C to stop.")

@@ -147,6 +147,30 @@ body.surface-mode #bottomNav {
   top: 50%; left: -6px; height: 1px; width: 5px; margin-top: -0.5px;
 }
 
+/* Right-click sky/body identification — a brief label under the crosshair
+   naming whatever the crosshair was aimed at. See modes/surface/identify.js. */
+#skyIdentifyToast {
+  position: absolute;
+  top: calc(50% + 26px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21;
+  padding: 6px 14px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #00f2ff;
+  background: rgba(10, 25, 40, 0.85);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 2px;
+  box-shadow: 0 0 18px rgba(0, 242, 255, 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+#skyIdentifyToast.show { opacity: 1; }
+
 /* Minimap — bottom-left corner radar of the terrain around the avatar, with
    the biome name under the avatar's feet. Populated by modes/surface/minimap.js. */
 #surfaceMinimapPanel {
@@ -169,17 +193,35 @@ body.surface-mode #bottomNav {
   position: relative;
   width: 120px;
   height: 120px;
+  transition: width 0.18s ease, height 0.18s ease;
+}
+#surfaceMinimapPanel.expanded #surfaceMinimapWrap {
+  width: 300px;
+  height: 300px;
 }
 
 #surfaceMinimap {
-  width: 120px;
-  height: 120px;
+  width: 100%;
+  height: 100%;
   display: block;
   border-radius: 50%;
   border: 1px solid rgba(0, 242, 255, 0.4);
   box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.55);
   image-rendering: auto;
 }
+
+/* Transparent 2D overlay above the WebGL radar — just the off-screen
+   waypoint arrow/distance readout (the on-screen dots/markers are real 3D
+   meshes drawn by minimap.js's own renderer, into #surfaceMinimap itself). */
+#surfaceMinimapOverlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
 
 /* Rotating compass: N/E/S/W chips positioned each frame by minimap.js so they
    point to true planetary north as the avatar (and the radar) turns. */
@@ -219,6 +261,317 @@ body.surface-mode #bottomNav {
   letter-spacing: 1.5px;
   color: #fff;
   text-shadow: 0 0 8px rgba(0, 242, 255, 0.6);
+}
+
+#surfaceMinimapCoords,
+#surfaceMinimapTime,
+#surfaceMinimapTemp,
+#surfaceMinimapAir {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #d6fbff;
+  text-shadow: 0 0 6px rgba(0, 242, 255, 0.45);
+}
+
+/* Flagged red when the current biome/atmosphere is actively hazardous
+   (too hot/cold, no oxygen, toxic) — see modes/surface/minimap.js. */
+.mm-danger {
+  color: #ff8080 !important;
+  text-shadow: 0 0 8px rgba(232, 76, 76, 0.7) !important;
+}
+
+/* Pause menu — shown whenever pointer lock drops mid-walk (Esc, alt-tab, focus
+   loss) instead of silently bouncing back to orbit. Movement freezes behind
+   it (see surfaceState.menuOpen in main.js/pause-menu.js); Resume re-requests
+   pointer lock, Return to Orbit does the real teardown. */
+#surfacePauseMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;   /* #surfaceOverlay is pointer-events:none by default */
+}
+#surfacePauseMenu.show { display: flex; }
+
+#surfacePauseBox {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 220px;
+}
+
+.surface-menu-title {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.7);
+  margin-bottom: 6px;
+}
+
+/* Room code, shown only while hosting/joined (pause-menu.js) — the one
+   place the host can read/select it, since the floating badge is behind
+   pointer lock while walking. Empty + collapsed when not in a room. */
+#surfacePauseRoomCode:not(:empty) {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #00f2ff;
+  user-select: all;
+  cursor: text;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: rgba(0, 242, 255, 0.08);
+  border: 1px solid rgba(0, 242, 255, 0.3);
+  border-radius: 3px;
+}
+
+#surfacePauseBox button,
+#surfaceControlsBox button,
+#surfaceCharacterBox button {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 10px 14px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#surfacePauseBox button:hover,
+#surfaceControlsBox button:hover,
+#surfaceCharacterBox button:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+
+/* Character page — reached from the pause menu (surfaceCharacterBtn); lists
+   the switchable avatars from avatar.js's CHARACTERS registry, click to
+   swap (character-page.js). Same overlay pattern as the pause menu. */
+#surfaceCharacterMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+#surfaceCharacterMenu.show { display: flex; }
+
+#surfaceCharacterBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 260px;
+}
+
+#surfaceCharacterPreview,
+#startCharacterPreview {
+  display: block;
+  width: 260px;
+  height: 260px;
+  border: 1px solid rgba(0, 242, 255, 0.3);
+  border-radius: 4px;
+  background: radial-gradient(circle at 50% 35%, rgba(0, 242, 255, 0.1), rgba(4, 10, 18, 0.6) 70%);
+}
+
+#surfaceCharacterList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#surfaceCharacterBox .char-row.active {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+#surfaceCharacterBox .char-row.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Controls page — reached from the pause menu (surfaceControlsBtn); lists
+   every rebindable surface-mode action with its current key, click to
+   rebind (controls-page.js listens for the next keydown). Same overlay
+   pattern as the pause menu, just a wider box for the row list. */
+#surfaceControlsMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+#surfaceControlsMenu.show { display: flex; }
+
+#surfaceControlsBox {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  min-width: 320px;
+  max-height: 80vh;
+}
+
+#surfaceControlsList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 2px;
+}
+
+.ctrl-name {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #d6fbff;
+}
+
+.ctrl-key {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  min-width: 84px;
+  padding: 6px 10px;
+  color: #00f2ff;
+  background: rgba(0, 242, 255, 0.08);
+  border: 1px solid rgba(0, 242, 255, 0.35);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.ctrl-key:hover {
+  color: #fff;
+  background: rgba(0, 242, 255, 0.22);
+}
+.ctrl-key.listening {
+  color: #fff;
+  background: rgba(255, 200, 0, 0.18);
+  border-color: rgba(255, 200, 0, 0.6);
+  animation: ctrlPulse 0.8s ease-in-out infinite;
+}
+
+/* Planet map — reached from the pause menu (surfaceMapBtn); a static
+   equirectangular render of the whole body (planet-map.js), generated once
+   when the panel opens rather than live like the minimap. Same overlay
+   pattern as pause/controls. */
+#surfacePlanetMapMenu {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.6);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+#surfacePlanetMapMenu.show { display: flex; }
+
+#surfacePlanetMapBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 36px;
+  background: rgba(10, 25, 40, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
+  max-width: 95vw;
+}
+
+#surfacePlanetMapTitle {
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #d6fbff;
+  text-shadow: 0 0 6px rgba(0, 242, 255, 0.45);
+}
+
+#surfacePlanetMap {
+  display: block;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.55);
+  width: 90vw;
+  max-width: 1400px;
+  height: auto;
+  aspect-ratio: 2 / 1;
+  cursor: pointer;
+}
+
+#surfacePlanetMapBox button {
+  align-self: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 10px 14px;
+  color: #00f2ff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.18) 0%, rgba(0, 242, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 242, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+#surfacePlanetMapBox button:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 242, 255, 0.35) 0%, rgba(0, 242, 255, 0.1) 100%);
+  box-shadow: 0 0 16px rgba(0, 242, 255, 0.45);
+}
+
+@keyframes ctrlPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+#surfaceControlsFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
 }
 
 #surfaceHint {

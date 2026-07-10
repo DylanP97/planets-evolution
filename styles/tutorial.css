@@ -1,0 +1,125 @@
+/* Explore Tutorial overlay: a persistent step checklist (visible in both
+   orbit and surface view — lives outside #surfaceOverlay/#ui so neither
+   view's hide rules touch it) + a narrator box that advances one line at a
+   time, same interaction as the old narration box. Populated by
+   ui/tutorial.js.
+   Positioning deliberately avoids every other always-on overlay:
+   - checklist sits bottom-right, above #perfHud's 26px strip (perf-hud.css)
+     and #roomCodeBadge (start-menu.css, right:18/bottom:18) — NOT top-right,
+     which is #infoPanel's telegraph column (info-panel.css, right:20/top:20,
+     nearly full height) in orbit view.
+   - narrator sits top-center (top:90px), clear of #ui (left-panel.css) and
+     #infoPanel (info-panel.css) on the sides — kept narrow enough to fit
+     the gap between them — and below #surfaceTopBar (surface.css, top:18,
+     ~60-70px tall) so it doesn't sit on top of it in surface view. */
+#tutorialChecklist {
+  position: fixed;
+  bottom: 64px;
+  right: 20px;
+  z-index: 35;
+  width: 220px;
+  padding: 10px 14px;
+  color: #eafcff;
+  background: rgba(10, 25, 40, 0.85);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 2px;
+  box-shadow: 0 0 18px rgba(0, 242, 255, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+#tutorialChecklist.show { opacity: 1; pointer-events: auto; }
+#tutorialChecklistHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  margin-bottom: 8px;
+}
+#tutorialChecklistCloseBtn {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(234, 252, 255, 0.7);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+#tutorialChecklistCloseBtn:hover { color: #fff; }
+#tutorialChecklistList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+#tutorialChecklistList li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(234, 252, 255, 0.85);
+  max-height: 40px;
+  margin-bottom: 6px;
+  opacity: 1;
+  overflow: hidden;
+  transition: opacity 0.5s, max-height 0.5s, margin-bottom 0.5s;
+}
+#tutorialChecklistList li::before {
+  content: '○';
+  color: rgba(0, 242, 255, 0.6);
+}
+/* Crossed out immediately on completion; a beat later JS adds .leaving,
+   which is what actually triggers this fade+collapse (see ui/tutorial.js
+   completeStep — CROSSOUT_HOLD_MS/FADE_OUT_MS must match this duration). */
+#tutorialChecklistList li.done {
+  color: rgba(234, 252, 255, 0.45);
+  text-decoration: line-through;
+}
+#tutorialChecklistList li.done::before {
+  content: '✓';
+  color: #33d17a;
+}
+#tutorialChecklistList li.leaving {
+  opacity: 0;
+  max-height: 0;
+  margin-bottom: 0;
+}
+
+#tutorialNarrationBox {
+  position: fixed;
+  left: 50%;
+  top: 90px;
+  transform: translateX(-50%);
+  z-index: 36;
+  width: min(420px, 60vw); /* narrower than the old narration box: #ui and
+    #infoPanel stay on screen here (unlike the old locked-editing mode that
+    hid them), so this has to fit the gap between them, not the full width */
+  padding: 14px 20px;
+  color: #eafcff;
+  background: rgba(6, 14, 24, 0.92);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  border-radius: 2px;
+  box-shadow: 0 0 24px rgba(0, 242, 255, 0.25);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+#tutorialNarrationBox.show { opacity: 1; pointer-events: auto; }
+#tutorialNarrationText {
+  font-size: 15px;
+  line-height: 1.4;
+}
+.tutorial-narration-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-align: right;
+  color: rgba(234, 252, 255, 0.55);
+}

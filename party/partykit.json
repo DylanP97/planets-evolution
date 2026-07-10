@@ -1,0 +1,8 @@
+{
+  "$schema": "https://www.partykit.io/schema.json",
+  "name": "planet-tiles-relay",
+  "main": "server.js",
+  "parties": {
+    "lobby": "lobby.js"
+  }
+}

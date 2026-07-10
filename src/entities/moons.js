@@ -3,6 +3,7 @@
 import { emit } from '../core/bus.js';
 import { scene } from '../core/scene.js';
 import { createBody, regenerateBody } from '../framework/body.js';
+import { addPolarLocations } from './locations.js';
 import { bodies, focusedBody, moons, planet } from '../framework/state.js';
 import { setFocus } from '../modes/focus.js';
 import {
@@ -13,7 +14,7 @@ import {
 // Moons are built once at MOON_BASE_RADIUS = 1 and resized via group.scale,
 // so the slider can change apparent size without rebuilding geometry.
 export const MOON_BASE_RADIUS = 1;
-export const MOON_DETAIL = 4;            // ~1280 verts; smaller bodies don't need planet-level density
+export const MOON_DETAIL = 6;            // ~41K verts; dense enough to hide facets on the walkable surface
 export const MAX_MOONS = 4;              // per parent planet
 export const MOON_REF_DISTANCE = 22;
 // Each moon now owns its own orbital speed; this is the default for new moons.
@@ -89,6 +90,7 @@ export function addMoon(parent, size, distance, opts = {}) {
   regenerateBody(body, seed, 1.6, 0.0); // moons start fully above "sea" — no ocean
   scene.add(body.group);
   bodies.push(body);
+  addPolarLocations(body);
   const moon = {
     body,
     parent: host,

@@ -6,7 +6,7 @@ import { systemName } from '../core/names.js';
 import { DEFAULT_MOON_SPEED, updateMoonPosition } from '../entities/moons.js';
 import { DEFAULT_PROBE_SPEED, updateProbePosition } from '../entities/probes.js';
 import {
-  currentArchetype, focusedBody, focusedCity, focusedProbe, moons, planetCurrentSeed, planets
+  currentArchetype, focusedBody, focusedProbe, moons, planetCurrentSeed, planets
 } from '../framework/state.js';
 import { ORBIT_DEG, applySatelliteOrbitPlane } from '../system/orbits.js';
 import { DEFAULT_SPIN } from '../system/planets.js';
@@ -122,17 +122,14 @@ export function applyFocusToLeftPanel() {
   const isProbe  = !!focusedProbe;
   const isPlanet = !isProbe && focusedBody && focusedBody.kind === 'planet';
   const isMoon   = !isProbe && focusedBody && focusedBody.kind === 'moon';
-  const isSystem = !focusedBody && !focusedCity && !focusedProbe;
+  const isSystem = !focusedBody && !focusedProbe;
   // Full-gas planets have no solid surface, so the Sculpt tab and the
   // biome dropdown both disappear; the Envir tab swaps to atmospheric
   // band painting.
   const isGasFull = !!(isPlanet && focusedBody.matter && focusedBody.matter.gas === 'full');
-  // Cities anchor their controls to the host body — re-use the planet/moon
-  // layout for the body they belong to.
   const focusKind = isProbe  ? 'probe'
                   : isPlanet ? 'planet'
                   : isMoon   ? 'moon'
-                  : focusedCity ? (focusedCity.body.kind === 'moon' ? 'moon' : 'planet')
                   : 'system';
 
   // --- Tab visibility (driven by data-focus on each tab button) ---
@@ -276,8 +273,7 @@ export function applyFocusToLeftPanel() {
     }
     bodyOrbitSectionEl.classList.remove('is-disabled-section');
   } else {
-    // City focus — show host body controls instead of disabling everything.
-    systemContextEl.textContent = focusedCity ? `Editing: ${focusedCity.name} (city)` : 'No body focused';
+    systemContextEl.textContent = 'No body focused';
   }
 
   // --- Environment tab: hide atmo + rings entirely for moons (not just

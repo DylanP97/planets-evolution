@@ -3,7 +3,7 @@ import * as THREE from 'three';
 // Build marker — bump on each change so a hard-refresh can be confirmed in the
 // console (window.__BUILD). If this number doesn't update after reloading, the
 // browser is serving stale cached ES modules — hard-refresh (Ctrl+Shift+R).
-window.__BUILD = 'clouds-all-morph-1';
+window.__BUILD = 'survival-hud-temp-air-1';
 console.log('[planet-tiles] build', window.__BUILD);
 
 // Module evaluation order mirrors the original script.js section order:
@@ -21,15 +21,17 @@ import { updatePlanetOrbits, updatePlanetRotation } from './system/planets.js';
 import { isBrushTool } from './interaction/brush.js';
 import { updateOrbitInteraction } from './interaction/pointer.js';
 import { updateMoons } from './entities/moons.js';
+import { updateLocationMarkers } from './entities/locations.js';
 import { updateSatellites } from './entities/probes.js';
-import { updateCityMarkers } from './entities/cities.js';
 import { starMat } from './background/starfield.js';
 import { milkyway, milkyMat } from './background/galaxy.js';
 import { updateEruptions } from './background/eruptions.js';
-import { updateSunLightForFocus, updateMoonLight, updateEclipseShadows } from './system/lighting.js';
+import { updateSunLightForFocus, updateMoonLight, updateEclipseShadows, updateSunAppearance } from './system/lighting.js';
+import { updateAmbientAudio } from './system/audio.js';
 import { updateFocusTracking } from './modes/focus.js';
 import { updateLiveInfo } from './ui/info-panel.js';
 import { beginPerfFrame, updatePerfHud } from './ui/perf-hud.js';
+import { updateDevPanel } from './ui/dev-panel.js';
 import './ui/controls.js';
 import './ui/atmo-rings.js';
 import './ui/left-panel.js';
@@ -46,34 +48,41 @@ import { updateAstronaut } from './modes/surface/swim.js';
 import { updateGrass } from './modes/surface/grass.js';
 import { updateRocks } from './modes/surface/rocks.js';
 import { updateSlabs } from './modes/surface/slabs.js';
-import { updateWaterPatch } from './modes/surface/water.js';
+import { updateWaterPatch, waterTuning } from './modes/surface/water.js';
 import { updateGroundPatch } from './modes/surface/ground.js';
 import { updateFootprints } from './modes/surface/footprints.js';
 import { updateProps } from './modes/surface/props.js';
 import { updateSeabed } from './modes/surface/seabed.js';
 import { updateBubbles } from './modes/surface/bubbles.js';
 import { updateMinimap } from './modes/surface/minimap.js';
+import { updateGlobeMarkers } from './modes/surface/globe-markers.js';
+import { updateMeteors } from './modes/surface/meteors.js';
+import { updateAurora } from './modes/surface/aurora.js';
 import { renderUnderwater, underwaterPassActive } from './modes/surface/underwater-pass.js';
 import { stepSurfaceWalk } from './modes/surface/walk.js';
 import { surfaceState } from './modes/surface/core.js';
 import { debugCamActive, updateDebugCam } from './modes/debug-cam.js';
 import './modes/surface/input.js';
 import './ui/naming.js';
-import { loadStarSystem, findStarSystem } from './system/starsystems.js';
+import './system/starsystems.js';
 import './ui/star-map.js';
+import { openStartMenu } from './ui/start-menu.js';
+import { updateTutorial } from './ui/tutorial.js';
+import { sendAvatarState } from './net/connection.js';
+import { updateRemoteAvatars } from './net/remote-avatars.js';
+import { characterId } from './modes/surface/avatar.js';
 // Must stay last: wires UI handlers that touch consts across the ui/ import
 // cycles, which are only safe once every module above has fully evaluated.
 import './ui/wire-up.js';
 
-// Walking-ocean swell height as a fraction of the avatar's eye height (set on
-// the ocean shader's uWaveAmp each frame in surface mode). ~0.26 → crests ride
-// about a quarter of the walker tall: a visible but gentle swell, not a tsunami.
-const SURFACE_WAVE_AMP = 0.26;
-
-// Initial boot: load Sol from the catalog (unload is a no-op on an empty
-// scene) so currentSystemId is set through the same path as every later swap.
-// Runs after all imports above, so every module's DOM refs are wired.
-loadStarSystem(findStarSystem('sol'));
+// Initial boot: show the home screen — New/Continue/Load/Host/Join (wired in
+// ui/wire-up.js) decides what to load. The animate loop below starts
+// immediately and renders an empty scene (every per-frame function here is a
+// no-op on empty bodies/planets/etc.) behind the home screen until the
+// player's choice populates it; the "Planets Exploration" loading transition
+// (ui/loading-screen.js) covers that moment. Runs after all imports above,
+// so every module's DOM refs are wired.
+openStartMenu();
 
 // ====== 35. Init + Resize ======
 addEventListener('resize', () => {
@@ -81,55 +90,6 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-
-// ====== Boot loader dismissal ======
-// The #bootLoader overlay (index.html) covers the page from first paint. We
-// drive its progress counter + status line while the scene warms up, then
-// remove it on the first rendered frame — but never before BOOT_MIN_MS, so the
-// loader always stays up long enough to read (and never flashes by).
-const BOOT_MIN_MS = 3000;
-const _bootStart = performance.now();
-let _bootDone = false;
-{
-  const statusEl = document.getElementById('bootStatus');
-  const pctEl    = document.getElementById('bootPercent');
-  const barEl    = document.getElementById('bootBarFill');
-  const msgs = [
-    'Igniting stellar core',
-    'Seeding planetary crust',
-    'Calibrating orbital mechanics',
-    'Painting biomes',
-    'Charting the star map',
-  ];
-  // Ease the bar toward ~92% over the warm-up; dismissal snaps it to 100%.
-  // The displayed status follows the progress, not a separate timer.
-  let pct = 0;
-  const tick = setInterval(() => {
-    pct += Math.max(0.6, (92 - pct) * 0.06);
-    if (pct > 92) pct = 92;
-    const shown = Math.floor(pct);
-    if (pctEl)    pctEl.textContent = shown;
-    if (barEl)    barEl.style.width = pct + '%';
-    if (statusEl) statusEl.textContent = msgs[Math.min(msgs.length - 1, Math.floor((shown / 100) * msgs.length))];
-  }, 80);
-  dismissBootLoader._finish = () => {
-    clearInterval(tick);
-    if (pctEl) pctEl.textContent = '100';
-    if (barEl) barEl.style.width = '100%';
-  };
-}
-function dismissBootLoader() {
-  if (_bootDone) return;
-  _bootDone = true;
-  const wait = Math.max(0, BOOT_MIN_MS - (performance.now() - _bootStart));
-  setTimeout(() => {
-    if (dismissBootLoader._finish) dismissBootLoader._finish();
-    const el = document.getElementById('bootLoader');
-    if (!el) return;
-    // Let 100% paint for one frame, then cut straight to the scene (no fade).
-    requestAnimationFrame(() => el.remove());
-  }, wait);
-}
 
 // ====== 36. Animate ======
 const clock = new THREE.Clock();
@@ -202,12 +162,17 @@ let plasmaTime = 0;
     }
   }
   updateMoons(dt);
+  updateLocationMarkers();
   updateSatellites(dt);
   updateEruptions(dt);
-  updateCityMarkers();
   updateSunLightForFocus();
   updateEclipseShadows();
   updateMoonLight();
+  // Remote-player avatars (multiplayer presence, src/net/) are positioned via
+  // their own body's matrixWorld — independent of the local player's own
+  // viewMode/camera — so this runs unconditionally, ahead of every mode
+  // branch below that can `return` early (debug cam).
+  updateRemoteAvatars(dt);
 
   // DEBUG free-fly camera (press F): the camera detaches from the focus rig /
   // surface walker and the user flies it around. We skip the normal camera
@@ -225,6 +190,7 @@ let plasmaTime = 0;
       updateSurfaceCamera();
       updateAstronaut(dt);
     }
+    updateAmbientAudio(dt);
     updateDebugCam(dt);
     updateOrbitInteraction();
     milkyway.position.copy(camera.position).sub(scene.position);
@@ -233,11 +199,12 @@ let plasmaTime = 0;
     if (liveInfoAccum >= 0.1) { liveInfoAccum = 0; updateLiveInfo(); }
     renderer.render(scene, camera);
     updatePerfHud(dt);
-    if (!_bootDone) dismissBootLoader();
+    updateDevPanel();
     return;
   }
 
   updateFocusTracking();
+  updateTutorial();
 
   controls.update();
   // In surface mode the camera rides the focused body — recompute its
@@ -245,9 +212,24 @@ let plasmaTime = 0;
   // and orbit naturally wheel the sky overhead. Cheap no-op otherwise.
   if (viewMode === 'surface') {
     updateSurfaceOrigin();
-    stepSurfaceWalk(dt);
+    // Movement/physics freeze while the pause menu is up (pointer lock lost
+    // via Esc/alt-tab/focus loss) — see pause-menu.js. Camera + world upkeep
+    // below still runs so the frozen scene keeps rendering correctly.
+    if (!surfaceState.menuOpen) stepSurfaceWalk(dt);
     updateSurfaceCamera();
-    updateAstronaut(dt);
+    if (!surfaceState.menuOpen) updateAstronaut(dt);
+    // Multiplayer presence broadcast (throttled internally to ~10Hz; a no-op
+    // when not connected to a room) — a straight read of state this frame
+    // loop already computes, no new tracking needed.
+    sendAvatarState({
+      bodyId: surfaceState.body.currentSeed,
+      localUp: surfaceState.localUp.toArray(),
+      faceLocal: surfaceState.faceLocal.toArray(),
+      radius: surfaceState.standRadius + surfaceState.jumpOffset,
+      eyeHeight: surfaceState.eyeHeight,
+      animName: surfaceState.animName,
+      characterId,
+    });
     updateGrass(dt);
     updateRocks(dt);
     updateSlabs(dt);
@@ -258,7 +240,10 @@ let plasmaTime = 0;
     updateSeabed(dt);
     updateBubbles(dt);
     updateMinimap(dt);
+    updateGlobeMarkers();
     updateSurfaceSkyEffects();
+    updateMeteors(dt);
+    updateAurora(dt);
     // Make the Moon / other solid planets in the sky read as lit globes
     // (broad albedo patches + night-side floor) rather than flat grey discs.
     updateSkyBodies();
@@ -279,11 +264,13 @@ let plasmaTime = 0;
         // a 2-storey wave for an ankle-high robot. Tie it to eyeHeight so crests
         // stay a gentle fraction of the walker on any sized world. The fog
         // boundary + buoyancy read uWaveAmp live, so they follow automatically.
-        _os.uniforms.uWaveAmp.value = surfaceState.eyeHeight * SURFACE_WAVE_AMP;
+        _os.uniforms.uWaveAmp.value = surfaceState.eyeHeight * waterTuning.waveAmpMul;
         if (!paused) _os.uniforms.uWaveTime.value += dt;
       }
     }
   }
+  updateSunAppearance();
+  updateAmbientAudio(dt);
   // Re-anchor the orbit-mode cursor markers (brush ring, hover dot + biome
   // tooltip) to the surface under the pointer every frame, so planet rotation
   // can't drift them. Also refreshes lastHitLocal for an active paint stroke,
@@ -310,6 +297,5 @@ let plasmaTime = 0;
   // Refresh the dev perf HUD AFTER rendering, so renderer.info holds the
   // triangle / draw-call counts for the frame just drawn.
   updatePerfHud(dt);
-  // First frame is on screen — the scene is interactive, so retire the loader.
-  if (!_bootDone) dismissBootLoader();
+  updateDevPanel();
 })();

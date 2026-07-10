@@ -5,3 +5,6 @@
 .claude/worktrees/
 .claude/tooling/node_modules/
 node_modules/
+.cache/
+.understand-anything/
+party/.partykit/

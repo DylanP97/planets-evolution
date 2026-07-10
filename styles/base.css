@@ -15,7 +15,10 @@ body {
 /* Restore the OS cursor only over panels with controls/options */
 #ui,
 #bottomNav,
-#surfaceTopBar {
+#surfaceTopBar,
+#surfacePauseMenu,
+#surfaceControlsMenu,
+#devPanel {
   cursor: default;
 }
 
@@ -51,3 +54,28 @@ body.hud-hidden #bottomNav {
   white-space: nowrap;
 }
 #hoverBiomeTip[aria-hidden="true"] { display: none; }
+
+/* Floating name labels for location markers in orbit view — one per visible
+   location, positioned every frame from its 3D marker's screen projection
+   (entities/locations.js updateLocationMarkers). The layer itself never
+   intercepts clicks; individual labels are display:none until positioned. */
+#locationMarkerLabels {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  pointer-events: none;
+}
+.location-marker-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 2px 7px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #00f2ff;
+  background: rgba(10, 25, 40, 0.75);
+  border: 1px solid rgba(0, 242, 255, 0.4);
+  border-radius: 3px;
+  white-space: nowrap;
+}

@@ -2,11 +2,12 @@
 // terrain writes, height/biome/climate coloring (incl. the venusian branch),
 // matter/gas/ring appliers, regeneration, the sculpt brush, ocean shore bake.
 import * as THREE from 'three';
-import { 
-  BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, MIN_LAND_HEIGHT, 
-  SAND_TOP, GRASS_FLOOR, GRASS_TOP, ROCK_TOP, SNOW_FADE,
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import {
+  BODY_HEIGHT_SCALE, MAX_LAND_HEIGHT, MIN_LAND_HEIGHT,
+  SAND_TOP, GRASS_TOP, ROCK_TOP, SNOW_FADE,
   KELVIN_ZERO_C, CLIMATE_LAPSE_C, SEA_LEVEL, SEABED_COLOR,
-  SEA_BOIL_C, SEA_VAPOR_C, SEA_ICE_C, COL, BIOME, BIOME_LABELS,
+  SEA_BOIL_C, SEA_VAPOR_C, COL, BIOME, BIOME_LABELS,
   COMP_DISPLAY, ARCHETYPE_BAND_LABELS, BAND_KEY_TO_PALETTE,
   BAND_BIOME_KEY, BAND_BIOME_SLOT,
   OCEAN_DEPTH_BOOST, TERRAIN_OCTAVES
@@ -27,12 +28,21 @@ import {
   selectedBiome, activeVortex, gasPaintColor, selectedGasBiomeId,
   currentArchetype, climateReady
 } from './state.js';
-import { colorOceanByClimate, computeClimate } from './climate.js';
+import { colorOceanByClimate, computeClimate, oceanTempState } from './climate.js';
 import { buildTerrainBasis, hashSeed, sampleTerrainNoise } from './terrain.js';
 import { ARCHETYPES, ARCHETYPE_MATTER } from './archetypes.js';
 
 export function createBody({ kind, name, baseRadius, detail, palette, hasOcean, initialHeight = -0.5 }) {
-  const geo = new THREE.IcosahedronGeometry(baseRadius, detail);
+  // IcosahedronGeometry builds a non-indexed buffer: every triangle owns
+  // private copies of its 3 corner vertices, even where they coincide with a
+  // neighboring triangle's corner. computeVertexNormals() (called after every
+  // terrain edit in commitBodyChanges) can then never average normals across
+  // adjacent faces — it silently produces flat per-face normals despite
+  // flatShading:false, which is what made every generated body look faceted
+  // regardless of subdivision level. Merging into an indexed geometry once,
+  // up front, gives each unique position a single shared vertex so normal
+  // averaging (and everything downstream keyed by vertex index) works.
+  const geo = mergeVertices(new THREE.IcosahedronGeometry(baseRadius, detail));
   const posAttr = geo.attributes.position;
   const N = posAttr.count;
   const unitDirs = new Float32Array(N * 3);
@@ -205,11 +215,24 @@ export function venusianLandColor(body, i, h) {
   return c;
 }
 
+// Thresholds tuned against a default Earth-like terrestrial climate (equator
+// ≈38°C, pole ≈-27°C with the archetype's default atmosphere). Desert has no
+// `beach` — it meets the shore as dry land, so it reads as ONE solid
+// equatorial zone instead of being carved into disconnected islands wherever
+// the terrain dips near the coast (which is what a shared SAND_TOP override
+// used to do to every zone, beach or not — see groundBiomeOfFace/
+// colorBodyVertex). minTempC 37 measured 0% desert on a real "earth" seed
+// (jungle's own 27 threshold reads more like the real equatorial ceiling), so
+// desert sits comfortably under jungle's floor instead of above the world's
+// actual peak temperature. minTempC 33 measured ~13% desert on that same
+// seed — too much of the equatorial band read as desert instead of jungle —
+// so it's nudged up to shrink the band without going all the way to 37's 0%.
 export const CLIMATE_LAND_ZONES = {
   terrestrial: [
-    { key: 'desert', label: 'Desert', color: 0xd2b48c, minTempC:  40, beach: true, relief: true },
-    { key: 'jungle', label: 'Jungle', color: 0x15702a, minTempC:  22, beach: true, relief: true },
-    { key: 'grass',  label: 'Grass',  color: 0x4FAE4F, minTempC:   7, beach: true, relief: true },
+    { key: 'desert', label: 'Desert', color: 0xd2b48c, minTempC:  35, relief: true },
+    { key: 'jungle', label: 'Jungle', color: 0x15702a, minTempC:  27, beach: true, relief: true },
+    { key: 'forest', label: 'Forest', color: 0x1a4d1a, minTempC:  14, beach: true, relief: true },
+    { key: 'grass',  label: 'Grass',  color: 0x4FAE4F, minTempC:   2, beach: true, relief: true },
     { key: 'tundra', label: 'Tundra', color: 0x8f9e76, minTempC:  -8 },
     { key: 'ice',    label: 'Ice',    color: 0xdaf2ff, minTempC: -Infinity, glow: 0.55 },
   ],
@@ -233,9 +256,42 @@ export const FACE_BIOME = {
   BARE: 0, GRASS: 1, FOREST: 2, JUNGLE: 3, TUNDRA: 4, ICE: 5, COAST: 6, DESERT: 7,
 };
 
+// Painted biomes that represent LAND (grow grass/props, read as dry ground).
+// A face carrying one of these but sitting below sea level — a coastline dip,
+// a sculpt, a sea-level change made after painting — must still read and
+// behave as open water: otherwise trees/bushes spawn floating on the ocean
+// surface and the minimap/tooltip names it "Jungle" while the avatar is
+// visibly swimming in blue water. Underwater-native paints (Coral Reef, Kelp
+// Forest, …) aren't in this set — they're meant to sit on a flooded seabed.
+const SUBMERGIBLE_LAND_BIOMES = new Set([
+  BIOME.FOREST, BIOME.GRASSLAND, BIOME.JUNGLE, BIOME.TUNDRA, BIOME.ICE, BIOME.COAST,
+  BIOME.BAND_GRASS, BIOME.BAND_SAND,
+]);
+
+// The ocean's animated swell (oceanSwellDisp) rises up to ~0.11 h-units above
+// sea level — ABOVE SAND_TOP (0.10) — so vegetation cleared to spawn right at
+// SAND_TOP still gets washed over every wave cycle. This margin pushes the
+// vegetation-safe cutoff (NOT the color/name cutoff — that stays at SAND_TOP,
+// widening it swallowed most low-lying land into generic "coast", see the
+// SAND_TOP comment) just past the swell's reach, closing that thin sliver
+// where grass/trees/props appeared to float on water.
+const VEG_SWELL_MARGIN = 0.02;
+
 export function groundBiomeOfFace(body, f) {
   if (body.kind !== 'planet') return FACE_BIOME.BARE;
-  switch (body.biomes[f.a]) {
+  const painted = body.biomes[f.a];
+  if (SUBMERGIBLE_LAND_BIOMES.has(painted)) {
+    const avgH = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+    if (avgH < SEA_LEVEL) return FACE_BIOME.BARE;
+    // Even above sea level, keep a shoreline buffer for painted vegetation —
+    // otherwise a hand-painted Forest/Jungle/Grassland/Tundra dragged right up
+    // to the coast grows trees/grass/props with roots in the surf. Mirrors the
+    // natural SAND_TOP/beach band + tundra-ice no-beach rule below.
+    if (avgH < SAND_TOP + VEG_SWELL_MARGIN && painted !== BIOME.COAST && painted !== BIOME.BAND_SAND) {
+      return (painted === BIOME.TUNDRA || painted === BIOME.ICE) ? FACE_BIOME.BARE : FACE_BIOME.COAST;
+    }
+  }
+  switch (painted) {
     case BIOME.FOREST:    return FACE_BIOME.FOREST;
     case BIOME.GRASSLAND: return FACE_BIOME.GRASS;
     case BIOME.JUNGLE:    return FACE_BIOME.JUNGLE;
@@ -250,12 +306,39 @@ export function groundBiomeOfFace(body, f) {
   }
   if (body.archetype !== 'terrestrial') return FACE_BIOME.BARE;
   const h = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+  // Below sea level is water, full stop — must be checked BEFORE the zoned
+  // switch below, or a cold zone with no `beach` flag (tundra, ice) falls
+  // straight through pickLandZone on pure latitude/temperature and reads a
+  // deep-ocean face as land (grass literally growing on the water surface).
+  // colorBodyVertex/compKeyAt both gate on this same check first.
+  if (h < SEA_LEVEL)     return FACE_BIOME.BARE;              // open water, no grass/props
   if (h >= ROCK_TOP)     return FACE_BIOME.BARE;              // rock / snow peaks
-  if (h < GRASS_FLOOR)   return FACE_BIOME.COAST;             // sandy beach near the sea
   const zoned = body.climate && body.climate.spread > 0.5 && CLIMATE_LAND_ZONES[body.archetype];
   if (zoned) {
-    switch (pickLandZone(CLIMATE_LAND_ZONES[body.archetype], vertexTempC(body, f.a)).key) {
+    // Mirrors colorBodyVertex/compKeyAt exactly: the SAND_TOP coast override
+    // only applies to zones that opt into a beach (z.beach) — a zone without
+    // one (e.g. desert, meeting the shore as dry land) reads as itself all
+    // the way to sea level, instead of being carved into disconnected
+    // "island" patches wherever the terrain dips a little near the coast.
+    const z = pickLandZone(CLIMATE_LAND_ZONES[body.archetype], vertexTempC(body, f.a));
+    if (h < SAND_TOP) {
+      if (z.beach) return FACE_BIOME.COAST;
+      // Tundra/ice have no beach band — colorBodyVertex/compKeyAt paint and
+      // name them as their own zone all the way to h=0 by design (so a cold
+      // shoreline doesn't get a warm sandy fringe). Only vegetation needs the
+      // extra buffer here; color/label intentionally stay untouched.
+      if (z.key === 'tundra' || z.key === 'ice') return FACE_BIOME.BARE;
+    } else if (h < SAND_TOP + VEG_SWELL_MARGIN) {
+      // The ocean's animated swell (oceanSwellDisp) rises up to ~0.11 h-units
+      // above sea level — ABOVE this whole SAND_TOP band — so a shore sitting
+      // just past SAND_TOP was still growing full grass/props and reading its
+      // zone name while the wave visibly washed over it every cycle. Extends
+      // the vegetation cutoff (not the color one) a hair past the swell reach.
+      return z.beach ? FACE_BIOME.COAST : FACE_BIOME.BARE;
+    }
+    switch (z.key) {
       case 'jungle': return FACE_BIOME.JUNGLE;
+      case 'forest': return FACE_BIOME.FOREST;
       case 'grass':  return FACE_BIOME.GRASS;
       case 'tundra': return FACE_BIOME.TUNDRA;
       case 'ice':    return FACE_BIOME.ICE;
@@ -263,12 +346,19 @@ export function groundBiomeOfFace(body, f) {
       default:       return FACE_BIOME.BARE;
     }
   }
+  // Unzoned fallback (no climate zones for this archetype): a flat sand/grass
+  // split at SAND_TOP, matching compKeyAt's own unzoned branch (color-wise);
+  // vegetation itself waits for the swell-safety margin above that (see
+  // VEG_SWELL_MARGIN above).
+  if (h < SAND_TOP + VEG_SWELL_MARGIN) return FACE_BIOME.COAST;
   return h < GRASS_TOP ? FACE_BIOME.GRASS : FACE_BIOME.BARE;  // unzoned plain grass band
 }
 
 export function colorBodyVertex(body, i) {
   const h = body.heights[i];
-  const b = body.biomes[i];
+  // A land paint dragged below sea level colors as open water, not its
+  // painted land color — see SUBMERGIBLE_LAND_BIOMES above.
+  const b = (SUBMERGIBLE_LAND_BIOMES.has(body.biomes[i]) && h < SEA_LEVEL) ? BIOME.AUTO : body.biomes[i];
   const p = body.palette;
   let c;
   if (body.glowArr) body.glowArr[i] = 0;
@@ -455,17 +545,21 @@ const PAINT_TO_BAND = {
 
 export function compKeyAt(body, i) {
   const b = body.biomes ? body.biomes[i] : 0;
-  if (b !== BIOME.AUTO) return PAINT_TO_BAND[b] || ('biome:' + b);
-
   const h = body.heights[i];
+  const submerged = SUBMERGIBLE_LAND_BIOMES.has(b) && h < SEA_LEVEL;
+  if (b !== BIOME.AUTO && !submerged) return PAINT_TO_BAND[b] || ('biome:' + b);
+
   if (body.kind === 'planet') {
     const climateZoned = body.climate && body.climate.spread > 0.5;
     const zones = climateZoned ? CLIMATE_LAND_ZONES[body.archetype] : null;
     const seaWater = climateZoned && body.matter && body.matter.liquid && body.oceanIsWater;
     if (h < SEA_LEVEL) {
       if (seaWater) {
-        const tC = vertexTempC(body, i);
-        return tC >= SEA_VAPOR_C ? 'seabed' : (tC <= SEA_ICE_C ? 'seaice' : 'water');
+        const ux = body.unitDirs[3 * i], uy = body.unitDirs[3 * i + 1], uz = body.unitDirs[3 * i + 2];
+        const r = oceanTempState(body, ux, uy, uz);
+        if (r.state === 'steam' && r.t >= 1) return 'seabed';
+        if (r.state === 'ice' && r.t >= 1) return 'seaice';
+        return 'water';
       }
       return 'water';
     }
@@ -500,21 +594,65 @@ export function bandLabel(body, key) {
 // shared by the surface minimap and the orbit-mode hover tooltip. Hand-painted
 // faces report their palette name from BIOME_LABELS (Forest…Obsidian); natural
 // ground is named exactly as the composition list does (compKeyAt + bandLabel),
-// so the hover/minimap and the right-panel rollup always agree. The face's
-// HIGHEST corner is the representative vertex, so a coastal face that straddles
-// the waterline is named for its land (Coast), never the water below it.
+// so the hover/minimap and the right-panel rollup always agree.
+//
+// Water-vs-land is decided from the face's AVERAGE height, matching the
+// minimap/colorBodyVertex's own rule (h = avg of the 3 corners) — a face that
+// reads as ocean by that rule must always be NAMED as water too, even if pure
+// terrain noise happens to poke one lone corner a hair above sea level out in
+// open ocean (that used to pick the "highest corner" unconditionally, so a
+// stray sub-surface bump under open water could label it "Tundra" while the
+// color correctly showed water). Only once the average says land do we pick
+// the face's HIGHEST corner, so a genuine coastal face that straddles the
+// waterline still names itself for its land (Coast), never the water below.
+// Picks the single vertex that represents a face — the SAME corner biomeNameOfFace
+// names it from, so any consumer that colours a face by sampling one vertex
+// (the minimap) draws the colour that vertex's own biome would produce, never
+// a different corner's. A painted face is represented by its paint vertex
+// (f.a, mirroring groundBiomeOfFace/compKeyAt); an unpainted face by its
+// highest corner (land) or lowest corner (below sea level, so a stray
+// sub-surface bump can't make an open-ocean face read/draw as land).
+export function repVertexOfFace(body, f) {
+  const painted = body.biomes[f.a];
+  const avgH = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+  const submerged = SUBMERGIBLE_LAND_BIOMES.has(painted) && avgH < SEA_LEVEL;
+  if (painted !== BIOME.AUTO && !submerged) return f.a;
+  let i = f.a;
+  if (avgH < SEA_LEVEL) {
+    if (body.heights[f.b] < body.heights[i]) i = f.b;
+    if (body.heights[f.c] < body.heights[i]) i = f.c;
+  } else {
+    if (body.heights[f.b] > body.heights[i]) i = f.b;
+    if (body.heights[f.c] > body.heights[i]) i = f.c;
+  }
+  return i;
+}
+
 export function biomeNameOfFace(body, f) {
   const painted = body.biomes[f.a];
-  if (painted !== BIOME.AUTO) {
+  const avgH = (body.heights[f.a] + body.heights[f.b] + body.heights[f.c]) / 3;
+  // A land paint (Jungle, Forest, …) dragged below sea level must still read
+  // as water, not its painted name — see SUBMERGIBLE_LAND_BIOMES above.
+  const submerged = SUBMERGIBLE_LAND_BIOMES.has(painted) && avgH < SEA_LEVEL;
+  if (painted !== BIOME.AUTO && !submerged) {
     // Generic band paints carry no fixed label — name them per-archetype, the
     // same way the natural band they reproduce is named.
     if (BAND_BIOME_KEY[painted]) return bandLabel(body, BAND_BIOME_KEY[painted]);
     return BIOME_LABELS[painted] || 'Painted';
   }
-  let i = f.a;
-  if (body.heights[f.b] > body.heights[i]) i = f.b;
-  if (body.heights[f.c] > body.heights[i]) i = f.c;
-  return bandLabel(body, compKeyAt(body, i));
+  return bandLabel(body, compKeyAt(body, repVertexOfFace(body, f)));
+}
+
+// Body-local +Y is the planetographic polar axis (see updateCompass() in
+// minimap.js), so any body-local unit vector converts to ordinary lat/long
+// the same way regardless of caller — the surface minimap and the orbit
+// hover tooltip both format their coordinate readout through this one path.
+export function formatLatLon(up) {
+  const lat = Math.asin(Math.max(-1, Math.min(1, up.y))) * (180 / Math.PI);
+  const lon = Math.atan2(up.x, -up.z) * (180 / Math.PI);
+  const latStr = Math.abs(lat).toFixed(1) + '°' + (lat >= 0 ? 'N' : 'S');
+  const lonStr = Math.abs(lon).toFixed(1) + '°' + (lon >= 0 ? 'E' : 'W');
+  return `${latStr} ${lonStr}`;
 }
 
 export function commitBodyChanges(body) {
@@ -655,19 +793,32 @@ export function bakeOceanShore(body) {
       if (num > 0) grid[idx] = acc / num;
     }
   }
+  // Any cell still unreached by the 3x3 fill (fully isolated) reads as deep,
+  // no-foam water so the bilinear sample below never has to special-case EMPTY.
+  for (let k = 0; k < grid.length; k++) if (grid[k] === EMPTY) grid[k] = MIN_LAND_HEIGHT;
   const pos = geo.attributes.position;
   const out = shoreAttr.array;
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
     const inv = 1 / Math.hypot(x, y, z);
     const uy = Math.max(-1, Math.min(1, y * inv));
-    let row = ((Math.asin(uy) / Math.PI) + 0.5) * GH | 0;
-    let col = ((Math.atan2(z * inv, x * inv) / TAU) + 0.5) * GW | 0;
-    if (row < 0) row = 0; else if (row >= GH) row = GH - 1;
-    if (col < 0) col = 0; else if (col >= GW) col = GW - 1;
-    let H = grid[row * GW + col];
-    if (H === EMPTY) H = MIN_LAND_HEIGHT;       // unknown cell → deep, no foam
-    out[i] = H;                                 // signed seabed height: ~0 at the coast
+    // Bilinear-sample the coarse grid instead of nearest-neighbor: a hard
+    // per-cell lookup bakes visible axis-aligned step bands (constant value
+    // across an entire latitude row/longitude column) into vShore, which the
+    // shore-foam/depth shading in materials.js turns into straight lines
+    // across the ocean when seen from above.
+    const rowF = ((Math.asin(uy) / Math.PI) + 0.5) * GH - 0.5;
+    const colF = ((Math.atan2(z * inv, x * inv) / TAU) + 0.5) * GW - 0.5;
+    const r0 = Math.floor(rowF), c0 = Math.floor(colF);
+    const tr = rowF - r0, tc = colF - c0;
+    const r0c = r0 < 0 ? 0 : r0 >= GH ? GH - 1 : r0;
+    const r1c = r0 + 1 < 0 ? 0 : r0 + 1 >= GH ? GH - 1 : r0 + 1;
+    const c0w = ((c0 % GW) + GW) % GW;
+    const c1w = ((c0 + 1) % GW + GW) % GW;
+    const g00 = grid[r0c * GW + c0w], g01 = grid[r0c * GW + c1w];
+    const g10 = grid[r1c * GW + c0w], g11 = grid[r1c * GW + c1w];
+    out[i] = g00 * (1 - tr) * (1 - tc) + g01 * (1 - tr) * tc
+           + g10 * tr * (1 - tc) + g11 * tr * tc;   // signed seabed height: ~0 at the coast
   }
   shoreAttr.needsUpdate = true;
 
@@ -696,6 +847,87 @@ export function bakeOceanShore(body) {
   body.seabedTex.needsUpdate = true;
 }
 
+// Small, disconnected dips below sea level (a few noise-generated faces wide,
+// isolated from the main sea) read as flooded ponds that can't sustain the
+// ocean's wave wavelength — they either sit as an odd flat-water sliver or
+// slosh with exaggerated, chaotic-looking waves. Flood-fill the below-sea-
+// level area on a coarse lat/long grid (same scheme as bakeOceanShore); a
+// connected wet component only gets raised back above sea level — becoming
+// dry ground instead of a puddle — when it's BOTH small in extent AND
+// shallow at its deepest point. A small-but-deep basin (a real crater lake)
+// is left alone; only the small+shallow combination reads as an artifact.
+// Real seas are always far larger than this and are untouched either way.
+const POND_MAX_CELLS = 6;
+const POND_MAX_DEPTH = 0.3;   // deepest point must be shallower than this (height units)
+
+function depuddleTerrain(body) {
+  if (!body.matter || !body.matter.liquid) return;
+  const N = body.N;
+  const GH = Math.min(160, Math.max(8, Math.round(Math.sqrt(N / 8))));
+  const GW = GH * 2;
+  const dirs = body.unitDirs, hs = body.heights;
+  const TAU = Math.PI * 2;
+  const cellIdx = new Int32Array(N);
+  const sum = new Float32Array(GW * GH);
+  const cnt = new Float32Array(GW * GH);
+  for (let i = 0; i < N; i++) {
+    const uy = Math.max(-1, Math.min(1, dirs[3 * i + 1]));
+    let row = ((Math.asin(uy) / Math.PI) + 0.5) * GH | 0;
+    let col = ((Math.atan2(dirs[3 * i + 2], dirs[3 * i]) / TAU) + 0.5) * GW | 0;
+    if (row < 0) row = 0; else if (row >= GH) row = GH - 1;
+    if (col < 0) col = 0; else if (col >= GW) col = GW - 1;
+    const idx = row * GW + col;
+    cellIdx[i] = idx;
+    sum[idx] += hs[i]; cnt[idx] += 1;
+  }
+  const wet = new Uint8Array(GW * GH);
+  for (let k = 0; k < wet.length; k++) wet[k] = (cnt[k] > 0 && sum[k] / cnt[k] < SEA_LEVEL) ? 1 : 0;
+
+  // Flood-fill connected wet cells (4-neighbour; longitude wraps around,
+  // latitude doesn't — rows 0/GH-1 are the poles).
+  const label = new Int32Array(GW * GH).fill(-1);
+  const sizes = [];
+  const minH = [];   // deepest (lowest) average cell height per component
+  const stack = [];
+  let nextLabel = 0;
+  for (let start = 0; start < wet.length; start++) {
+    if (!wet[start] || label[start] !== -1) continue;
+    let size = 0;
+    let deepest = Infinity;
+    stack.push(start);
+    label[start] = nextLabel;
+    while (stack.length) {
+      const cur = stack.pop();
+      size++;
+      deepest = Math.min(deepest, sum[cur] / cnt[cur]);
+      const r = (cur / GW) | 0, c = cur % GW;
+      const up    = r > 0      ? (r - 1) * GW + c : -1;
+      const down  = r < GH - 1 ? (r + 1) * GW + c : -1;
+      const left  = r * GW + ((c - 1 + GW) % GW);
+      const right = r * GW + ((c + 1) % GW);
+      for (const nb of [up, down, left, right]) {
+        if (nb >= 0 && wet[nb] && label[nb] === -1) { label[nb] = nextLabel; stack.push(nb); }
+      }
+    }
+    sizes.push(size);
+    minH.push(deepest);
+    nextLabel++;
+  }
+  const isPond = (lbl) => sizes[lbl] <= POND_MAX_CELLS && -minH[lbl] < POND_MAX_DEPTH;
+  if (!sizes.some((_, lbl) => isPond(lbl))) return;   // nothing small+shallow enough to prune
+
+  // Raise every vertex sitting in a small-and-shallow wet component back
+  // above sea level — a gentle bump scaled to how deep it was, not a flat
+  // plateau, so the former pond reads as dry ground rather than a filled-in
+  // crater.
+  for (let i = 0; i < N; i++) {
+    if (hs[i] >= SEA_LEVEL) continue;
+    const lbl = label[cellIdx[i]];
+    if (lbl === -1 || !isPond(lbl)) continue;
+    hs[i] = Math.min(SAND_TOP * 0.9, -hs[i] * 0.15);
+  }
+}
+
 export function regenerateBody(body, seedStr, amplitude, seaCoverage) {
   const arch = ARCHETYPES[currentArchetype] || ARCHETYPES.terrestrial;
   if (body.kind === 'planet') {
@@ -718,10 +950,16 @@ export function regenerateBody(body, seedStr, amplitude, seaCoverage) {
   for (let i = 0; i < body.N; i++) {
     let h = (samples[i] - bias) * amplitude;
     if (h < 0) h *= oceanBoost;
-    body.heights[i] = h < MIN_LAND_HEIGHT ? MIN_LAND_HEIGHT
-                    : h > MAX_LAND_HEIGHT ? MAX_LAND_HEIGHT
-                    : h;
+    // Soft-clamp instead of a hard cutoff: vertices that overshoot the height
+    // range compress smoothly toward the limit (tanh) instead of pinning to
+    // one identical flat elevation, which used to read as flat-topped mesas
+    // / seafloor plateaus regardless of mesh density.
+    body.heights[i] = h >= 0 ? MAX_LAND_HEIGHT * Math.tanh(h / MAX_LAND_HEIGHT)
+                              : MIN_LAND_HEIGHT * Math.tanh(h / MIN_LAND_HEIGHT);
     body.biomes[i] = BIOME.AUTO;
+  }
+  depuddleTerrain(body);
+  for (let i = 0; i < body.N; i++) {
     writeBodyVertex(body, i);
     colorBodyVertex(body, i);
   }

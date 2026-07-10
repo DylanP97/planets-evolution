@@ -80,18 +80,29 @@ export function updateSurfaceCamera() {
     _lookAtTmp.copy(_worldEye).add(_worldLook);
     camera.lookAt(_lookAtTmp);
   } else {
-    // Third person framed in units of the avatar's actual height: aim at its
-    // chest (~0.6× height above the feet), then trail behind a few body-
-    // heights and lifted, so we look down at it at a gentle angle.
-    const ch = surfaceState.charWorldH || (surfaceState.eyeHeight * (body.group.scale.x || 1));
+    // Third person framed in units of a fixed reference height — NOT the
+    // avatar's actual rendered height. If this used charWorldH directly, the
+    // camera would trail back in exact proportion to ASTRO_HEIGHT_FACTOR,
+    // canceling it out: the avatar's on-screen size would be invariant no
+    // matter how that tuning knob is set (only the world around it would
+    // appear to zoom). Pin the frame to eyeHeight so ASTRO_HEIGHT_FACTOR
+    // actually changes how big the avatar looks on screen.
+    const ch = surfaceState.eyeHeight * (body.group.scale.x || 1);
+    // Chest aim point still uses the avatar's real height so the look-at
+    // target tracks its actual proportions.
+    const aimH = surfaceState.charWorldH || ch;
     // Foot point in world (support surface + any jump lift).
     _footLocal.copy(surfaceState.localUp)
       .multiplyScalar(surfaceState.standRadius + surfaceState.jumpOffset);
     _footWorld.copy(_footLocal).applyMatrix4(mw);
     // Aim at the chest.
-    _lookAtTmp.copy(_footWorld).addScaledVector(_worldUp, ch * 0.6);
-    const dist = ch * 3.2;             // trail distance in character-heights
-    const lift = ch * 1.5;             // camera elevation
+    _lookAtTmp.copy(_footWorld).addScaledVector(_worldUp, aimH * 0.6);
+    // Trail distance/elevation in character-heights, scaled by the wheel
+    // zoom (thirdZoom — independent of the first-person FOV zoom). Lift
+    // scales along so the look-down angle stays constant while zooming.
+    const z = surfaceState.thirdZoom;
+    const dist = ch * 2.2 * z;         // trail distance in character-heights
+    const lift = ch * 1.0 * z;         // camera elevation
     camera.position.copy(_lookAtTmp)
       .addScaledVector(_worldLook, -dist)
       .addScaledVector(_worldUp, lift);

@@ -10,7 +10,7 @@ scene.add(orbitLinesGroup);
 export const satelliteOrbitLinesGroup = new THREE.Group();
 scene.add(satelliteOrbitLinesGroup);
 
-export let showSatelliteOrbits = true;
+export let showSatelliteOrbits = false;
 export function setShowSatelliteOrbits(v) { showSatelliteOrbits = v; }
 
 export const ORBIT_DEG = Math.PI / 180;

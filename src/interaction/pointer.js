@@ -1,18 +1,18 @@
 // Canvas pointer handlers: raycast bodies → start/continue brush strokes,
-// place cities, drop gas whirlpools.
+// place locations, drop gas whirlpools.
 import {
   setActiveBrushBody, setActiveVortex, setIsPainting, setLastHitLocal
 } from '../framework/state.js';
 
 import * as THREE from 'three';
 import { camera, renderer, scene } from '../core/scene.js';
-import { biomeNameOfFace } from '../framework/body.js';
-import { addCity } from '../entities/cities.js';
+import { biomeNameOfFace, formatLatLon } from '../framework/body.js';
+import { addLocation } from '../entities/locations.js';
 import {
   activeBrushBody, activeVortex, bodies, currentTool, isPainting, lastHitLocal, paintMode, viewMode
 } from '../framework/state.js';
 import { addGasVortex } from '../shaders/gas.js';
-import { cityNameInput } from '../ui/dom.js';
+import { locationNameInput } from '../ui/dom.js';
 import { updateInfoPanel } from '../ui/info-panel.js';
 import {
   brushArcWorldRadius, brushRing, isBrushTool, pointer, raycaster, updateBrushRing
@@ -63,10 +63,10 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   const hb = raycastBodies();
   if (!hb) return;
 
-  if (currentTool === 'city') {
-    const name = cityNameInput.value || 'New City';
+  if (currentTool === 'location') {
+    const name = locationNameInput.value || 'New Location';
     const localPos = worldToBodyLocal(hb.body, hb.hit.point);
-    addCity(hb.body, name, localPos);
+    addLocation(hb.body, name, localPos);
   } else if (!isBrushTool()) {
     return;
   } else if (currentTool === 'gaswhirl'
@@ -92,7 +92,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 // rotate and orbit continuously, so a marker positioned once on pointermove
 // slides off the surface as the body turns beneath it. Re-raycasting from the
 // cursor's screen position each frame keeps every marker (brush ring, hover dot,
-// city/satellite placement preview) glued to whatever is under the cursor — and
+// location/satellite placement preview) glued to whatever is under the cursor — and
 // keeps the biome readout current as the terrain rotates past a still cursor.
 let pointerOverCanvas = false;
 let lastClientX = 0, lastClientY = 0;
@@ -122,6 +122,7 @@ scene.add(hoverDot);
 const _nWorld  = new THREE.Vector3();   // scratch: world-space surface normal
 const _dotLook = new THREE.Vector3();   // scratch: hoverDot lookAt target
 const _localHit = new THREE.Vector3();  // scratch: hit point in body-local space
+const _hoverDir = new THREE.Vector3();  // scratch: normalized hit dir, for the lat/long readout
 
 function hideHoverBiome() {
   if (hoverBiomeTip) hoverBiomeTip.setAttribute('aria-hidden', 'true');
@@ -167,7 +168,8 @@ export function updateOrbitInteraction() {
   // the brush ring is already marking the spot, to avoid two overlapping cursors.
   if (hb && hb.hit.object === hb.body.mesh && hb.hit.face) {
     if (hoverBiomeTip) {
-      hoverBiomeTip.textContent = biomeNameOfFace(hb.body, hb.hit.face);
+      _hoverDir.copy(hb.hit.point); hb.body.mesh.worldToLocal(_hoverDir).normalize();
+      hoverBiomeTip.textContent = biomeNameOfFace(hb.body, hb.hit.face) + ' · ' + formatLatLon(_hoverDir);
       hoverBiomeTip.style.left = (lastClientX + 16) + 'px';
       hoverBiomeTip.style.top  = (lastClientY + 16) + 'px';
       hoverBiomeTip.setAttribute('aria-hidden', 'false');

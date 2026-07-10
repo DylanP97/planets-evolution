@@ -11,7 +11,7 @@ export const bodies = [];
 export const planets = [];
 export const moons = [];
 export const probes = [];
-export const cities = [];
+export const locations = [];
 
 // The conventional "home"/default body (Earth in Sol; planets[0] elsewhere).
 // Re-pointed by each bootstrap*System(), so it must be a reassignable `let`
@@ -33,16 +33,34 @@ export function setFocusedBody(v) { focusedBody = v; }
 export let viewMode = 'orbit'; // 'orbit' | 'pick' | 'surface'
 export function setViewMode(v) { viewMode = v; }
 
-// City / probe focus. These only flag WHICH entity is focused — the
-// camera-moving entry points (setFocus / setCityFocus / setProbeFocus, which
-// also clear each other and re-render the UI) live in modes/focus.js.
-// When a probe is focused, focusedBody stays on its host planet so the left
-// panel keeps that planet's context; focusedProbe distinguishes the two.
-export let focusedCity = null;
-export function setFocusedCity(v) { focusedCity = v; }
-
+// Probe focus. Only flags WHICH entity is focused — the camera-moving entry
+// points (setFocus / setProbeFocus, which also clear each other and
+// re-render the UI) live in modes/focus.js. When a probe is focused,
+// focusedBody stays on its host planet so the left panel keeps that
+// planet's context; focusedProbe distinguishes the two.
 export let focusedProbe = null;
 export function setFocusedProbe(v) { focusedProbe = v; }
+
+// The location currently marked as a waypoint — set from the Locations tab
+// or by clicking a dot on the full-screen Planet Map (surface pause menu).
+// Read directly by modes/surface/minimap.js to draw the target arrow/distance.
+// Not persisted in save.js (ephemeral session state).
+export let targetLocation = null;
+export function setTargetLocation(v) { targetLocation = v; }
+
+// Single global switch for whether location markers (+ name labels) render
+// in orbit view — one toggle for every location, not per-location. Not
+// persisted; defaults off so a fresh load isn't cluttered with pole markers.
+export let locationMarkersVisible = false;
+export function setLocationMarkersVisible(v) { locationMarkersVisible = v; }
+
+// The body currently being visited in surface mode (mirrors surfaceState.body,
+// which lives in modes/surface/core.js and can't be imported from entities/ —
+// set by enterSurfaceMode/exitSurfaceMode so entities/locations.js can show a
+// body's own markers to the globe widgets while walking it, without a
+// sideways entities<->modes import).
+export let surfaceVisitBody = null;
+export function setSurfaceVisitBody(v) { surfaceVisitBody = v; }
 
 // Seed of the last "Generate World" run on the home planet — the fallback
 // shown in the seed input / info panel when a body has no own currentSeed.
@@ -65,7 +83,7 @@ export function setPaintMode(v) { paintMode = v; }
 export let paused        = false;
 export function setPaused(v) { paused = v; }
 
-export let currentTool   = 'none'; // 'land' | 'biome' | 'city' | 'gasband' | 'gaswhirl' | 'none'
+export let currentTool   = 'none'; // 'land' | 'biome' | 'location' | 'gasband' | 'gaswhirl' | 'none'
 export function setCurrentTool(v) { currentTool = v; }
 
 export let selectedBiome = BIOME.AUTO;

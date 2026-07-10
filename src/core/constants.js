@@ -6,9 +6,13 @@ export const BASE_RADIUS = 12;
 export const SEA_LEVEL   = 0.0;
 export const ICO_DETAIL  = 7;
 
-export const SAND_TOP    = 0.25;
+// Measured on a real "earth" seed: over half of all LAND sat below the old
+// 0.25, reading as generic tan "Coast" instead of its own zone's color/biome
+// (23% of the whole planet) — most terrain here sits close to the sea-level
+// threshold, so a beach band this tall swallowed far more than an actual
+// shoreline fringe. Lowered so the beach reads as a real thin shore.
+export const SAND_TOP    = 0.10;
 export const GRASS_TOP   = 1.2;
-export const GRASS_FLOOR = SAND_TOP + 0.15;
 export const ROCK_TOP    = 2.4;
 export const SNOW_FADE   = 0.4;
 
@@ -38,8 +42,6 @@ export const COL = {
   snow:      0xf0f4f8,
   forest:    0x1a4d1a,
   desert:    0xd2b48c,
-  city:      0x808080,
-  cityLights:0xffd700,
 };
 
 export const BIOME = {
@@ -161,7 +163,6 @@ export const COMP_DISPLAY = {
   snow:      { label: 'Snow',        color: '#f0f4f8' },
   forest:    { label: 'Forest',      color: '#1a4d1a' },
   desert:    { label: 'Desert',      color: '#d2b48c' },
-  city:      { label: 'Settlements', color: '#808080' },
   // Climate land biomes (terrestrial latitude zones). Colors mirror
   // CLIMATE_LAND_ZONES so the swatch matches the painted surface.
   ice:       { label: 'Ice',         color: '#daf2ff' },
@@ -178,8 +179,8 @@ export const COMP_DISPLAY = {
   regolith:  { label: 'Regolith',    color: '#c4b8a0' },
   frost:     { label: 'Frost',       color: '#d8e8f0' },
 };
-export const PLANET_COMP_ORDER = ['water', 'seaice', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'seabed', 'rock', 'snow', 'city'];
-export const MOON_COMP_ORDER   = ['crater', 'dust', 'rock', 'highlight', 'mare', 'regolith', 'frost', 'city'];
+export const PLANET_COMP_ORDER = ['water', 'seaice', 'ice', 'tundra', 'grass', 'jungle', 'forest', 'sand', 'desert', 'seabed', 'rock', 'snow'];
+export const MOON_COMP_ORDER   = ['crater', 'dust', 'rock', 'highlight', 'mare', 'regolith', 'frost'];
 
 // Maps the five auto elevation-band keys to a palette slot (for the panel swatch).
 export const BAND_KEY_TO_PALETTE = { water: 'deep', sand: 'sand', grass: 'grass', rock: 'rock', snow: 'snow' };
@@ -213,6 +214,14 @@ export const MIN_LAND_HEIGHT = -2.5;
 export const OCEAN_DEPTH_BOOST = 2.2;
 
 export const TERRAIN_OCTAVES = 24;
+// Domain-warp strength (how much low-frequency octaves distort the sample
+// direction before the main sum) and the ridged-multifractal mix for the
+// higher-frequency half of the octaves (0 = plain cosine FBM, 1 = fully
+// ridged). Together these break up the old perfectly-smooth "sum of plane
+// waves" dome into organic ridgelines/valleys. Tune here without touching
+// the noise algorithm in terrain.js.
+export const TERRAIN_WARP_STRENGTH = 0.35;
+export const TERRAIN_RIDGE_MIX     = 0.6;
 
 export const FOAM_COLOR  = new THREE.Color(0xeef7ff);
 export const FOAM_LINE_W = 0.12;

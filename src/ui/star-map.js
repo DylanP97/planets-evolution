@@ -316,9 +316,14 @@ if (mapNewBtn) {
 }
 // Up/down between levels is driven by the bottom transport panel (navUp /
 // navDown), which stays visible on the maps. Esc is a shortcut for ▼:
-// galaxy → home constellation, constellation → the loaded system.
+// galaxy → home constellation, constellation → the loaded system. Gated on
+// the overlay actually being ON SCREEN (not just viewLevel) — viewLevel can
+// linger from an earlier map visit, and without this check that stale state
+// hijacks Escape in every other mode (surface walk, ...) even
+// though the map itself isn't showing.
 addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  if (!mapOverlay || mapOverlay.getAttribute('aria-hidden') === 'true') return;
   if (viewLevel === 'galaxy') { e.preventDefault(); openConstellationMap(); }
   else if (viewLevel === 'constellation') { e.preventDefault(); closeMap(); }
 });

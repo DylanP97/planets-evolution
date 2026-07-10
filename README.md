@@ -1,10 +1,10 @@
-# Planets Evolution
+# Planets Exploration
 
 Browser-based 3D planet builder and solar-system sandbox. Procedural worlds, orbital mechanics, and a sci-fi HUD — no build step, no bundler.
 
 ## What it is
 
-A plain **HTML + CSS + JavaScript** app built on Three.js ES modules (`src/`). You classify and regenerate bodies, sculpt terrain with a brush, paint biomes, place colonies, and manage a multi-body system: **planets orbit the sun**, **moons and probes orbit planets** — and you can travel between procedurally generated star systems on a galaxy map. Custom GLSL handles gas atmospheres, plasma stars, and rings; terrain comes from seeded procedural noise.
+A plain **HTML + CSS + JavaScript** app built on Three.js ES modules (`src/`). You classify and regenerate bodies, sculpt terrain with a brush, paint biomes, place named locations, and manage a multi-body system: **planets orbit the sun**, **moons and probes orbit planets** — and you can travel between procedurally generated star systems on a galaxy map. Custom GLSL handles gas atmospheres, plasma stars, and rings; terrain comes from seeded procedural noise.
 
 **Focus modes:** orbital camera (OrbitControls), per-body editing, and third/first-person surface walk on solid land — with grass, rocks, trees, rolling water you can swim in, and footprints in soft soil.
 
@@ -17,7 +17,7 @@ For the code layout (module map, data model, frame lifecycle), see [ARCHITECTURE
 | Runtime | Vanilla **ES modules** (no npm / no bundler) |
 | 3D | **[Three.js](https://threejs.org/)** `0.160.0` via CDN **import map** (`index.html`) |
 | Controls | `OrbitControls` (three/addons) |
-| Assets | `GLTFLoader` — all GLB models in `assets/` (satellite, colony, avatar, surface props) |
+| Assets | `GLTFLoader` — all GLB models in `assets/` (satellite, avatar, surface props) |
 | Shaders | Custom GLSL (gas, plasma/corona, rings, water, ground decals) |
 | UI | Plain DOM + tabbed left panel, info panel, bottom nav, star-map overlays |
 | Styling | `styles/` (CSS variables, HUD theme — one file per panel) |
@@ -77,11 +77,11 @@ entry to `ASSETS` in `assets/dev/dev-scene.js`.
 | `src/shaders/` | Gas, plasma, corona, ring GLSL |
 | `src/framework/` | Body factory, terrain, climate, archetypes, shared state |
 | `src/system/` | Orbits, Sol spec, lighting, star-system load/unload |
-| `src/entities/` | Moons, probes, cities |
+| `src/entities/` | Moons, probes, locations |
 | `src/background/` | Starfield, Milky Way band, solar eruptions |
 | `src/modes/` | Focus + the surface-walk feature (`surface/*`) |
 | `src/ui/` | Panels, sliders, roster, nav, naming, star map |
-| `assets/` | All GLB models (props, avatar, colony, satellite) |
+| `assets/` | All GLB models (props, avatar, satellite) |
 | `assets/dev/` | Standalone **asset library** dev scene — preview/inspect any GLB in isolation (own server/port; see below) |
 | `ARCHITECTURE.md` | Maintainer map: modules, data model, frame lifecycle |
 | `CLAUDE.md` | Quick-start + conventions for AI coding agents |

@@ -13,6 +13,16 @@ export const TEMP_REF_DISTANCE   = 270;
 export const TEMP_REF_KELVIN     = 255;
 export const HEAT_REDISTRIBUTION = 0.82;
 
+// Mutable copies read by computeClimate below, so the dev panel can retune
+// the toy climate model live (ui/dev-panel.js calls computeClimate(body)
+// again after an edit to refresh the visited body's temperature-driven
+// coloring). The consts above stay the compile-time defaults.
+export const climateTuning = {
+  refDistance: TEMP_REF_DISTANCE,
+  refKelvin: TEMP_REF_KELVIN,
+  heatRedistribution: HEAT_REDISTRIBUTION,
+};
+
 export const ARCHETYPE_CLIMATE = {
   terrestrial: { base:   0, greenhouse:  60, airSpread: 120 },
   ocean:       { base:   4, greenhouse:  55, airSpread:  90 },
@@ -35,6 +45,27 @@ export const ARCHETYPE_CLIMATE = {
 };
 
 export const DEFAULT_CLIMATE = { base: 0, greenhouse: 0, airSpread: 130 };
+
+// ── Environment hazards ────────────────────────────────────────────────
+// Earth-like archetypes have breathable air; everything else is either
+// airless/too-thin or actively toxic. Used by modes/surface/minimap.js —
+// kept here since it's pure body-in/data-out, same neighborhood as
+// atmosphereFactor/temperatureAtLatitude.
+const ARCHETYPE_BREATHABLE = new Set(['terrestrial', 'ocean', 'jungle', 'swamp', 'living']);
+const ARCHETYPE_TOXIC = new Set(['toxic', 'venusian']);
+
+export function environmentHazard(body, latRad) {
+  const arch = body.archetype || (body.kind === 'moon' ? 'moon_like' : 'terrestrial');
+  const tempC = temperatureAtLatitude(body, latRad) - KELVIN_ZERO_C;
+  const atmo = atmosphereFactor(body);
+  return {
+    tempC,
+    tooHot: tempC > 45,
+    tooCold: tempC < -20,
+    noOxygen: !ARCHETYPE_BREATHABLE.has(arch) || atmo < 0.15,
+    toxic: ARCHETYPE_TOXIC.has(arch) && atmo > 0.1,
+  };
+}
 
 export function sunDistanceOf(body) {
   const p = planets.find(pl => pl.body === body);
@@ -60,12 +91,12 @@ export function computeClimate(body) {
   const arch = body.archetype || (body.kind === 'moon' ? 'moon_like' : 'terrestrial');
   const cfg = ARCHETYPE_CLIMATE[arch] || DEFAULT_CLIMATE;
   const dist = Math.max(1, sunDistanceOf(body));
-  const equilibrium = TEMP_REF_KELVIN * Math.sqrt(TEMP_REF_DISTANCE / dist);
+  const equilibrium = climateTuning.refKelvin * Math.sqrt(climateTuning.refDistance / dist);
   const atmo = atmosphereFactor(body);
   const meanK = cfg.override != null
     ? cfg.override
     : equilibrium + (cfg.base || 0) + (cfg.greenhouse || 0) * atmo;
-  const spread = (cfg.airSpread || 0) * (1 - HEAT_REDISTRIBUTION * atmo);
+  const spread = (cfg.airSpread || 0) * (1 - climateTuning.heatRedistribution * atmo);
   const climate = {
     distance: dist,
     equilibriumK: equilibrium,
@@ -91,6 +122,27 @@ export function fmtTemp(k) {
   return Math.round(c) + '°C';
 }
 
+// Classifies a point on a water body's surface as ice / open water / steam
+// from its unit direction (ux,uy,uz) — the SAME pole→equator gradient +
+// ragged per-point noise wobble the ocean shading below uses, so any other
+// consumer (the composition/label classifier, the surface minimap) that
+// samples this on the same body-local unit vector always agrees with what
+// the ocean mesh itself is showing, patch-for-patch.
+export function oceanTempState(body, ux, uy, uz) {
+  const clim = body.climate;
+  const warmth = Math.pow(Math.sqrt(Math.max(0, 1 - uy * uy)), 1.6);
+  const tC = (clim.poleK + (clim.equatorK - clim.poleK) * warmth) - KELVIN_ZERO_C;
+  if (tC >= SEA_VAPOR_C) return { state: 'steam', t: 1 };
+  if (tC >= SEA_BOIL_C)  return { state: 'steam', t: smoothstep(SEA_BOIL_C, SEA_VAPOR_C, tC) };
+  const wob = 0.6 * Math.sin(ux * 7 + uy * 3) * Math.cos(uz * 5 - uy * 4)
+            + 0.3 * Math.sin(uz * 11 + ux * 6) * Math.cos(uy * 9 + ux * 2)
+            + 0.15 * Math.sin(ux * 17 - uz * 14);
+  const tIce = tC + wob * SEA_ICE_NOISE_C;
+  if (tIce <= SEA_ICE_C) return { state: 'ice', t: 1 };
+  if (tIce < SEA_THAW_C) return { state: 'ice', t: (SEA_THAW_C - tIce) / (SEA_THAW_C - SEA_ICE_C) };
+  return { state: 'water', t: 0 };
+}
+
 export function colorOceanByClimate(body) {
   const om = body.oceanMesh;
   if (!om || !body.matter || !body.matter.liquid) return;
@@ -113,26 +165,16 @@ export function colorOceanByClimate(body) {
       const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
       const inv = 1 / Math.hypot(x, y, z);
       const ux = x * inv, uy = y * inv, uz = z * inv;
-      const warmth = Math.pow(Math.sqrt(Math.max(0, 1 - uy * uy)), 1.6);
-      const tC = (clim.poleK + (clim.equatorK - clim.poleK) * warmth) - KELVIN_ZERO_C;
+      const r = oceanTempState(body, ux, uy, uz);
       let glow = 0, evap = 0, c;
-      if (tC >= SEA_VAPOR_C) {
-        c = steam; evap = 1;
-      } else if (tC >= SEA_BOIL_C) {
-        c = base.clone().lerp(steam, smoothstep(SEA_BOIL_C, SEA_VAPOR_C, tC));
+      if (r.state === 'steam') {
+        c = r.t >= 1 ? steam : base.clone().lerp(steam, r.t);
+        evap = r.t >= 1 ? 1 : 0;
+      } else if (r.state === 'ice') {
+        c = r.t >= 1 ? ice : base.clone().lerp(ice, r.t);
+        glow = SEA_ICE_GLOW * r.t;
       } else {
-        const wob = 0.6 * Math.sin(ux * 7 + uy * 3) * Math.cos(uz * 5 - uy * 4)
-                  + 0.3 * Math.sin(uz * 11 + ux * 6) * Math.cos(uy * 9 + ux * 2)
-                  + 0.15 * Math.sin(ux * 17 - uz * 14);
-        const tIce = tC + wob * SEA_ICE_NOISE_C;
-        if (tIce <= SEA_ICE_C) {
-          c = ice; glow = SEA_ICE_GLOW;
-        } else if (tIce < SEA_THAW_C) {
-          const t = (SEA_THAW_C - tIce) / (SEA_THAW_C - SEA_ICE_C);
-          c = base.clone().lerp(ice, t); glow = SEA_ICE_GLOW * t;
-        } else {
-          c = base;
-        }
+        c = base;
       }
       colA.setXYZ(i, c.r, c.g, c.b);
       glowA.setX(i, glow); evapA.setX(i, evap);

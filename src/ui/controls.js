@@ -32,7 +32,7 @@ export function refreshActiveTool() {
     && focusedBody.matter && focusedBody.matter.gas === 'full');
   if (tab === 'sculpt') setCurrentTool('land');
   else if (tab === 'environment') setCurrentTool(gasFull ? gasPaintMode : 'biome');
-  else if (tab === 'colonies') setCurrentTool('city');
+  else if (tab === 'locations') setCurrentTool('location');
   else if (tab === 'satellites') setCurrentTool('none');
   else setCurrentTool('none');
   if (!isBrushTool()) {

@@ -80,6 +80,13 @@ export function peakWorldHeight(body, peak) {
   return body.baseRadius * Math.max(0, peak) * BODY_HEIGHT_SCALE * body.group.scale.x;
 }
 
+// World-space diameter — geometry radius scaled by the body's group.scale
+// (planets and moons both resize via group.scale.setScalar, see moons.js /
+// system/planets.js), so this one formula covers every body kind.
+export function bodyDiameter(body) {
+  return body.baseRadius * body.group.scale.x * 2;
+}
+
 export const infoEls = {
   name:         document.getElementById('infoBodyName'),
   subtitle:     document.getElementById('infoSubtitle'),
@@ -90,6 +97,7 @@ export const infoEls = {
   tempRange:    document.getElementById('infoTempRange'),
   tempBar:      document.getElementById('infoTempBar'),
   gravity:      document.getElementById('infoGravity'),
+  diameter:     document.getElementById('infoDiameter'),
   peak:         document.getElementById('infoPeak'),
   verts:        document.getElementById('infoVerts'),
   moonsRow:     document.getElementById('infoMoonsRow'),
@@ -101,7 +109,6 @@ export const infoEls = {
   orbitDist:    document.getElementById('infoOrbitDist'),
   orbitOmega:   document.getElementById('infoOrbitOmega'),
   orbitPeriod:  document.getElementById('infoOrbitPeriod'),
-  moonSize:     document.getElementById('infoMoonSize'),
 };
 
 // Composition rollup for full-gas planets: tally bandBiomes weighted by
@@ -165,6 +172,7 @@ export function updateInfoPanel() {
       `<div class="info-row"><span>Orbiting</span><span>${focusedProbe.parent?.name || '—'}</span></div>` +
       `<div class="info-row"><span>Orbit dist</span><span>${focusedProbe.distance.toFixed(1)} u</span></div>`;
     if (infoEls.gravity) infoEls.gravity.textContent = '—';
+    if (infoEls.diameter) infoEls.diameter.textContent = '—';
     infoEls.peak.textContent = '—';
     infoEls.verts.textContent = '—';
     infoEls.moonsRow.style.display = 'none';
@@ -179,6 +187,7 @@ export function updateInfoPanel() {
     infoEls.subtitle.textContent = `${planets.length} planet${planets.length === 1 ? '' : 's'} · ${moons.length} satellite${moons.length === 1 ? '' : 's'}`;
     infoEls.composition.innerHTML = '<div class="info-row"><span>System overview</span></div>';
     if (infoEls.gravity) infoEls.gravity.textContent = '—';
+    if (infoEls.diameter) infoEls.diameter.textContent = '—';
     infoEls.peak.textContent = '—';
     infoEls.verts.textContent = '—';
     infoEls.moonsRow.style.display = '';
@@ -274,6 +283,8 @@ export function updateInfoPanel() {
     infoEls.verts.textContent = stats.N.toLocaleString();
   }
 
+  if (infoEls.diameter) infoEls.diameter.textContent = bodyDiameter(body).toFixed(2) + ' u';
+
   // Surface gravity — meaningful for any planet or moon (stars handled by
   // the probe/plasma readouts elsewhere). Suffix a quick qualitative read.
   if (infoEls.gravity) {
@@ -320,7 +331,6 @@ export function updateLiveInfo() {
     infoEls.orbitDist.textContent = m.distance.toFixed(1) + ' u';
     infoEls.orbitOmega.textContent = omega.toFixed(3) + ' rad/s';
     infoEls.orbitPeriod.textContent = fmtSeconds(period);
-    infoEls.moonSize.textContent = (m.size * 2 * body.baseRadius).toFixed(2) + ' u';
   }
 }
 

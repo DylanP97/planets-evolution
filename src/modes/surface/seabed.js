@@ -19,7 +19,7 @@ import {
 } from './scratch.js';
 
 export const SEABED_GN = 16;            // submerged-mask + floor-height grid resolution
-const KELP_COUNT = 1500;                // fronds, scattered into distinct beds by the cluster scatter
+const KELP_COUNT = 700;                 // fronds, scattered into distinct beds by the cluster scatter
 const FISH_COUNT = 150;                 // a few small schools
 const FISH_URL = 'assets/fish.glb';
 export let seabedField = null;
@@ -32,19 +32,27 @@ export let kelpUniforms = null;         // captured from kelp's onBeforeCompile
 // the beds are just sparse and clumped.
 
 // A tall tapered frond pointing +Y, base at y=0, tip at y=1, gentle forward
-// lean, dark→light gradient (fake AO at the holdfast). `aH` carries normalized
-// height for height-weighted sway in the shader.
+// lean plus a gentle helical twist (so it catches light along its length
+// instead of reading as a flat cardboard cutout), dark→light gradient (fake
+// AO at the holdfast). `aH` carries normalized height for height-weighted
+// sway in the shader.
 function buildKelpGeometry() {
   const segs = 6, halfBase = 0.06;
   const pos = [], col = [], nrm = [], aH = [], idx = [];
   for (let s = 0; s <= segs; s++) {
     const y = s / segs;
-    const hw = halfBase * (1 - y * 0.7);
-    const z = y * y * 0.22;
-    pos.push(-hw, y, z,  hw, y, z);
+    let hw = halfBase * (1 - y * 0.7);
+    hw *= 1 + 0.12 * Math.sin(y * Math.PI * 3);   // slight scalloped edge, not a razor taper
+    const z0 = y * y * 0.22;
+    const dzdy = 0.44 * y;                          // d(z0)/dy, for the shading normal below
+    const twist = y * 1.1;                          // helical twist over the frond's height
+    const ct = Math.cos(twist), st = Math.sin(twist);
+    pos.push(-hw * ct, y, z0 - hw * st,   hw * ct, y, z0 + hw * st);
     const shade = 0.35 + 0.65 * y;
     col.push(shade, shade, shade,  shade, shade, shade);
-    nrm.push(0, 1, 0,  0, 1, 0);
+    const nx = st, ny = -dzdy, nz = ct;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nrm.push(nx / nl, ny / nl, nz / nl,   nx / nl, ny / nl, nz / nl);
     aH.push(y, y);
   }
   for (let s = 0; s < segs; s++) {
@@ -159,7 +167,7 @@ function buildSeabedField() {
     const t = Math.random();
     _kc.setRGB(0.10 + t * 0.10, 0.30 + Math.random() * 0.20, 0.16 + t * 0.12);   // olive → teal
     kelpMesh.setColorAt(i, _kc);
-  }, 25, 30, 0.02, 0.04);
+  }, 12, 16, 0.02, 0.04);
   kelpMesh.instanceColor.needsUpdate = true;
   kelpMesh.instanceColor.setUsage(THREE.StaticDrawUsage);
 
